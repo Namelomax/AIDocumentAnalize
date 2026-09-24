@@ -1,0 +1,163 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum DocStage {
+  PD
+  RD
+  ID
+}
+
+enum ApprovalStatus {
+  DRAFT
+  APPROVED
+  FOR_CONSTRUCTION
+  SUPERSEDED
+  CANCELLED
+}
+
+enum ProcessStatus {
+  PENDING
+  PARSING
+  READY
+  VERIFYING
+  COMPLETED
+  FINALIZED
+}
+
+enum FindingStatus {
+  CANDIDATE
+  CONFIRMED_VIOLATION
+  NEGATIVE_VERIFIED
+  MISSING_EVIDENCE
+  NOT_APPLICABLE
+  NOT_COMPARABLE
+  CLARIFICATION_REQUIRED
+  SUSPICION
+}
+
+enum CompletenessStatus {
+  COMPLETE
+  MISSING_EVIDENCE
+  NOT_APPLICABLE
+  NOT_COMPARABLE
+  CLARIFICATION_REQUIRED
+}
+
+enum ReviewPriority {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum LoadScenario {
+  FULL
+  PD_RD_ONLY
+  PD_ID_ONLY
+  RD_ID_ONLY
+  SINGLE_ONLY
+  PARTIALLY_LOADED
+}
+
+enum UserRole {
+  INSPECTOR
+  SUPERVISOR
+  ADMIN
+  ML_ENGINEER
+}
+
+model User {
+  id           String   @id @default(uuid())
+  login        String   @unique
+  passwordHash String   @map("password_hash")
+  fullName     String   @map("full_name")
+  role         UserRole @default(INSPECTOR)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("users")
+}
+
+model ConstructionObject {
+  id           String   @id @default(uuid())
+  name         String
+  address      String?
+  customer     String?
+  contractor   String?
+  permitNumber String?  @map("permit_number")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  files     FileRecord[]
+  processes Process[]
+
+  @@map("objects")
+}
+
+model FileRecord {
+  id              String         @id @default(uuid())
+  objectId        String         @map("object_id")
+  processId       String?        @map("process_id")
+  fileName        String         @map("file_name")
+  fileHash        String         @map("file_hash") @db.Char(64)
+  storageKey      String         @map("storage_key")
+  sizeBytes       Int            @map("size_bytes")
+  mimeType        String         @map("mime_type")
+  docStage        DocStage?      @map("doc_stage")
+  discipline      String?
+  documentCode    String?        @map("document_code")
+  revision        String?
+  approvalStatus  ApprovalStatus @default(DRAFT) @map("approval_status")
+  approvalDate    DateTime?      @map("approval_date")
+  sheetPageRange  String?        @map("sheet_page_range")
+  predecessorId   String?        @map("predecessor_id")
+  signatureStatus String?        @map("signature_status")
+  pageCount       Int?           @map("page_count")
+  fromManifest    Boolean        @default(false) @map("from_manifest")
+  uploadedAt      DateTime       @default(now()) @map("uploaded_at")
+
+  object       ConstructionObject @relation(fields: [objectId], references: [id])
+  process      Process?           @relation(fields: [processId], references: [id])
+  predecessor  FileRecord?        @relation("RevisionChain", fields: [predecessorId], references: [id])
+  successors   FileRecord[]       @relation("RevisionChain")
+
+  @@unique([objectId, fileHash])
+  @@index([objectId, docStage, discipline])
+  @@map("files")
+}
+
+model Process {
+  id                String        @id @default(uuid())
+  objectId          String        @map("object_id")
+  status            ProcessStatus @default(PENDING)
+  scenario          LoadScenario?
+  pdCompleteness    String?       @map("pd_completeness")
+  rdCompleteness    String?       @map("rd_completeness")
+  idCompleteness    String?       @map("id_completeness")
+  manifestUploaded  Boolean       @default(false) @map("manifest_uploaded")
+  inputManifestHash String?       @map("input_manifest_hash") @db.Char(64)
+  createdAt         DateTime      @default(now()) @map("created_at")
+  updatedAt         DateTime      @updatedAt @map("updated_at")
+
+  object ConstructionObject @relation(fields: [objectId], references: [id])
+  files  FileRecord[]
+
+  @@map("processes")
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?  @map("user_id")
+  action    String
+  objectId  String?  @map("object_id")
+  details   Json?
+  ipAddress String?  @map("ip_address")
+  userAgent String?  @map("user_agent")
+  timestamp DateTime @default(now())
+
+  @@index([timestamp])
+  @@map("audit_log")
+}
