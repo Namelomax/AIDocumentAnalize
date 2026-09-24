@@ -1,0 +1,9 @@
+pyproject.toml
+app/__init__.py
+app/domain/__init__.py
+inspector_worker.egg-info/PKG-INFO
+inspector_worker.egg-info/SOURCES.txt
+inspector_worker.egg-info/dependency_links.txt
+inspector_worker.egg-info/requires.txt
+inspector_worker.egg-info/top_level.txt
+tests/test_revisions.py

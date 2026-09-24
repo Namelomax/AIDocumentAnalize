@@ -1,17 +1,24 @@
-import amqp, { type Channel, type Connection } from 'amqplib';
+import amqp, { type Channel, type ChannelModel } from 'amqplib';
 import { config } from './config.js';
 
-export const TASK_QUEUE = 'inspector.tasks';
+// The queue name is configurable so the test suite can use its own: with the
+// worker container running it consumes from the real queue within
+// milliseconds, and a test reading the same queue finds it already empty.
+export const TASK_QUEUE = config.taskQueue;
 
-let connection: Connection | null = null;
+// amqplib's connect resolves to a ChannelModel, not a Connection: the latter
+// has no createChannel and typing it that way only compiles until tsc runs.
+let connection: ChannelModel | null = null;
 let channel: Channel | null = null;
 
 async function getChannel(): Promise<Channel> {
   if (channel) return channel;
-  connection = await amqp.connect(config.rabbitmqUrl);
-  channel = await connection.createChannel();
-  await channel.assertQueue(TASK_QUEUE, { durable: true });
-  return channel;
+  const openConnection = await amqp.connect(config.rabbitmqUrl);
+  const openChannel = await openConnection.createChannel();
+  await openChannel.assertQueue(TASK_QUEUE, { durable: true });
+  connection = openConnection;
+  channel = openChannel;
+  return openChannel;
 }
 
 export interface Task {

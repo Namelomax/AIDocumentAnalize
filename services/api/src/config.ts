@@ -13,6 +13,7 @@ const schema = z.object({
   MAX_FILE_BYTES: z.coerce.number().default(52_428_800),
   MAX_PACKAGE_BYTES: z.coerce.number().default(209_715_200),
   LOG_LEVEL: z.string().default('info'),
+  TASK_QUEUE: z.string().default('inspector.tasks'),
 });
 
 const parsed = schema.parse(process.env);
@@ -32,4 +33,5 @@ export const config = {
   maxFileBytes: parsed.MAX_FILE_BYTES,
   maxPackageBytes: parsed.MAX_PACKAGE_BYTES,
   logLevel: parsed.LOG_LEVEL,
+  taskQueue: parsed.TASK_QUEUE,
 };

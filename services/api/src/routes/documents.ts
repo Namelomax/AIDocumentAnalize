@@ -46,9 +46,9 @@ export async function documentRoutes(app: FastifyInstance) {
     const rejected: Array<{ file_name: string; reason: string }> = [];
     let packageBytes = 0;
 
-    // Фаза 1: прочитать и проверить, ничего не сохраняя. В сумму пакета
-    // входит КАЖДАЯ часть, включая отклонённые: иначе лимит обходится
-    // файлами неподдерживаемого формата.
+    // Phase 1: read and validate without storing anything. EVERY part counts
+    // towards the package total, rejected ones included — otherwise the limit
+    // is walked past with files of an unsupported type.
     for await (const part of request.parts()) {
       if (part.type !== 'file') continue;
 
@@ -71,8 +71,8 @@ export async function documentRoutes(app: FastifyInstance) {
       pending.push({ fileName: part.filename, body, mimeType: part.mimetype });
     }
 
-    // ТЗ требует отклонять ПАКЕТ, а не отдельный файл. Сохранить ещё ничего
-    // не успели, поэтому откатывать нечего.
+    // The spec rejects the PACKAGE, not the offending file. Nothing has been
+    // stored yet, so there is nothing to roll back.
     if (packageBytes > config.maxPackageBytes) {
       return reply.code(413).send({
         error: 'PACKAGE_TOO_LARGE',
@@ -81,7 +81,7 @@ export async function documentRoutes(app: FastifyInstance) {
       });
     }
 
-    // Фаза 2: сохранить принятое.
+    // Phase 2: store what survived validation.
     const process = await prisma.process.create({
       data: { objectId, status: 'PENDING' },
     });
@@ -105,22 +105,22 @@ export async function documentRoutes(app: FastifyInstance) {
         });
         accepted.push({ file_id: record.id, file_name: record.fileName, sha256: hash });
       } catch (error) {
-        // Запрет дубликата держит уникальный ключ базы, а не проверка перед
-        // вставкой: предварительный запрос всё равно проигрывает гонку двум
-        // одновременным загрузкам одного файла.
+        // The unique key is what forbids duplicates, not a lookup before the
+        // insert: a pre-check still loses the race between two concurrent
+        // uploads of the same file.
         if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
           rejected.push({ file_name: file.fileName, reason: 'DUPLICATE' });
           continue;
         }
-        // Сбой на одном файле не должен ронять весь пакет: остальные файлы
-        // уже сохранены, и пользователь обязан узнать, какие именно.
+        // One failed file must not sink the package: the others are already
+        // stored, and the caller has to learn which ones.
         request.log.error({ file_name: file.fileName, err: error }, 'failed to store file');
         rejected.push({ file_name: file.fileName, reason: 'INTERNAL_ERROR' });
       }
     }
 
-    // Процесс без единого документа навсегда завис бы в списке проверок,
-    // неотличимый от идущего разбора.
+    // A process holding no documents would sit in the checks list forever,
+    // indistinguishable from one still being parsed.
     if (accepted.length === 0) {
       await prisma.process.delete({ where: { id: process.id } });
       return reply.code(422).send({ accepted: [], rejected });

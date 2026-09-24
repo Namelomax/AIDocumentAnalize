@@ -6,10 +6,13 @@ explicit here.
 
 import json
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
-TASK_QUEUE = "inspector.tasks"
+# Must stay in step with the API's TASK_QUEUE: if the two ever name different
+# queues, tasks are published into the void and nothing reports an error.
+TASK_QUEUE = os.environ.get("TASK_QUEUE", "inspector.tasks")
 
 
 class UnknownTaskType(Exception):

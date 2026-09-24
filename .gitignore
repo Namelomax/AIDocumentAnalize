@@ -8,3 +8,4 @@ data/
 models/
 *.log
 .superpowers/
+.e2e-tmp/

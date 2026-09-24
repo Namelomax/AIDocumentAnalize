@@ -559,6 +559,7 @@ const schema = z.object({
   MAX_FILE_BYTES: z.coerce.number().default(52_428_800),
   MAX_PACKAGE_BYTES: z.coerce.number().default(209_715_200),
   LOG_LEVEL: z.string().default('info'),
+  TASK_QUEUE: z.string().default('inspector.tasks'),
 });
 
 const parsed = schema.parse(process.env);
@@ -578,6 +579,7 @@ export const config = {
   maxFileBytes: parsed.MAX_FILE_BYTES,
   maxPackageBytes: parsed.MAX_PACKAGE_BYTES,
   logLevel: parsed.LOG_LEVEL,
+  taskQueue: parsed.TASK_QUEUE,
 };
 ```
 
@@ -1864,9 +1866,9 @@ export async function documentRoutes(app: FastifyInstance) {
     const rejected: Array<{ file_name: string; reason: string }> = [];
     let packageBytes = 0;
 
-    // Фаза 1: прочитать и проверить, ничего не сохраняя. В сумму пакета
-    // входит КАЖДАЯ часть, включая отклонённые: иначе лимит обходится
-    // файлами неподдерживаемого формата.
+    // Phase 1: read and validate without storing anything. EVERY part counts
+    // towards the package total, rejected ones included — otherwise the limit
+    // is walked past with files of an unsupported type.
     for await (const part of request.parts()) {
       if (part.type !== 'file') continue;
 
@@ -1889,8 +1891,8 @@ export async function documentRoutes(app: FastifyInstance) {
       pending.push({ fileName: part.filename, body, mimeType: part.mimetype });
     }
 
-    // ТЗ требует отклонять ПАКЕТ, а не отдельный файл. Сохранить ещё ничего
-    // не успели, поэтому откатывать нечего.
+    // The spec rejects the PACKAGE, not the offending file. Nothing has been
+    // stored yet, so there is nothing to roll back.
     if (packageBytes > config.maxPackageBytes) {
       return reply.code(413).send({
         error: 'PACKAGE_TOO_LARGE',
@@ -1899,7 +1901,7 @@ export async function documentRoutes(app: FastifyInstance) {
       });
     }
 
-    // Фаза 2: сохранить принятое.
+    // Phase 2: store what survived validation.
     const process = await prisma.process.create({
       data: { objectId, status: 'PENDING' },
     });
@@ -1923,22 +1925,22 @@ export async function documentRoutes(app: FastifyInstance) {
         });
         accepted.push({ file_id: record.id, file_name: record.fileName, sha256: hash });
       } catch (error) {
-        // Запрет дубликата держит уникальный ключ базы, а не проверка перед
-        // вставкой: предварительный запрос всё равно проигрывает гонку двум
-        // одновременным загрузкам одного файла.
+        // The unique key is what forbids duplicates, not a lookup before the
+        // insert: a pre-check still loses the race between two concurrent
+        // uploads of the same file.
         if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
           rejected.push({ file_name: file.fileName, reason: 'DUPLICATE' });
           continue;
         }
-        // Сбой на одном файле не должен ронять весь пакет: остальные файлы
-        // уже сохранены, и пользователь обязан узнать, какие именно.
+        // One failed file must not sink the package: the others are already
+        // stored, and the caller has to learn which ones.
         request.log.error({ file_name: file.fileName, err: error }, 'failed to store file');
         rejected.push({ file_name: file.fileName, reason: 'INTERNAL_ERROR' });
       }
     }
 
-    // Процесс без единого документа навсегда завис бы в списке проверок,
-    // неотличимый от идущего разбора.
+    // A process holding no documents would sit in the checks list forever,
+    // indistinguishable from one still being parsed.
     if (accepted.length === 0) {
       await prisma.process.delete({ where: { id: process.id } });
       return reply.code(422).send({ accepted: [], rejected });
@@ -2062,20 +2064,27 @@ npm test -- tests/queue.test.ts
 - [ ] **Step 3: Реализовать `services/api/src/queue.ts`**
 
 ```typescript
-import amqp, { type Channel, type Connection } from 'amqplib';
+import amqp, { type Channel, type ChannelModel } from 'amqplib';
 import { config } from './config.js';
 
-export const TASK_QUEUE = 'inspector.tasks';
+// The queue name is configurable so the test suite can use its own: with the
+// worker container running it consumes from the real queue within
+// milliseconds, and a test reading the same queue finds it already empty.
+export const TASK_QUEUE = config.taskQueue;
 
-let connection: Connection | null = null;
+// amqplib's connect resolves to a ChannelModel, not a Connection: the latter
+// has no createChannel and typing it that way only compiles until tsc runs.
+let connection: ChannelModel | null = null;
 let channel: Channel | null = null;
 
 async function getChannel(): Promise<Channel> {
   if (channel) return channel;
-  connection = await amqp.connect(config.rabbitmqUrl);
-  channel = await connection.createChannel();
-  await channel.assertQueue(TASK_QUEUE, { durable: true });
-  return channel;
+  const openConnection = await amqp.connect(config.rabbitmqUrl);
+  const openChannel = await openConnection.createChannel();
+  await openChannel.assertQueue(TASK_QUEUE, { durable: true });
+  connection = openConnection;
+  channel = openChannel;
+  return openChannel;
 }
 
 export interface Task {
@@ -2196,7 +2205,9 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-TASK_QUEUE = "inspector.tasks"
+# Must stay in step with the API's TASK_QUEUE: if the two ever name different
+# queues, tasks are published into the void and nothing reports an error.
+TASK_QUEUE = os.environ.get("TASK_QUEUE", "inspector.tasks")
 
 
 class UnknownTaskType(Exception):
@@ -2353,7 +2364,10 @@ import { z } from 'zod';
 import { prisma } from '../db.js';
 
 const createSchema = z.object({
-  name: z.string().min(1),
+  // trim() before min(1): without it a name of spaces passes validation and
+  // the inspector gets a supervision case with no readable title. The upper
+  // bound keeps a stray paste out of an unbounded TEXT column.
+  name: z.string().trim().min(1).max(500),
   address: z.string().optional(),
   customer: z.string().optional(),
   contractor: z.string().optional(),
@@ -2647,23 +2661,65 @@ export async function processRoutes(app: FastifyInstance) {
 }
 ```
 
-- [ ] **Step 4: Зарегистрировать маршруты в `src/server.ts`**
+- [ ] **Step 4: Зарегистрировать маршруты и подготовить хранилище в `src/server.ts`**
 
 Добавить импорт `import { processRoutes } from './routes/processes.js';` и строку `await app.register(processRoutes);` рядом с остальными регистрациями. Опцию `requestIdLogLabel: 'request_id'` не трогать.
 
-- [ ] **Step 5: Запустить тесты**
+Кроме того, в блок запуска добавить создание корзины MinIO. Без этого на свежем развёртывании корзины не существует, и **каждая** загрузка документа падает с `The specified bucket does not exist`. Тесты этого не видят: они создают корзину сами в `beforeAll`.
+
+```typescript
+import { ensureBucket } from './storage.js';
+
+// …
+
+const isEntry = process.argv[1]?.endsWith('server.ts') || process.argv[1]?.endsWith('server.js');
+if (isEntry) {
+  const app = await buildServer();
+  // On a fresh deployment the bucket does not exist yet, and every upload
+  // fails with "The specified bucket does not exist". Tests never saw this
+  // because they create the bucket themselves before they run.
+  await ensureBucket();
+  app.log.info({ bucket: config.minio.bucket }, 'object storage ready');
+  await app.listen({ port: config.port, host: '0.0.0.0' });
+}
+```
+
+- [ ] **Step 5: Развести тестовую и боевую очереди**
+
+С поднятым воркером тесты очереди становятся ложно-красными: контейнер вычитывает сообщение за миллисекунды, и тест, читающий ту же очередь, находит её пустой. Имя очереди берётся из конфигурации (`TASK_QUEUE`), а набор тестов работает со своей.
+
+`services/api/vitest.config.ts`:
+
+```typescript
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    // The worker service consumes the production queue as soon as anything
+    // lands on it, so the suite publishes to a queue of its own.
+    env: { TASK_QUEUE: 'inspector.tasks.test' },
+  },
+});
+```
+
+Воркер читает то же имя из окружения с тем же значением по умолчанию: расхождение настроек между двумя сервисами разорвало бы связь молча, без единой ошибки.
+
+- [ ] **Step 6: Запустить тесты**
 
 ```bash
 npm test
 ```
 
-Ожидается: 15 passed — 10 существующих плюс пять новых.
+Ожидается: 22 passed — 17 существующих плюс пять новых по маршрутам процессов.
 
 - [ ] **Step 6: Создать `services/api/Dockerfile`**
 
 ```dockerfile
 FROM node:20-slim AS build
 WORKDIR /app
+# node:20-slim ships without OpenSSL, and Prisma's engines refuse to run
+# without it: the container starts, then dies on the first migration.
+RUN apt-get update  && apt-get install -y --no-install-recommends openssl ca-certificates  && rm -rf /var/lib/apt/lists/*
 COPY package*.json ./
 RUN npm ci
 COPY prisma ./prisma
@@ -2675,6 +2731,7 @@ RUN npm run build
 FROM node:20-slim
 WORKDIR /app
 ENV NODE_ENV=production
+RUN apt-get update  && apt-get install -y --no-install-recommends openssl ca-certificates  && rm -rf /var/lib/apt/lists/*
 COPY package*.json ./
 RUN npm ci --omit=dev
 COPY --from=build /app/node_modules/.prisma ./node_modules/.prisma
@@ -2689,9 +2746,12 @@ CMD ["sh", "-c", "npx prisma migrate deploy && node dist/server.js"]
 ```dockerfile
 FROM python:3.11-slim
 WORKDIR /app
+# The package has to exist before the install: an editable install resolves
+# its packages at install time, and with app/ still missing setuptools finds
+# nothing to install.
 COPY pyproject.toml ./
-RUN pip install --no-cache-dir -e .
 COPY app ./app
+RUN pip install --no-cache-dir .
 CMD ["python", "-m", "app.main"]
 ```
 
@@ -2738,23 +2798,32 @@ echo "1. health"
 curl -fsS "$API/health" | grep -q '"status":"ok"'
 
 echo "2. create object"
+# Тело пишем файлом в явном UTF-8: curl в Git Bash на Windows считает
+# Content-Length в кодировке консоли и на кириллице расходится с телом.
+mkdir -p .e2e-tmp
+printf '%s' '{"name":"Торговое здание","address":"Алтуфьевское ш., 79Б"}' > .e2e-tmp/object.json
 OBJECT_ID=$(curl -fsS -X POST "$API/objects" \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"Торговое здание","address":"Алтуфьевское ш., 79Б"}' \
+  -H 'Content-Type: application/json; charset=utf-8' \
+  --data-binary @.e2e-tmp/object.json \
   | python -c 'import sys,json; print(json.load(sys.stdin)["id"])')
 
 echo "3. upload a pdf"
-printf '%%PDF-1.7 e2e' > /tmp/e2e.pdf
+# Путь относительный намеренно: curl в Git Bash коверкает абсолютный путь,
+# когда рядом стоит ';type=' — точка с запятой трактуется как разделитель
+# списка путей Windows.
+printf '%%PDF-1.7 e2e' > .e2e-tmp/upload.pdf
 RESPONSE=$(curl -fsS -X POST "$API/documents/upload?object_id=$OBJECT_ID" \
-  -F 'files=@/tmp/e2e.pdf;type=application/pdf')
+  -F 'files=@.e2e-tmp/upload.pdf;type=application/pdf')
 echo "$RESPONSE" | grep -q '"process_id"'
 echo "$RESPONSE" | grep -q '"accepted":\[{'
 
 PROCESS_ID=$(echo "$RESPONSE" | python -c 'import sys,json; print(json.load(sys.stdin)["process_id"])')
 
 echo "4. duplicate is rejected"
-curl -fsS -X POST "$API/documents/upload?object_id=$OBJECT_ID" \
-  -F 'files=@/tmp/e2e.pdf;type=application/pdf' | grep -q 'DUPLICATE'
+# Без -f намеренно: пакет, в котором отклонены все файлы, отвечает 422,
+# и это ожидаемый ответ, а не сбой запроса.
+curl -sS -X POST "$API/documents/upload?object_id=$OBJECT_ID" \
+  -F 'files=@.e2e-tmp/upload.pdf;type=application/pdf' | grep -q 'DUPLICATE'
 
 echo "5. process status is readable"
 curl -fsS "$API/processes/$PROCESS_ID" | grep -q '"status":"PENDING"'

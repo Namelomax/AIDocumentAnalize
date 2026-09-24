@@ -3,7 +3,10 @@ import { z } from 'zod';
 import { prisma } from '../db.js';
 
 const createSchema = z.object({
-  name: z.string().min(1),
+  // trim() before min(1): without it a name of spaces passes validation and
+  // the inspector gets a supervision case with no readable title. The upper
+  // bound keeps a stray paste out of an unbounded TEXT column.
+  name: z.string().trim().min(1).max(500),
   address: z.string().optional(),
   customer: z.string().optional(),
   contractor: z.string().optional(),
