@@ -9,6 +9,8 @@ import json
 import logging
 import os
 
+from app.pipeline import process_start
+
 logger = logging.getLogger(__name__)
 
 # Must stay in step with the API's TASK_QUEUE: if the two ever name different
@@ -21,11 +23,11 @@ class UnknownTaskType(Exception):
 
 
 HANDLERS = {
-    "process.start": "pipeline.start",
+    "process.start": process_start,
 }
 
 
-def handle_task(payload: dict) -> str:
+def handle_task(payload: dict):
     if "process_id" not in payload:
         raise ValueError("task payload has no process_id")
 
@@ -36,15 +38,16 @@ def handle_task(payload: dict) -> str:
 
     logger.info("task routed", extra={"task_type": task_type,
                                       "process_id": payload["process_id"],
-                                      "handler": handler})
+                                      "handler": handler.__name__})
     return handler
 
 
-async def _process_message(message) -> None:
+async def _process_message(message, db, storage) -> None:
     """Parse and route one message, ack'ing or rejecting it via message.process()."""
     async with message.process():
         payload = json.loads(message.body.decode())
-        handle_task(payload)
+        handler = handle_task(payload)
+        await handler(payload["process_id"], db, storage)
 
 
 def _extract_process_id(message) -> str | None:
@@ -61,7 +64,7 @@ def _extract_process_id(message) -> str | None:
     return payload.get("process_id") if isinstance(payload, dict) else None
 
 
-async def _consume_messages(messages) -> None:
+async def _consume_messages(messages, db, storage) -> None:
     """Drive the message loop, isolating each message's failure from the rest.
 
     message.process() rejects (without requeue) the message that raised and
@@ -73,7 +76,7 @@ async def _consume_messages(messages) -> None:
     """
     async for message in messages:
         try:
-            await _process_message(message)
+            await _process_message(message, db, storage)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -81,7 +84,7 @@ async def _consume_messages(messages) -> None:
                          extra={"process_id": _extract_process_id(message)})
 
 
-async def consume(connection_url: str) -> None:
+async def consume(connection_url: str, db, storage) -> None:
     import aio_pika
 
     connection = await aio_pika.connect_robust(connection_url)
@@ -89,4 +92,4 @@ async def consume(connection_url: str) -> None:
     queue = await channel.declare_queue(TASK_QUEUE, durable=True)
 
     async with queue.iterator() as messages:
-        await _consume_messages(messages)
+        await _consume_messages(messages, db, storage)

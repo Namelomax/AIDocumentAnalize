@@ -4,11 +4,24 @@ import logging
 
 import pytest
 from app.consumer import _consume_messages, handle_task, UnknownTaskType
+from app.pipeline import process_start
+
+
+class FakeDb:
+    """A process-less database: process_start's "process not found" branch
+    is the cheapest way to exercise routing without a real PostgreSQL."""
+
+    async def get_process(self, process_id):
+        return None
+
+
+class FakeStorage:
+    pass
 
 
 def test_routes_process_start_to_the_pipeline_handler():
     payload = {"type": "process.start", "process_id": "p1", "object_id": "o1"}
-    assert handle_task(payload) == "pipeline.start"
+    assert handle_task(payload) is process_start
 
 
 def test_unknown_task_type_raises():
@@ -61,7 +74,7 @@ async def test_bad_message_does_not_stop_the_loop_and_is_rejected_without_requeu
     good_payload = {"type": "process.start", "process_id": "p1", "object_id": "o1"}
     good = FakeMessage(json.dumps(good_payload).encode())
 
-    await _consume_messages(_fake_messages(bad, good))
+    await _consume_messages(_fake_messages(bad, good), FakeDb(), FakeStorage())
 
     assert bad.rejected is True
     assert bad.acked is False
@@ -74,7 +87,7 @@ async def test_bad_message_is_logged_at_error_with_process_id_when_available(cap
     message = FakeMessage(json.dumps(payload).encode())
 
     with caplog.at_level(logging.ERROR, logger="app.consumer"):
-        await _consume_messages(_fake_messages(message))
+        await _consume_messages(_fake_messages(message), FakeDb(), FakeStorage())
 
     assert len(caplog.records) == 1
     record = caplog.records[0]
@@ -89,4 +102,4 @@ async def test_cancelled_error_is_not_swallowed():
             raise asyncio.CancelledError()
 
     with pytest.raises(asyncio.CancelledError):
-        await _consume_messages(_fake_messages(CancellingMessage(b"{}")))
+        await _consume_messages(_fake_messages(CancellingMessage(b"{}")), FakeDb(), FakeStorage())

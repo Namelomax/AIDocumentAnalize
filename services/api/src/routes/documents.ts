@@ -12,9 +12,22 @@ const ALLOWED = new Map([
   ['text/xml', '.xml'],
 ]);
 
+// A registry is not a package document: it describes the package rather than
+// being part of it, so its formats live in a set of their own instead of
+// being folded into ALLOWED.
+const MANIFEST_TYPES = new Map([
+  ['text/csv', '.csv'],
+  ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', '.xlsx'],
+  ['application/json', '.json'],
+]);
+
 const MAGIC: Record<string, Buffer> = {
   '.pdf': Buffer.from('%PDF'),
+  // Both are zip containers underneath, so they carry the same signature. A
+  // registry of random bytes is caught here with a reason the inspector can
+  // read, rather than surfacing much later as a parse warning in worker logs.
   '.docx': Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+  '.xlsx': Buffer.from([0x50, 0x4b, 0x03, 0x04]),
 };
 
 function looksCorrupted(extension: string, body: Buffer): boolean {
@@ -36,6 +49,7 @@ interface PendingFile {
   fileName: string;
   body: Buffer;
   mimeType: string;
+  isManifest: boolean;
 }
 
 export async function documentRoutes(app: FastifyInstance) {
@@ -45,6 +59,7 @@ export async function documentRoutes(app: FastifyInstance) {
     const pending: PendingFile[] = [];
     const rejected: Array<{ file_name: string; reason: string }> = [];
     let packageBytes = 0;
+    let manifestSeen = false;
 
     // Phase 1: read and validate without storing anything. EVERY part counts
     // towards the package total, rejected ones included — otherwise the limit
@@ -55,10 +70,21 @@ export async function documentRoutes(app: FastifyInstance) {
       const body = await part.toBuffer();
       packageBytes += body.length;
 
-      const extension = ALLOWED.get(part.mimetype);
+      const isManifest = MANIFEST_TYPES.has(part.mimetype);
+      const extension = isManifest ? MANIFEST_TYPES.get(part.mimetype) : ALLOWED.get(part.mimetype);
       if (!extension) {
         rejected.push({ file_name: part.filename, reason: 'UNSUPPORTED_FORMAT' });
         continue;
+      }
+      // Two registries contradict each other and nothing here can pick the
+      // right one, so only the first in order is even considered — later
+      // ones are rejected outright, without spending a validity check on them.
+      if (isManifest) {
+        if (manifestSeen) {
+          rejected.push({ file_name: part.filename, reason: 'MULTIPLE_MANIFESTS' });
+          continue;
+        }
+        manifestSeen = true;
       }
       if (body.length > config.maxFileBytes) {
         rejected.push({ file_name: part.filename, reason: 'FILE_TOO_LARGE' });
@@ -68,7 +94,7 @@ export async function documentRoutes(app: FastifyInstance) {
         rejected.push({ file_name: part.filename, reason: 'CORRUPTED_FILE' });
         continue;
       }
-      pending.push({ fileName: part.filename, body, mimeType: part.mimetype });
+      pending.push({ fileName: part.filename, body, mimeType: part.mimetype, isManifest });
     }
 
     // The spec rejects the PACKAGE, not the offending file. Nothing has been
@@ -101,8 +127,25 @@ export async function documentRoutes(app: FastifyInstance) {
             storageKey: key,
             sizeBytes: file.body.length,
             mimeType: file.mimeType,
+            // doc_stage stays null: a registry describes the package, it
+            // does not belong to a documentation stage itself, which is
+            // exactly what keeps it out of stage completeness counts.
           },
         });
+        if (file.isManifest) {
+          // The worker locates the registry's bytes for parsing by this
+          // hash, via storage_key on the matching files row.
+          try {
+            await prisma.process.update({
+              where: { id: process.id },
+              data: { manifestUploaded: true, inputManifestHash: hash },
+            });
+          } catch (error) {
+            // The file itself is already stored and accepted; failing to
+            // flag the process must not undo that.
+            request.log.error({ file_name: file.fileName, err: error }, 'failed to flag manifest on process');
+          }
+        }
         accepted.push({ file_id: record.id, file_name: record.fileName, sha256: hash });
       } catch (error) {
         // The unique key is what forbids duplicates, not a lookup before the

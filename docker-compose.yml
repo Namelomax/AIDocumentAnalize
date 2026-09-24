@@ -102,6 +102,10 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-inspector}:${POSTGRES_PASSWORD:-inspector}@postgres:5432/${POSTGRES_DB:-inspector}
       RABBITMQ_URL: ${RABBITMQ_URL:-amqp://inspector:inspector@rabbitmq:5672/}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
+      MINIO_BUCKET: ${MINIO_BUCKET:-documents}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-inspector}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-inspector123}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       TASK_QUEUE: ${TASK_QUEUE:-inspector.tasks}
     depends_on:
