@@ -16,7 +16,7 @@ VALID_APPROVALS = {"DRAFT", "APPROVED", "FOR_CONSTRUCTION", "SUPERSEDED", "CANCE
 
 COLUMN_ALIASES = {
     "object_id": {"object_id", "objectid", "объект", "объект_id", "id объекта"},
-    "file_name": {"file_name", "filename", "имя файла", "файл", "наименование файла"},
+    "file_name": {"file_name", "filename", "file name", "имя файла", "файл", "наименование файла"},
     "sha256": {"sha256", "sha-256", "хеш", "контрольная сумма"},
     "doc_stage": {"doc_stage", "stage", "стадия", "вид документации"},
     "discipline": {"discipline", "марка", "раздел", "дисциплина"},
@@ -55,22 +55,34 @@ class ManifestParseResult:
 
 
 def _canonical(header: str) -> str | None:
-    norm = header.strip().lower().replace(" ", " ")
+    # Registries exported from Word or Excel routinely carry non-breaking
+    # spaces in their headers; without this they match nothing.
+    norm = header.strip().replace("\xa0", " ").lower()
+    norm = " ".join(norm.split())
     for canonical, aliases in COLUMN_ALIASES.items():
         if norm in aliases:
             return canonical
     return None
 
 
-def _parse_date(value: str | None) -> date | None:
-    if not value:
-        return None
-    for fmt in ("%Y-%m-%d", "%d.%m.%Y", "%d/%m/%Y"):
+_DATE_FORMATS = ("%Y-%m-%d", "%d.%m.%Y", "%d/%m/%Y")
+
+
+def _parse_date(value: str | None) -> tuple[date | None, bool]:
+    """Returns (parsed date, recognised).
+
+    A date we cannot read must never pass as "no date": approval_date decides
+    which of two revisions is the authoritative one, so losing it silently
+    would let the wrong document become the reference.
+    """
+    if not value or not value.strip():
+        return None, True
+    for fmt in _DATE_FORMATS:
         try:
-            return datetime.strptime(value.strip(), fmt).date()
+            return datetime.strptime(value.strip(), fmt).date(), True
         except ValueError:
             continue
-    return None
+    return None, False
 
 
 def _rows_from_csv(raw: bytes) -> list[dict[str, str]]:
@@ -120,11 +132,31 @@ def parse_manifest(raw: bytes, filename: str) -> ManifestParseResult:
         result.errors.append("manifest is empty")
         return result
 
-    mapping = {}
-    for header in rows[0].keys():
+    # JSON rows are arbitrary dicts and need not share a key set, so the
+    # header map is built from every row, not just the first one.
+    headers: list[str] = []
+    for row in rows:
+        for header in row.keys():
+            if header not in headers:
+                headers.append(header)
+
+    mapping: dict[str, str] = {}
+    claimed: dict[str, str] = {}
+    for header in headers:
         canonical = _canonical(header)
-        if canonical:
-            mapping[header] = canonical
+        if not canonical:
+            continue
+        if canonical in claimed:
+            result.errors.append(
+                f"columns {claimed[canonical]!r} and {header!r} both mean "
+                f"{canonical!r}; cannot tell which value is authoritative"
+            )
+            continue
+        claimed[canonical] = header
+        mapping[header] = canonical
+
+    if result.errors:
+        return result
 
     missing = [c for c in REQUIRED if c not in mapping.values()]
     if missing:
@@ -133,6 +165,11 @@ def parse_manifest(raw: bytes, filename: str) -> ManifestParseResult:
 
     for index, row in enumerate(rows, start=2):
         values = {mapping[h]: (v or "").strip() for h, v in row.items() if h in mapping}
+
+        absent = [c for c in REQUIRED if not values.get(c)]
+        if absent:
+            result.errors.append(f"row {index}: empty required columns: {', '.join(absent)}")
+            continue
 
         stage = values.get("doc_stage", "").upper()
         if stage not in VALID_STAGES:
@@ -144,6 +181,13 @@ def parse_manifest(raw: bytes, filename: str) -> ManifestParseResult:
             result.errors.append(f"row {index}: unknown approval_status {approval!r}")
             continue
 
+        approval_date, date_recognised = _parse_date(values.get("approval_date"))
+        if not date_recognised:
+            result.errors.append(
+                f"row {index}: unrecognised approval_date "
+                f"{values.get('approval_date')!r}; expected one of {', '.join(_DATE_FORMATS)}"
+            )
+
         result.entries.append(ManifestEntry(
             file_name=values["file_name"],
             object_id=values["object_id"],
@@ -152,7 +196,7 @@ def parse_manifest(raw: bytes, filename: str) -> ManifestParseResult:
             document_code=values.get("document_code") or None,
             revision=values.get("revision") or None,
             approval_status=approval,
-            approval_date=_parse_date(values.get("approval_date")),
+            approval_date=approval_date,
             sheet_page_range=values.get("sheet_page_range") or None,
             predecessor_id=values.get("predecessor_id") or None,
             signature_status=values.get("signature_status") or None,
