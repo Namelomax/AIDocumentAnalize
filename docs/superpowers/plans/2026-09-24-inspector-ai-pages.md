@@ -400,6 +400,23 @@ def test_threshold_decides_what_counts_as_a_scan():
     assert pages[0].needs_ocr is True
 
 
+def test_rotation_is_honoured_on_the_real_extraction_path():
+    """The gate that matters, applied where production code actually runs.
+
+    The same check exists in test_geometry.py, but there it proves the test
+    fixture applies the rotation. Only this one proves extract_pages does, and
+    extract_pages is what fills the database the inspector's highlights are
+    drawn from.
+    """
+    positions = {}
+    for rotation in (0, 90, 180, 270):
+        pages = extract_pages(_one_page_pdf("MARKER", rotation=rotation))
+        box = pages[0].blocks[0].box
+        positions[rotation] = (round(box.x0, 2), round(box.y0, 2))
+
+    assert len(set(positions.values())) == 4, positions
+
+
 @pytest.mark.skipif(not REFERENCE_PDF.exists(), reason="reference package is not in the checkout")
 def test_reads_the_reference_package_without_ocr():
     """The architecture's central assumption, checked against the real file.
@@ -480,6 +497,13 @@ def extract_pages(raw: bytes, scan_char_threshold: int = 100) -> list[ExtractedP
         for index, page in enumerate(document, start=1):
             rect = page.rect
             page_box = (rect.x0, rect.y0, rect.x1, rect.y1)
+            # get_text reports block boxes in the page's UNROTATED space while
+            # page.rect already describes the rotated one. Normalizing the raw
+            # box against that rect is the silent defect this whole stage is
+            # built to avoid: measured on PyMuPDF 1.28.2 the raw box is byte
+            # for byte identical across all four /Rotate values, so 0 and 180
+            # come out in the same place, and so do 90 and 270.
+            rotation_matrix = page.rotation_matrix
 
             blocks: list[ExtractedBlock] = []
             char_count = 0
@@ -492,10 +516,13 @@ def extract_pages(raw: bytes, scan_char_threshold: int = 100) -> list[ExtractedP
                 if not text.strip():
                     continue
                 char_count += len(text.strip())
+                displayed = pymupdf.Rect(block["bbox"]) * rotation_matrix
                 blocks.append(ExtractedBlock(
                     block_no=len(blocks),
                     text=text,
-                    box=normalize_box(tuple(block["bbox"]), page_box),
+                    box=normalize_box(
+                        (displayed.x0, displayed.y0, displayed.x1, displayed.y1), page_box
+                    ),
                 ))
 
             pages.append(ExtractedPage(
@@ -514,7 +541,7 @@ def extract_pages(raw: bytes, scan_char_threshold: int = 100) -> list[ExtractedP
 - [ ] **Step 5: Убедиться, что тесты проходят**
 
 Run: `cd services/worker && .venv/Scripts/python.exe -m pytest tests/test_extract.py -q`
-Expected: `5 passed`
+Expected: `6 passed`
 
 - [ ] **Step 6: Commit**
 
