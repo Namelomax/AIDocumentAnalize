@@ -145,7 +145,7 @@ services:
       retries: 20
 
   minio:
-    image: minio/minio:latest
+    image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
@@ -740,6 +740,27 @@ def test_file_of_another_stage_is_not_used():
     assert result.status == "MISSING_EVIDENCE"
 
 
+def test_unreadable_newer_revision_blocks_the_stale_one():
+    # f2 явно заменяет f1, но нечитаем. Старая редакция НЕ может стать эталоном:
+    # достоверно определить актуальный источник нельзя.
+    files = [
+        mk("f1", approval_date=date(2026, 1, 1)),
+        mk("f2", approval_date=date(2026, 6, 1), predecessor_id="f1", readable=False),
+    ]
+    result = select_source_revision(files, "PD", "АР")
+    assert result.status == "NOT_COMPARABLE"
+    assert result.file_id is None
+
+
+def test_unreadable_draft_does_not_block_an_approved_revision():
+    # черновик не может быть эталоном в принципе, поэтому его нечитаемость
+    # не должна мешать выбрать утверждённую редакцию
+    files = [mk("f1"), mk("f2", approval_status="DRAFT", readable=False)]
+    result = select_source_revision(files, "PD", "АР")
+    assert result.status == "COMPLETE"
+    assert result.file_id == "f1"
+
+
 def test_later_approval_date_wins_when_chain_is_explicit():
     files = [
         mk("f1", approval_date=date(2026, 1, 1)),
@@ -819,12 +840,6 @@ def select_source_revision(
         return SourceSelection(None, "MISSING_EVIDENCE",
                                "no file for the requested stage and discipline")
 
-    unreadable = [f for f in applicable if not f.readable]
-    if unreadable and len(unreadable) == len(applicable):
-        return SourceSelection(None, "NOT_COMPARABLE",
-                               "every applicable file is unreadable")
-
-    applicable = [f for f in applicable if f.readable]
     applicable = [f for f in applicable if f.approval_status not in EXCLUDED_STATUSES]
 
     if not applicable:
@@ -832,8 +847,19 @@ def select_source_revision(
                                "all revisions are cancelled or superseded")
 
     # A file that some other file names as its predecessor has been replaced.
+    # The chain is built over every applicable file, readable or not. Dropping
+    # unreadable files first would erase the evidence that a newer revision
+    # exists and let the superseded one pass as the reference — the exact
+    # failure this function exists to prevent.
     superseded_ids = {f.predecessor_id for f in applicable if f.predecessor_id}
     current = [f for f in applicable if f.file_id not in superseded_ids]
+
+    # An unreadable draft can never be the reference, so it does not block
+    # anything. An unreadable approved revision does: it may well be the
+    # authoritative one, and we cannot tell.
+    if any(not f.readable and f.approval_status in APPROVED_STATUSES for f in current):
+        return SourceSelection(None, "NOT_COMPARABLE",
+                               "the current approved revision cannot be read")
 
     approved = [f for f in current if f.approval_status in APPROVED_STATUSES]
 
@@ -934,6 +960,32 @@ def test_stage_statuses_are_reported_per_stage():
     expected = {"PD": 1, "RD": 15, "ID": 3}
     result = {c.stage: c.status for c in compute_completeness(files, expected)}
     assert result == {"PD": "UPLOADED", "RD": "PARTIAL", "ID": "MISSING"}
+
+
+def test_stage_expected_as_zero_is_not_applicable_not_missing():
+    # заказчик указал в реестре, что стадия к объекту не применима.
+    # Это не то же самое, что «документа не хватает».
+    files = [mk("a", stage="PD"), mk("b", stage="RD")]
+    expected = {"PD": 1, "RD": 1, "ID": 0}
+    result = {c.stage: c.status for c in compute_completeness(files, expected)}
+    assert result["ID"] == "NOT_APPLICABLE"
+
+
+def test_files_uploaded_for_a_stage_expected_as_zero_still_count():
+    files = [mk("a", stage="PD"), mk("c", stage="ID")]
+    expected = {"PD": 1, "RD": 0, "ID": 0}
+    result = {c.stage: c.status for c in compute_completeness(files, expected)}
+    assert result["ID"] == "UPLOADED"
+    assert result["RD"] == "NOT_APPLICABLE"
+
+
+def test_empty_package_is_rejected_instead_of_reported_as_single_stage():
+    # ни одной стадии не загружено. Вернуть SINGLE_ONLY значило бы солгать,
+    # что загружена ровно одна.
+    import pytest
+
+    with pytest.raises(ValueError):
+        determine_scenario(compute_completeness([], None))
 ```
 
 - [ ] **Step 2: Запустить тесты и убедиться, что они падают**
@@ -961,7 +1013,7 @@ STAGES = ("PD", "RD", "ID")
 @dataclass(frozen=True)
 class StageCompleteness:
     stage: str
-    status: str  # UPLOADED | PARTIAL | MISSING
+    status: str  # UPLOADED | PARTIAL | MISSING | NOT_APPLICABLE
     uploaded: int
     expected: int | None
 
@@ -972,7 +1024,12 @@ def compute_completeness(files, expected: dict[str, int] | None) -> list[StageCo
         uploaded = sum(1 for f in files if f.doc_stage == stage)
         want = expected.get(stage) if expected else None
 
-        if uploaded == 0:
+        # A registry that declares zero expected files says the stage does not
+        # apply to this object. That is not the same as a document being
+        # absent, and reporting it as MISSING would invent a gap.
+        if want == 0 and uploaded == 0:
+            status = "NOT_APPLICABLE"
+        elif uploaded == 0:
             status = "MISSING"
         elif want is not None and uploaded < want:
             status = "PARTIAL"
@@ -990,6 +1047,12 @@ def determine_scenario(completeness: list[StageCompleteness]) -> str:
         return "PARTIALLY_LOADED"
 
     present = {s for s in STAGES if by_stage[s].status == "UPLOADED"}
+
+    # Falling through to SINGLE_ONLY here would claim exactly one stage was
+    # uploaded when none was. The caller must not reach scenario detection
+    # with an empty package.
+    if not present:
+        raise ValueError("no documentation stage was uploaded")
 
     if present == {"PD", "RD", "ID"}:
         return "FULL"
@@ -1103,6 +1166,49 @@ def test_reports_missing_required_column():
     result = parse_manifest(raw, "m.csv")
 
     assert any("file_name" in e for e in result.errors)
+
+
+def test_json_row_without_a_required_key_does_not_kill_the_parse():
+    # ключи в JSON-записях не обязаны совпадать: вторая запись без file_name
+    # должна дать ошибку строки, а не уронить разбор целиком
+    payload = json.dumps([
+        {"object_id": "OBJ-1", "file_name": "a.pdf", "doc_stage": "PD"},
+        {"object_id": "OBJ-2", "doc_stage": "PD"},
+    ]).encode()
+    result = parse_manifest(payload, "m.json")
+
+    assert len(result.entries) == 1
+    assert result.entries[0].file_name == "a.pdf"
+    assert any("row 3" in e and "file_name" in e for e in result.errors)
+
+
+def test_unrecognised_approval_date_is_reported_not_swallowed():
+    # дата утверждения решает, какая из двух редакций актуальна.
+    # Молча потерять её нельзя.
+    raw = ("object_id,file_name,doc_stage,approval_date\n"
+           "OBJ-1,a.pdf,PD,15 January 2026\n").encode()
+    result = parse_manifest(raw, "m.csv")
+
+    assert any("approval_date" in e for e in result.errors)
+
+
+def test_non_breaking_space_in_header_is_normalised():
+    raw = "object_id,file name,doc_stage\nOBJ-1,a.pdf,PD\n".encode("utf-8")
+    result = parse_manifest(raw, "m.csv")
+
+    assert result.errors == []
+    assert result.entries[0].file_name == "a.pdf"
+
+
+def test_two_columns_meaning_the_same_field_are_rejected():
+    # 'revision' и 'изм' — синонимы одного поля. Молча взять одно из двух
+    # значений значит потерять второе без следа.
+    raw = ("object_id,file_name,doc_stage,revision,изм\n"
+           "OBJ-1,a.pdf,PD,7,9\n").encode("utf-8")
+    result = parse_manifest(raw, "m.csv")
+
+    assert result.entries == []
+    assert any("revision" in e for e in result.errors)
 ```
 
 - [ ] **Step 3: Запустить тесты и убедиться, что они падают**
@@ -1134,7 +1240,11 @@ VALID_APPROVALS = {"DRAFT", "APPROVED", "FOR_CONSTRUCTION", "SUPERSEDED", "CANCE
 
 COLUMN_ALIASES = {
     "object_id": {"object_id", "objectid", "объект", "объект_id", "id объекта"},
-    "file_name": {"file_name", "filename", "имя файла", "файл", "наименование файла"},
+    # "file name" через пробел нужен обязательно: _canonical приводит
+    # неразрывный пробел к обычному, и заголовок "file<NBSP>name" без этого
+    # синонима не совпал бы ни с чем.
+    "file_name": {"file_name", "file name", "filename", "имя файла", "файл",
+                  "наименование файла"},
     "sha256": {"sha256", "sha-256", "хеш", "контрольная сумма"},
     "doc_stage": {"doc_stage", "stage", "стадия", "вид документации"},
     "discipline": {"discipline", "марка", "раздел", "дисциплина"},
@@ -1173,22 +1283,34 @@ class ManifestParseResult:
 
 
 def _canonical(header: str) -> str | None:
-    norm = header.strip().lower().replace(" ", " ")
+    # Registries exported from Word or Excel routinely carry non-breaking
+    # spaces in their headers; without this they match nothing.
+    norm = header.strip().replace("\xa0", " ").lower()
+    norm = " ".join(norm.split())
     for canonical, aliases in COLUMN_ALIASES.items():
         if norm in aliases:
             return canonical
     return None
 
 
-def _parse_date(value: str | None) -> date | None:
-    if not value:
-        return None
-    for fmt in ("%Y-%m-%d", "%d.%m.%Y", "%d/%m/%Y"):
+_DATE_FORMATS = ("%Y-%m-%d", "%d.%m.%Y", "%d/%m/%Y")
+
+
+def _parse_date(value: str | None) -> tuple[date | None, bool]:
+    """Returns (parsed date, recognised).
+
+    A date we cannot read must never pass as "no date": approval_date decides
+    which of two revisions is the authoritative one, so losing it silently
+    would let the wrong document become the reference.
+    """
+    if not value or not value.strip():
+        return None, True
+    for fmt in _DATE_FORMATS:
         try:
-            return datetime.strptime(value.strip(), fmt).date()
+            return datetime.strptime(value.strip(), fmt).date(), True
         except ValueError:
             continue
-    return None
+    return None, False
 
 
 def _rows_from_csv(raw: bytes) -> list[dict[str, str]]:
@@ -1238,11 +1360,31 @@ def parse_manifest(raw: bytes, filename: str) -> ManifestParseResult:
         result.errors.append("manifest is empty")
         return result
 
-    mapping = {}
-    for header in rows[0].keys():
+    # JSON rows are arbitrary dicts and need not share a key set, so the
+    # header map is built from every row, not just the first one.
+    headers: list[str] = []
+    for row in rows:
+        for header in row.keys():
+            if header not in headers:
+                headers.append(header)
+
+    mapping: dict[str, str] = {}
+    claimed: dict[str, str] = {}
+    for header in headers:
         canonical = _canonical(header)
-        if canonical:
-            mapping[header] = canonical
+        if not canonical:
+            continue
+        if canonical in claimed:
+            result.errors.append(
+                f"columns {claimed[canonical]!r} and {header!r} both mean "
+                f"{canonical!r}; cannot tell which value is authoritative"
+            )
+            continue
+        claimed[canonical] = header
+        mapping[header] = canonical
+
+    if result.errors:
+        return result
 
     missing = [c for c in REQUIRED if c not in mapping.values()]
     if missing:
@@ -1251,6 +1393,11 @@ def parse_manifest(raw: bytes, filename: str) -> ManifestParseResult:
 
     for index, row in enumerate(rows, start=2):
         values = {mapping[h]: (v or "").strip() for h, v in row.items() if h in mapping}
+
+        absent = [c for c in REQUIRED if not values.get(c)]
+        if absent:
+            result.errors.append(f"row {index}: empty required columns: {', '.join(absent)}")
+            continue
 
         stage = values.get("doc_stage", "").upper()
         if stage not in VALID_STAGES:
@@ -1262,6 +1409,13 @@ def parse_manifest(raw: bytes, filename: str) -> ManifestParseResult:
             result.errors.append(f"row {index}: unknown approval_status {approval!r}")
             continue
 
+        approval_date, date_recognised = _parse_date(values.get("approval_date"))
+        if not date_recognised:
+            result.errors.append(
+                f"row {index}: unrecognised approval_date "
+                f"{values.get('approval_date')!r}; expected one of {', '.join(_DATE_FORMATS)}"
+            )
+
         result.entries.append(ManifestEntry(
             file_name=values["file_name"],
             object_id=values["object_id"],
@@ -1270,7 +1424,7 @@ def parse_manifest(raw: bytes, filename: str) -> ManifestParseResult:
             document_code=values.get("document_code") or None,
             revision=values.get("revision") or None,
             approval_status=approval,
-            approval_date=_parse_date(values.get("approval_date")),
+            approval_date=approval_date,
             sheet_page_range=values.get("sheet_page_range") or None,
             predecessor_id=values.get("predecessor_id") or None,
             signature_status=values.get("signature_status") or None,
@@ -2237,7 +2391,33 @@ curl -fsS http://localhost:3000/api/v1/health
 
 Ожидается: `{"status":"ok","service":"api"}`. Это репетиция того, как решение будут запускать на стенде.
 
-- [ ] **Step 7: Коммит**
+- [ ] **Step 7: Запинить все сторонние образы по digest**
+
+Решение запускают на стенде офлайн, после дедлайна и без нас. Плавающий тег либо не подтянется, либо подтянет не тот образ, который мы тестировали. Все четыре сторонних образа должны быть зафиксированы по неизменяемому digest'у, а не по тегу.
+
+Снять фактические digest'ы с уже поднятых контейнеров:
+
+```bash
+for image in pgvector/pgvector:pg16 redis:7-alpine rabbitmq:3.13-management-alpine minio/minio:latest; do
+  docker image inspect "$image" --format '{{.RepoTags}} -> {{index .RepoDigests 0}}'
+done
+```
+
+Заменить в `docker-compose.yml` каждую строку `image:` на форму `image: <repo>@sha256:<digest>`, подставив полученные значения. Для `minio/minio` это обязательно: это единственный образ, объявленный через `latest`.
+
+- [ ] **Step 8: Проверить, что система поднимается на запиненных образах**
+
+```bash
+docker compose down -v
+docker compose up -d
+sleep 30
+docker compose ps
+curl -fsS http://localhost:3000/api/v1/health
+```
+
+Ожидается: все сервисы `running (healthy)`, health-эндпоинт отвечает. Если какой-то digest не резолвится — значит образ был подтянут из локального кеша и в реестре его нет; взять в этом случае явный версионный тег, а не возвращать `latest`.
+
+- [ ] **Step 9: Коммит**
 
 ```bash
 git add services/api/Dockerfile services/worker/Dockerfile docker-compose.yml tests/e2e
