@@ -117,6 +117,8 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
     healthcheck:
@@ -138,6 +140,9 @@ services:
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
+    ports:
+      - "5672:5672"
+      - "15672:15672"
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 10s
@@ -150,6 +155,9 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
     volumes:
       - ./data/minio:/data
     healthcheck:
@@ -187,7 +195,16 @@ git commit -m "chore: infrastructure skeleton with postgres, redis, rabbitmq, mi
 
 **Interfaces:**
 - Consumes: `DATABASE_URL` из Task 1
-- Produces: таблицы `users`, `objects`, `files`, `processes`, `protocols`, `checks`, `evidence_fragments`, `audit_log`; enum'ы `DocStage`, `ApprovalStatus`, `ProcessStatus`, `FindingStatus`, `CompletenessStatus`, `ReviewPriority`, `LoadScenario`
+- Produces: таблицы `users`, `objects`, `files`, `processes`, `audit_log`; enum'ы `DocStage`, `ApprovalStatus`, `ProcessStatus`, `FindingStatus`, `CompletenessStatus`, `ReviewPriority`, `UserRole`, `LoadScenario`.
+  Таблицы `protocols`, `checks` и `evidence_fragments` вместе с ограничением `confirmed_requires_inspector` создаются Планом 4 — там они впервые получают данные.
+
+**Подключение с хоста.** Миграции и тесты запускаются с хоста, а не из контейнера, поэтому им нужен адрес `localhost`, тогда как в корневом `.env` стоит имя сервиса Docker. Порты всех четырёх сервисов проброшены наружу (Task 1). Создайте `services/api/.env` — Prisma читает его сам — со строкой:
+
+```
+DATABASE_URL=postgresql://inspector:inspector@localhost:5432/inspector
+```
+
+Корневой `.env` не трогайте: он обслуживает контейнеры, где адресация идёт по именам сервисов. Файл `services/api/.env` попадает под общее правило `.env` в `.gitignore` и не коммитится.
 
 - [ ] **Step 1: Создать `services/api/package.json`**
 
