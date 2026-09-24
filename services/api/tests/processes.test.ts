@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import amqp from 'amqplib';
 import { buildServer } from '../src/server.js';
 import { prisma } from '../src/db.js';
 import { closeQueue, TASK_QUEUE } from '../src/queue.js';
+import * as queue from '../src/queue.js';
 import { config } from '../src/config.js';
 
 let objectId: string;
@@ -114,6 +115,55 @@ describe('process routes', () => {
 
     expect(second.statusCode).toBe(409);
     expect(second.json().error).toBe('ALREADY_STARTED');
+    await app.close();
+  });
+
+  it('rolls a process back to PENDING and returns 503 when publishing fails', async () => {
+    const publishSpy = vi
+      .spyOn(queue, 'publishTask')
+      .mockRejectedValueOnce(new Error('broker unreachable'));
+    const app = await buildServer();
+    const process = await makeProcess(1);
+
+    const res = await app.inject({
+      method: 'POST', url: `/api/v1/processes/${process.id}/start`,
+    });
+
+    expect(res.statusCode).toBe(503);
+    expect(res.json()).toEqual({ error: 'QUEUE_UNAVAILABLE' });
+
+    const stored = await prisma.process.findUniqueOrThrow({ where: { id: process.id } });
+    expect(stored.status).toBe('PENDING');
+
+    publishSpy.mockRestore();
+    await app.close();
+  });
+
+  it('lets a process be started again after a failed publish once the queue is back', async () => {
+    const publishSpy = vi
+      .spyOn(queue, 'publishTask')
+      .mockRejectedValueOnce(new Error('broker unreachable'));
+    const app = await buildServer();
+    const process = await makeProcess(1);
+
+    const failed = await app.inject({
+      method: 'POST', url: `/api/v1/processes/${process.id}/start`,
+    });
+    expect(failed.statusCode).toBe(503);
+    publishSpy.mockRestore();
+
+    await drainQueue();
+    const retried = await app.inject({
+      method: 'POST', url: `/api/v1/processes/${process.id}/start`,
+    });
+
+    expect(retried.statusCode).toBe(202);
+    expect(retried.json()).toMatchObject({ status: 'PARSING' });
+
+    const messages = await drainQueue();
+    expect(messages).toContainEqual({
+      type: 'process.start', process_id: process.id, object_id: objectId,
+    });
     await app.close();
   });
 });

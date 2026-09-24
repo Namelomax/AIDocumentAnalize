@@ -52,11 +52,24 @@ export async function processRoutes(app: FastifyInstance) {
       data: { status: 'PARSING' },
     });
 
-    await publishTask({
-      type: 'process.start',
-      process_id: process.id,
-      object_id: process.objectId,
-    });
+    // The status flip above and the publish below aren't one transaction:
+    // if the broker is unreachable, undo the flip so the process stays
+    // resumable from PENDING instead of stuck in PARSING with no task
+    // ever queued for it.
+    try {
+      await publishTask({
+        type: 'process.start',
+        process_id: process.id,
+        object_id: process.objectId,
+      });
+    } catch (err) {
+      request.log.error({ process_id: process.id, err }, 'failed to publish start task');
+      await prisma.process.update({
+        where: { id: process.id },
+        data: { status: 'PENDING' },
+      });
+      return reply.code(503).send({ error: 'QUEUE_UNAVAILABLE' });
+    }
 
     return reply.code(202).send({ process_id: process.id, status: 'PARSING' });
   });

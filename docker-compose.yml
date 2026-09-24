@@ -2,18 +2,19 @@ services:
   postgres:
     image: pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:-inspector}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-inspector}
+      POSTGRES_DB: ${POSTGRES_DB:-inspector}
     ports:
       - "5432:5432"
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-inspector} -d ${POSTGRES_DB:-inspector}"]
       interval: 5s
       timeout: 3s
       retries: 20
+    restart: unless-stopped
 
   redis:
     image: redis@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
@@ -22,12 +23,13 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+    restart: unless-stopped
 
   rabbitmq:
     image: rabbitmq@sha256:606d8c0d6b3c18d1da9afc53bc7cdb2a8d5486df91b5a9830e9e07626c9ae281
     environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-inspector}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:-inspector}
     ports:
       - "5672:5672"
       - "15672:15672"
@@ -36,13 +38,14 @@ services:
       interval: 10s
       timeout: 5s
       retries: 20
+    restart: unless-stopped
 
   minio:
     image: quay.io/minio/minio@sha256:a1ea29fa28355559ef137d71fc570e508a214ec84ff8083e39bc5428980b015e
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-inspector}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-inspector123}
     ports:
       - "9000:9000"
       - "9001:9001"
@@ -53,12 +56,28 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+    restart: unless-stopped
 
   api:
+    image: inspector-api:1.0.0
     build: ./services/api
-    env_file: .env
+    # No env_file: every variable below already carries its default, and a
+    # .env in the project root is still picked up for ${VAR:-default}
+    # interpolation. This also drops the Compose >= 2.24 requirement that the
+    # "required: false" form would put on the verification stand.
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-inspector}:${POSTGRES_PASSWORD:-inspector}@postgres:5432/${POSTGRES_DB:-inspector}
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://inspector:inspector@rabbitmq:5672/}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
+      MINIO_BUCKET: ${MINIO_BUCKET:-documents}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-inspector}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-inspector123}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      MAX_FILE_BYTES: ${MAX_FILE_BYTES:-52428800}
+      MAX_PACKAGE_BYTES: ${MAX_PACKAGE_BYTES:-209715200}
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      TASK_QUEUE: ${TASK_QUEUE:-inspector.tasks}
     ports:
       - "3000:3000"
     depends_on:
@@ -71,12 +90,21 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
 
   worker:
+    image: inspector-worker:1.0.0
     build: ./services/worker
-    env_file: .env
+    # No env_file: every variable below already carries its default, and a
+    # .env in the project root is still picked up for ${VAR:-default}
+    # interpolation. This also drops the Compose >= 2.24 requirement that the
+    # "required: false" form would put on the verification stand.
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-inspector}:${POSTGRES_PASSWORD:-inspector}@postgres:5432/${POSTGRES_DB:-inspector}
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://inspector:inspector@rabbitmq:5672/}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      TASK_QUEUE: ${TASK_QUEUE:-inspector.tasks}
     depends_on:
       postgres: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
+    restart: unless-stopped

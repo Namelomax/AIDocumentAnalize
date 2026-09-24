@@ -11,11 +11,49 @@ export const TASK_QUEUE = config.taskQueue;
 let connection: ChannelModel | null = null;
 let channel: Channel | null = null;
 
+// A broker restart or network blip leaves connection/channel dead. Without
+// these listeners the 'error' event (unhandled on an EventEmitter) would
+// crash the whole process, and without resetting the module state every
+// publish after that point would keep failing against a closed channel
+// until the API itself was restarted.
+// Written by hand rather than through the Fastify logger: this module has no
+// request to hang a logger off, and a broker failure still has to come out in
+// the one log shape the whole solution uses. A bare plain-text line would be
+// unparseable for whoever reads the stand's logs without us.
+function logQueueError(message: string, err: unknown): void {
+  process.stderr.write(JSON.stringify({
+    level: 'ERROR',
+    timestamp: new Date().toISOString(),
+    service: 'api',
+    request_id: null,
+    user_id: null,
+    message,
+    err: err instanceof Error ? { type: err.name, message: err.message } : String(err),
+  }) + '\n');
+}
+
+function forgetConnection(): void {
+  connection = null;
+  channel = null;
+}
+
 async function getChannel(): Promise<Channel> {
   if (channel) return channel;
   const openConnection = await amqp.connect(config.rabbitmqUrl);
+  openConnection.on('error', (err) => {
+    logQueueError('rabbitmq connection error', err);
+    forgetConnection();
+  });
+  openConnection.on('close', forgetConnection);
+
   const openChannel = await openConnection.createChannel();
+  openChannel.on('error', (err) => {
+    logQueueError('rabbitmq channel error', err);
+    forgetConnection();
+  });
+  openChannel.on('close', forgetConnection);
   await openChannel.assertQueue(TASK_QUEUE, { durable: true });
+
   connection = openConnection;
   channel = openChannel;
   return openChannel;
@@ -37,8 +75,13 @@ export async function publishTask(task: Task): Promise<void> {
 }
 
 export async function closeQueue(): Promise<void> {
-  await channel?.close();
-  await connection?.close();
+  // Closing the channel fires its 'close' listener, which nulls out the
+  // module state before we get to closing the connection below - capture
+  // both locally first so the connection actually gets closed.
+  const openChannel = channel;
+  const openConnection = connection;
+  await openChannel?.close();
+  await openConnection?.close();
   channel = null;
   connection = null;
 }
