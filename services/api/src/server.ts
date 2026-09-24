@@ -1,7 +1,9 @@
 import Fastify, { type FastifyInstance } from 'fastify';
+import multipart from '@fastify/multipart';
 import { config } from './config.js';
 import { loggerOptions } from './logger.js';
 import { healthRoutes } from './routes/health.js';
+import { documentRoutes } from './routes/documents.js';
 
 export async function buildServer(): Promise<FastifyInstance> {
   const app = Fastify({
@@ -9,7 +11,9 @@ export async function buildServer(): Promise<FastifyInstance> {
     genReqId: () => crypto.randomUUID(),
     requestIdLogLabel: 'request_id',
   });
+  await app.register(multipart, { limits: { fileSize: config.maxPackageBytes } });
   await app.register(healthRoutes);
+  await app.register(documentRoutes);
   return app;
 }
 
