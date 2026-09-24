@@ -287,12 +287,24 @@ enum FindingStatus {
   SUSPICION
 }
 
+/// Полнота доказательств по одному параметру Матрицы.
+/// Применяется к находкам; таблицы под них создаются Планом 4.
 enum CompletenessStatus {
   COMPLETE
   MISSING_EVIDENCE
   NOT_APPLICABLE
   NOT_COMPARABLE
   CLARIFICATION_REQUIRED
+}
+
+/// Полнота загрузки одной стадии документации — другой словарь и другой смысл.
+/// Значения обязаны совпадать с теми, что возвращает
+/// services/worker/app/domain/completeness.py.
+enum StageCompleteness {
+  UPLOADED
+  PARTIAL
+  MISSING
+  NOT_APPLICABLE
 }
 
 enum ReviewPriority {
@@ -380,9 +392,9 @@ model Process {
   objectId          String        @map("object_id")
   status            ProcessStatus @default(PENDING)
   scenario          LoadScenario?
-  pdCompleteness    String?       @map("pd_completeness")
-  rdCompleteness    String?       @map("rd_completeness")
-  idCompleteness    String?       @map("id_completeness")
+  pdCompleteness    StageCompleteness? @map("pd_completeness")
+  rdCompleteness    StageCompleteness? @map("rd_completeness")
+  idCompleteness    StageCompleteness? @map("id_completeness")
   manifestUploaded  Boolean       @default(false) @map("manifest_uploaded")
   inputManifestHash String?       @map("input_manifest_hash") @db.Char(64)
   createdAt         DateTime      @default(now()) @map("created_at")
@@ -584,8 +596,15 @@ export const loggerOptions = {
   },
   timestamp: () => `,"timestamp":"${new Date().toISOString()}"`,
   messageKey: 'message',
+  // ТЗ задаёт точный набор полей, по которым централизованное хранилище
+  // разбирает логи. user_id появляется здесь как null до задачи
+  // аутентификации, которая подменит его на настоящего пользователя:
+  // отсутствующее поле ломает разбор так же, как переименованное.
+  mixin: () => ({ user_id: null as string | null }),
 };
 ```
+
+Имя поля с идентификатором запроса задаётся не здесь, а опцией Fastify `requestIdLogLabel` (см. шаг сборки сервера): по умолчанию Pino пишет `reqId`, а ТЗ требует `request_id`.
 
 - [ ] **Step 6: Создать `src/db.ts`**
 
@@ -614,7 +633,11 @@ import { loggerOptions } from './logger.js';
 import { healthRoutes } from './routes/health.js';
 
 export async function buildServer(): Promise<FastifyInstance> {
-  const app = Fastify({ logger: loggerOptions, genReqId: () => crypto.randomUUID() });
+  const app = Fastify({
+    logger: loggerOptions,
+    genReqId: () => crypto.randomUUID(),
+    requestIdLogLabel: 'request_id',
+  });
   await app.register(healthRoutes);
   return app;
 }
@@ -1702,8 +1725,86 @@ describe('POST /api/v1/documents/upload', () => {
     expect(res.json().rejected[0].reason).toBe('DUPLICATE');
     await app.close();
   });
+
+  it('rejects xml whose content is not markup at all', async () => {
+    const app = await buildServer();
+    const { boundary, payload } = form([
+      { name: 'registry.xml', body: Buffer.from([0x00, 0x01, 0x02, 0x03]), type: 'application/xml' },
+    ]);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/documents/upload?object_id=${objectId}`,
+      headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+      payload,
+    });
+
+    expect(res.json().rejected[0].reason).toBe('CORRUPTED_FILE');
+    await app.close();
+  });
+
+  it('accepts xml that opens with a tag after a BOM', async () => {
+    const app = await buildServer();
+    const { boundary, payload } = form([
+      { name: 'ok.xml', body: Buffer.from('﻿\n  <registry/>', 'utf8'), type: 'application/xml' },
+    ]);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/documents/upload?object_id=${objectId}`,
+      headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+      payload,
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(res.json().accepted).toHaveLength(1);
+    await app.close();
+  });
+
+  it('rejects a file above the per-file limit', async () => {
+    const app = await buildServer();
+    const oversized = Buffer.concat([
+      Buffer.from('%PDF-1.7'),
+      Buffer.alloc(52_428_801 - 8),
+    ]);
+    const { boundary, payload } = form([
+      { name: 'huge.pdf', body: oversized, type: 'application/pdf' },
+    ]);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/documents/upload?object_id=${objectId}`,
+      headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+      payload,
+    });
+
+    expect(res.json().rejected[0].reason).toBe('FILE_TOO_LARGE');
+    await app.close();
+  });
+
+  it('creates no process when every file is rejected', async () => {
+    const app = await buildServer();
+    const before = await prisma.process.count({ where: { objectId } });
+
+    const { boundary, payload } = form([
+      { name: 'notes.txt', body: Buffer.from('plain'), type: 'text/plain' },
+    ]);
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/documents/upload?object_id=${objectId}`,
+      headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+      payload,
+    });
+
+    expect(res.statusCode).toBe(422);
+    expect(res.json().process_id).toBeUndefined();
+    expect(await prisma.process.count({ where: { objectId } })).toBe(before);
+    await app.close();
+  });
 });
 ```
+
+Проверка лимита пакета отдельным тестом не покрывается: он потребовал бы передать через `inject` более 200 МБ. Счётчик у обоих лимитов общий, и его поведение проверяется тестом на файл сверх лимита; сам отказ пакета проверяется в сквозном сценарии Task 11.
 
 - [ ] **Step 2: Запустить тесты и убедиться, что они падают**
 
@@ -1735,6 +1836,13 @@ const MAGIC: Record<string, Buffer> = {
 };
 
 function looksCorrupted(extension: string, body: Buffer): boolean {
+  if (extension === '.xml') {
+    // XML has no magic number, but a readable document always opens with a
+    // tag once the BOM and leading whitespace are gone. Without this, a file
+    // of random bytes declared as XML would be stored as a valid registry.
+    const text = body.toString('utf8').replace(/^﻿/, '').trimStart();
+    return !text.startsWith('<');
+  }
   const magic = MAGIC[extension];
   if (!magic) return false;
   return !body.subarray(0, magic.length).equals(magic);
@@ -1742,24 +1850,30 @@ function looksCorrupted(extension: string, body: Buffer): boolean {
 
 const querySchema = z.object({ object_id: z.string().uuid() });
 
+interface PendingFile {
+  fileName: string;
+  body: Buffer;
+  mimeType: string;
+}
+
 export async function documentRoutes(app: FastifyInstance) {
   app.post('/api/v1/documents/upload', async (request, reply) => {
     const { object_id: objectId } = querySchema.parse(request.query);
 
-    const process = await prisma.process.create({
-      data: { objectId, status: 'PENDING' },
-    });
-
-    const accepted: Array<{ file_id: string; file_name: string; sha256: string }> = [];
+    const pending: PendingFile[] = [];
     const rejected: Array<{ file_name: string; reason: string }> = [];
     let packageBytes = 0;
 
+    // Фаза 1: прочитать и проверить, ничего не сохраняя. В сумму пакета
+    // входит КАЖДАЯ часть, включая отклонённые: иначе лимит обходится
+    // файлами неподдерживаемого формата.
     for await (const part of request.parts()) {
       if (part.type !== 'file') continue;
 
       const body = await part.toBuffer();
-      const extension = ALLOWED.get(part.mimetype);
+      packageBytes += body.length;
 
+      const extension = ALLOWED.get(part.mimetype);
       if (!extension) {
         rejected.push({ file_name: part.filename, reason: 'UNSUPPORTED_FORMAT' });
         continue;
@@ -1768,46 +1882,79 @@ export async function documentRoutes(app: FastifyInstance) {
         rejected.push({ file_name: part.filename, reason: 'FILE_TOO_LARGE' });
         continue;
       }
-      packageBytes += body.length;
-      if (packageBytes > config.maxPackageBytes) {
-        rejected.push({ file_name: part.filename, reason: 'PACKAGE_TOO_LARGE' });
-        continue;
-      }
       if (looksCorrupted(extension, body)) {
         rejected.push({ file_name: part.filename, reason: 'CORRUPTED_FILE' });
         continue;
       }
+      pending.push({ fileName: part.filename, body, mimeType: part.mimetype });
+    }
 
-      const hash = sha256(body);
-      const existing = await prisma.fileRecord.findUnique({
-        where: { objectId_fileHash: { objectId, fileHash: hash } },
+    // ТЗ требует отклонять ПАКЕТ, а не отдельный файл. Сохранить ещё ничего
+    // не успели, поэтому откатывать нечего.
+    if (packageBytes > config.maxPackageBytes) {
+      return reply.code(413).send({
+        error: 'PACKAGE_TOO_LARGE',
+        limit_bytes: config.maxPackageBytes,
+        received_bytes: packageBytes,
       });
-      if (existing) {
-        rejected.push({ file_name: part.filename, reason: 'DUPLICATE' });
-        continue;
-      }
+    }
 
+    // Фаза 2: сохранить принятое.
+    const process = await prisma.process.create({
+      data: { objectId, status: 'PENDING' },
+    });
+    const accepted: Array<{ file_id: string; file_name: string; sha256: string }> = [];
+
+    for (const file of pending) {
+      const hash = sha256(file.body);
       const key = storageKeyFor(hash);
-      await putObject(key, body, part.mimetype);
+      try {
+        await putObject(key, file.body, file.mimeType);
+        const record = await prisma.fileRecord.create({
+          data: {
+            objectId,
+            processId: process.id,
+            fileName: file.fileName,
+            fileHash: hash,
+            storageKey: key,
+            sizeBytes: file.body.length,
+            mimeType: file.mimeType,
+          },
+        });
+        accepted.push({ file_id: record.id, file_name: record.fileName, sha256: hash });
+      } catch (error) {
+        // Запрет дубликата держит уникальный ключ базы, а не проверка перед
+        // вставкой: предварительный запрос всё равно проигрывает гонку двум
+        // одновременным загрузкам одного файла.
+        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+          rejected.push({ file_name: file.fileName, reason: 'DUPLICATE' });
+          continue;
+        }
+        // Сбой на одном файле не должен ронять весь пакет: остальные файлы
+        // уже сохранены, и пользователь обязан узнать, какие именно.
+        request.log.error({ file_name: file.fileName, err: error }, 'failed to store file');
+        rejected.push({ file_name: file.fileName, reason: 'INTERNAL_ERROR' });
+      }
+    }
 
-      const record = await prisma.fileRecord.create({
-        data: {
-          objectId,
-          processId: process.id,
-          fileName: part.filename,
-          fileHash: hash,
-          storageKey: key,
-          sizeBytes: body.length,
-          mimeType: part.mimetype,
-        },
-      });
-
-      accepted.push({ file_id: record.id, file_name: record.fileName, sha256: hash });
+    // Процесс без единого документа навсегда завис бы в списке проверок,
+    // неотличимый от идущего разбора.
+    if (accepted.length === 0) {
+      await prisma.process.delete({ where: { id: process.id } });
+      return reply.code(422).send({ accepted: [], rejected });
     }
 
     return reply.code(201).send({ process_id: process.id, accepted, rejected });
   });
 }
+```
+
+Код отклонения `INTERNAL_ERROR` — наш, его нет в перечне ТЗ: тот описывает причины отказа при проверке файла, а не отказ самой системы. В интерфейсе он показывается как «Ошибка обработки, повторите загрузку».
+
+Импорт `Prisma` добавляется к остальным:
+
+```typescript
+import { Prisma } from '@prisma/client';
 ```
 
 - [ ] **Step 4: Зарегистрировать multipart и маршруты в `src/server.ts`**
@@ -1823,7 +1970,13 @@ import { healthRoutes } from './routes/health.js';
 import { documentRoutes } from './routes/documents.js';
 
 export async function buildServer(): Promise<FastifyInstance> {
-  const app = Fastify({ logger: loggerOptions, genReqId: () => crypto.randomUUID() });
+  const app = Fastify({
+    logger: loggerOptions,
+    genReqId: () => crypto.randomUUID(),
+    // Не терять при переносе: без этого Pino пишет reqId вместо request_id,
+    // и формат лога перестаёт соответствовать ТЗ.
+    requestIdLogLabel: 'request_id',
+  });
   await app.register(multipart, { limits: { fileSize: config.maxPackageBytes } });
   await app.register(healthRoutes);
   await app.register(documentRoutes);
@@ -1853,8 +2006,9 @@ git commit -m "feat(api): document upload with format, size, corruption and dupl
 **Files:**
 - Create: `services/api/src/queue.ts`
 - Create: `services/worker/app/config.py`, `services/worker/app/logging_setup.py`, `services/worker/app/consumer.py`, `services/worker/app/main.py`
-- Modify: `services/api/src/routes/processes.ts` — эндпоинт запуска
 - Test: `services/api/tests/queue.test.ts`, `services/worker/tests/test_consumer.py`
+
+HTTP-маршруты процессов, которые вызывают `publishTask`, создаются в Task 11: до сборки всех сервисов их некому проверить сквозным путём.
 
 **Interfaces:**
 - Consumes: `config.rabbitmqUrl`
@@ -2279,15 +2433,233 @@ git commit -m "feat(api): construction object crud"
 ## Task 11: Сборка сервисов в compose и сквозная проверка
 
 **Files:**
+- Create: `services/api/src/routes/processes.ts`
 - Create: `services/api/Dockerfile`, `services/worker/Dockerfile`
+- Modify: `services/api/src/server.ts` — зарегистрировать `processRoutes`
 - Modify: `docker-compose.yml` — добавить `api` и `worker`
-- Test: `tests/e2e/test_upload_flow.sh`
+- Test: `services/api/tests/processes.test.ts`, `tests/e2e/test_upload_flow.sh`
+
+**Почему маршруты процессов здесь.** Task 9 создала `publishTask`, но ни один HTTP-маршрут её не вызывает: в работающей системе документ загружается, а задача воркеру не уходит. Замкнуть это звено имеет смысл именно тут, где поднимаются все сервисы сразу и сквозной путь можно проверить целиком.
 
 **Interfaces:**
 - Consumes: всё из Tasks 1–10
 - Produces: `docker compose up` поднимает систему; загруженный файл доходит до воркера
 
-- [ ] **Step 1: Создать `services/api/Dockerfile`**
+- [ ] **Step 1: Написать падающие тесты маршрутов процессов**
+
+`services/api/tests/processes.test.ts`:
+
+```typescript
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { randomUUID } from 'node:crypto';
+import amqp from 'amqplib';
+import { buildServer } from '../src/server.js';
+import { prisma } from '../src/db.js';
+import { closeQueue, TASK_QUEUE } from '../src/queue.js';
+import { config } from '../src/config.js';
+
+let objectId: string;
+
+beforeAll(async () => {
+  const object = await prisma.constructionObject.create({ data: { name: 'Process routes test' } });
+  objectId = object.id;
+});
+
+afterAll(async () => { await closeQueue(); });
+
+function hash64() {
+  return (randomUUID() + randomUUID()).replace(/-/g, '');
+}
+
+async function makeProcess(fileCount: number) {
+  const process = await prisma.process.create({ data: { objectId, status: 'PENDING' } });
+  for (let i = 0; i < fileCount; i += 1) {
+    await prisma.fileRecord.create({
+      data: {
+        objectId,
+        processId: process.id,
+        fileName: `sheet-${i}.pdf`,
+        fileHash: hash64(),
+        storageKey: `documents/xx/yy/${hash64()}`,
+        sizeBytes: 1024,
+        mimeType: 'application/pdf',
+      },
+    });
+  }
+  return process;
+}
+
+async function drainQueue(): Promise<unknown[]> {
+  const connection = await amqp.connect(config.rabbitmqUrl);
+  const channel = await connection.createChannel();
+  await channel.assertQueue(TASK_QUEUE, { durable: true });
+  const messages: unknown[] = [];
+  for (;;) {
+    const message = await channel.get(TASK_QUEUE, { noAck: true });
+    if (!message) break;
+    messages.push(JSON.parse(message.content.toString()));
+  }
+  await channel.close();
+  await connection.close();
+  return messages;
+}
+
+describe('process routes', () => {
+  it('returns 404 for an unknown process', async () => {
+    const app = await buildServer();
+    const res = await app.inject({ method: 'GET', url: `/api/v1/processes/${randomUUID()}` });
+    expect(res.statusCode).toBe(404);
+    await app.close();
+  });
+
+  it('reports status and file count', async () => {
+    const app = await buildServer();
+    const process = await makeProcess(2);
+
+    const res = await app.inject({ method: 'GET', url: `/api/v1/processes/${process.id}` });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ status: 'PENDING', files_count: 2 });
+    await app.close();
+  });
+
+  it('refuses to start a process with no files', async () => {
+    const app = await buildServer();
+    const process = await makeProcess(0);
+
+    const res = await app.inject({
+      method: 'POST', url: `/api/v1/processes/${process.id}/start`,
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toBe('NO_FILES_UPLOADED');
+    await app.close();
+  });
+
+  it('starts a process and publishes one task', async () => {
+    await drainQueue();
+    const app = await buildServer();
+    const process = await makeProcess(1);
+
+    const res = await app.inject({
+      method: 'POST', url: `/api/v1/processes/${process.id}/start`,
+    });
+
+    expect(res.statusCode).toBe(202);
+    expect(res.json()).toMatchObject({ status: 'PARSING' });
+
+    const messages = await drainQueue();
+    expect(messages).toContainEqual({
+      type: 'process.start', process_id: process.id, object_id: objectId,
+    });
+    await app.close();
+  });
+
+  it('refuses to start the same process twice', async () => {
+    const app = await buildServer();
+    const process = await makeProcess(1);
+
+    await app.inject({ method: 'POST', url: `/api/v1/processes/${process.id}/start` });
+    const second = await app.inject({
+      method: 'POST', url: `/api/v1/processes/${process.id}/start`,
+    });
+
+    expect(second.statusCode).toBe(409);
+    expect(second.json().error).toBe('ALREADY_STARTED');
+    await app.close();
+  });
+});
+```
+
+- [ ] **Step 2: Запустить тесты и убедиться, что они падают**
+
+```bash
+cd services/api && npm test -- tests/processes.test.ts
+```
+
+Ожидается: FAIL — маршруты не зарегистрированы, вместо 404 и 202 приходит 404 от самого Fastify на неизвестный путь, а тест запуска падает на статусе.
+
+- [ ] **Step 3: Реализовать `services/api/src/routes/processes.ts`**
+
+```typescript
+import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
+import { prisma } from '../db.js';
+import { publishTask } from '../queue.js';
+
+const paramsSchema = z.object({ process_id: z.string().uuid() });
+
+export async function processRoutes(app: FastifyInstance) {
+  app.get('/api/v1/processes/:process_id', async (request, reply) => {
+    const parsed = paramsSchema.safeParse(request.params);
+    if (!parsed.success) return reply.code(400).send({ error: 'VALIDATION_FAILED' });
+
+    const process = await prisma.process.findUnique({
+      where: { id: parsed.data.process_id },
+      include: { _count: { select: { files: true } } },
+    });
+    if (!process) return reply.code(404).send({ error: 'PROCESS_NOT_FOUND' });
+
+    return {
+      process_id: process.id,
+      object_id: process.objectId,
+      status: process.status,
+      scenario: process.scenario,
+      files_count: process._count.files,
+      updated_at: process.updatedAt,
+    };
+  });
+
+  app.post('/api/v1/processes/:process_id/start', async (request, reply) => {
+    const parsed = paramsSchema.safeParse(request.params);
+    if (!parsed.success) return reply.code(400).send({ error: 'VALIDATION_FAILED' });
+
+    const process = await prisma.process.findUnique({
+      where: { id: parsed.data.process_id },
+      include: { _count: { select: { files: true } } },
+    });
+    if (!process) return reply.code(404).send({ error: 'PROCESS_NOT_FOUND' });
+
+    // Checking a package with no documents would produce a protocol about
+    // files that were never uploaded.
+    if (process._count.files === 0) {
+      return reply.code(409).send({ error: 'NO_FILES_UPLOADED' });
+    }
+
+    // Publishing twice would run the whole pipeline twice over one package.
+    if (process.status !== 'PENDING') {
+      return reply.code(409).send({ error: 'ALREADY_STARTED', status: process.status });
+    }
+
+    await prisma.process.update({
+      where: { id: process.id },
+      data: { status: 'PARSING' },
+    });
+
+    await publishTask({
+      type: 'process.start',
+      process_id: process.id,
+      object_id: process.objectId,
+    });
+
+    return reply.code(202).send({ process_id: process.id, status: 'PARSING' });
+  });
+}
+```
+
+- [ ] **Step 4: Зарегистрировать маршруты в `src/server.ts`**
+
+Добавить импорт `import { processRoutes } from './routes/processes.js';` и строку `await app.register(processRoutes);` рядом с остальными регистрациями. Опцию `requestIdLogLabel: 'request_id'` не трогать.
+
+- [ ] **Step 5: Запустить тесты**
+
+```bash
+npm test
+```
+
+Ожидается: 15 passed — 10 существующих плюс пять новых.
+
+- [ ] **Step 6: Создать `services/api/Dockerfile`**
 
 ```dockerfile
 FROM node:20-slim AS build
@@ -2312,7 +2684,7 @@ EXPOSE 3000
 CMD ["sh", "-c", "npx prisma migrate deploy && node dist/server.js"]
 ```
 
-- [ ] **Step 2: Создать `services/worker/Dockerfile`**
+- [ ] **Step 7: Создать `services/worker/Dockerfile`**
 
 ```dockerfile
 FROM python:3.11-slim
@@ -2323,7 +2695,7 @@ COPY app ./app
 CMD ["python", "-m", "app.main"]
 ```
 
-- [ ] **Step 3: Добавить сервисы в `docker-compose.yml`**
+- [ ] **Step 8: Добавить сервисы в `docker-compose.yml`**
 
 ```yaml
   api:
@@ -2354,7 +2726,7 @@ CMD ["python", "-m", "app.main"]
       rabbitmq: { condition: service_healthy }
 ```
 
-- [ ] **Step 4: Написать сквозной тест `tests/e2e/test_upload_flow.sh`**
+- [ ] **Step 9: Написать сквозной тест `tests/e2e/test_upload_flow.sh`**
 
 ```bash
 #!/usr/bin/env bash
@@ -2378,14 +2750,35 @@ RESPONSE=$(curl -fsS -X POST "$API/documents/upload?object_id=$OBJECT_ID" \
 echo "$RESPONSE" | grep -q '"process_id"'
 echo "$RESPONSE" | grep -q '"accepted":\[{'
 
+PROCESS_ID=$(echo "$RESPONSE" | python -c 'import sys,json; print(json.load(sys.stdin)["process_id"])')
+
 echo "4. duplicate is rejected"
 curl -fsS -X POST "$API/documents/upload?object_id=$OBJECT_ID" \
   -F 'files=@/tmp/e2e.pdf;type=application/pdf' | grep -q 'DUPLICATE'
 
-echo "PASS"
+echo "5. process status is readable"
+curl -fsS "$API/processes/$PROCESS_ID" | grep -q '"status":"PENDING"'
+
+echo "6. starting the process publishes a task"
+curl -fsS -X POST "$API/processes/$PROCESS_ID/start" | grep -q '"status":"PARSING"'
+
+echo "7. the worker actually received it"
+# Единственная проверка, доказывающая, что две половины системы соединены:
+# всё остальное проверяет только свою сторону границы.
+for _ in $(seq 1 20); do
+  if docker compose logs worker 2>/dev/null | grep -q "$PROCESS_ID"; then
+    echo "PASS"
+    exit 0
+  fi
+  sleep 1
+done
+
+echo "FAIL: worker never logged process $PROCESS_ID" >&2
+docker compose logs --tail 50 worker >&2
+exit 1
 ```
 
-- [ ] **Step 5: Запустить сквозной тест**
+- [ ] **Step 10: Запустить сквозной тест**
 
 ```bash
 docker compose up -d --build
@@ -2394,9 +2787,9 @@ chmod +x tests/e2e/test_upload_flow.sh
 ./tests/e2e/test_upload_flow.sh
 ```
 
-Ожидается: вывод `PASS`. В логах воркера (`docker compose logs worker`) видна строка `"message": "task routed"` со статусом `process.start`.
+Ожидается: вывод `PASS`. Шаг 7 скрипта — единственная проверка во всём плане, доказывающая, что Node и Python действительно соединены: он ждёт появления идентификатора процесса в логах воркера и падает с выводом последних строк лога, если тот не пришёл за двадцать секунд. Остальные тесты проверяют только свою сторону границы.
 
-- [ ] **Step 6: Проверить холодный старт без кеша и без сети**
+- [ ] **Step 11: Проверить холодный старт без кеша и без сети**
 
 ```bash
 docker compose down -v
@@ -2408,7 +2801,7 @@ curl -fsS http://localhost:3000/api/v1/health
 
 Ожидается: `{"status":"ok","service":"api"}`. Это репетиция того, как решение будут запускать на стенде.
 
-- [ ] **Step 7: Запинить все сторонние образы по digest**
+- [ ] **Step 12: Запинить все сторонние образы по digest**
 
 Решение запускают на стенде офлайн, после дедлайна и без нас. Плавающий тег либо не подтянется, либо подтянет не тот образ, который мы тестировали. Все четыре сторонних образа должны быть зафиксированы по неизменяемому digest'у, а не по тегу.
 
@@ -2422,7 +2815,7 @@ done
 
 Заменить в `docker-compose.yml` каждую строку `image:` на форму `image: <repo>@sha256:<digest>`, подставив полученные значения. Для `minio/minio` это обязательно: это единственный образ, объявленный через `latest`.
 
-- [ ] **Step 8: Проверить, что система поднимается на запиненных образах**
+- [ ] **Step 13: Проверить, что система поднимается на запиненных образах**
 
 ```bash
 docker compose down -v
@@ -2434,7 +2827,7 @@ curl -fsS http://localhost:3000/api/v1/health
 
 Ожидается: все сервисы `running (healthy)`, health-эндпоинт отвечает. Если какой-то digest не резолвится — значит образ был подтянут из локального кеша и в реестре его нет; взять в этом случае явный версионный тег, а не возвращать `latest`.
 
-- [ ] **Step 9: Коммит**
+- [ ] **Step 14: Коммит**
 
 ```bash
 git add services/api/Dockerfile services/worker/Dockerfile docker-compose.yml tests/e2e
