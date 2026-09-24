@@ -70,6 +70,27 @@ def test_file_of_another_stage_is_not_used():
     assert result.status == "MISSING_EVIDENCE"
 
 
+def test_unreadable_newer_revision_blocks_the_stale_one():
+    # f2 явно заменяет f1, но нечитаем. Старая редакция НЕ может стать эталоном:
+    # достоверно определить актуальный источник нельзя.
+    files = [
+        mk("f1", approval_date=date(2026, 1, 1)),
+        mk("f2", approval_date=date(2026, 6, 1), predecessor_id="f1", readable=False),
+    ]
+    result = select_source_revision(files, "PD", "АР")
+    assert result.status == "NOT_COMPARABLE"
+    assert result.file_id is None
+
+
+def test_unreadable_draft_does_not_block_an_approved_revision():
+    # черновик не может быть эталоном в принципе, поэтому его нечитаемость
+    # не должна мешать выбрать утверждённую редакцию
+    files = [mk("f1"), mk("f2", approval_status="DRAFT", readable=False)]
+    result = select_source_revision(files, "PD", "АР")
+    assert result.status == "COMPLETE"
+    assert result.file_id == "f1"
+
+
 def test_later_approval_date_wins_when_chain_is_explicit():
     files = [
         mk("f1", approval_date=date(2026, 1, 1)),

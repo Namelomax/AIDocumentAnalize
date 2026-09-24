@@ -45,12 +45,6 @@ def select_source_revision(
         return SourceSelection(None, "MISSING_EVIDENCE",
                                "no file for the requested stage and discipline")
 
-    unreadable = [f for f in applicable if not f.readable]
-    if unreadable and len(unreadable) == len(applicable):
-        return SourceSelection(None, "NOT_COMPARABLE",
-                               "every applicable file is unreadable")
-
-    applicable = [f for f in applicable if f.readable]
     applicable = [f for f in applicable if f.approval_status not in EXCLUDED_STATUSES]
 
     if not applicable:
@@ -58,8 +52,19 @@ def select_source_revision(
                                "all revisions are cancelled or superseded")
 
     # A file that some other file names as its predecessor has been replaced.
+    # The chain is built over every applicable file, readable or not. Dropping
+    # unreadable files first would erase the evidence that a newer revision
+    # exists and let the superseded one pass as the reference — the exact
+    # failure this function exists to prevent.
     superseded_ids = {f.predecessor_id for f in applicable if f.predecessor_id}
     current = [f for f in applicable if f.file_id not in superseded_ids]
+
+    # An unreadable draft can never be the reference, so it does not block
+    # anything. An unreadable approved revision does: it may well be the
+    # authoritative one, and we cannot tell.
+    if any(not f.readable and f.approval_status in APPROVED_STATUSES for f in current):
+        return SourceSelection(None, "NOT_COMPARABLE",
+                               "the current approved revision cannot be read")
 
     approved = [f for f in current if f.approval_status in APPROVED_STATUSES]
 

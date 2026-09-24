@@ -41,3 +41,29 @@ def test_stage_statuses_are_reported_per_stage():
     expected = {"PD": 1, "RD": 15, "ID": 3}
     result = {c.stage: c.status for c in compute_completeness(files, expected)}
     assert result == {"PD": "UPLOADED", "RD": "PARTIAL", "ID": "MISSING"}
+
+
+def test_stage_expected_as_zero_is_not_applicable_not_missing():
+    # заказчик указал в реестре, что стадия к объекту не применима.
+    # Это не то же самое, что «документа не хватает».
+    files = [mk("a", stage="PD"), mk("b", stage="RD")]
+    expected = {"PD": 1, "RD": 1, "ID": 0}
+    result = {c.stage: c.status for c in compute_completeness(files, expected)}
+    assert result["ID"] == "NOT_APPLICABLE"
+
+
+def test_files_uploaded_for_a_stage_expected_as_zero_still_count():
+    files = [mk("a", stage="PD"), mk("c", stage="ID")]
+    expected = {"PD": 1, "RD": 0, "ID": 0}
+    result = {c.stage: c.status for c in compute_completeness(files, expected)}
+    assert result["ID"] == "UPLOADED"
+    assert result["RD"] == "NOT_APPLICABLE"
+
+
+def test_empty_package_is_rejected_instead_of_reported_as_single_stage():
+    # ни одной стадии не загружено. Вернуть SINGLE_ONLY значило бы солгать,
+    # что загружена ровно одна.
+    import pytest
+
+    with pytest.raises(ValueError):
+        determine_scenario(compute_completeness([], None))
