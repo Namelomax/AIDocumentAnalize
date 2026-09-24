@@ -6,6 +6,7 @@ against a fake without a real MinIO instance.
 """
 
 import asyncio
+import io
 
 from minio import Minio
 
@@ -34,3 +35,15 @@ class ManifestStorage:
         finally:
             response.close()
             response.release_conn()
+
+    async def put_object(self, storage_key: str, data: bytes, content_type: str) -> None:
+        # The minio client is blocking; off-loading it keeps the consumer loop
+        # free to handle other messages while a large sheet is being written.
+        await asyncio.to_thread(
+            self._client.put_object,
+            self._bucket,
+            storage_key,
+            io.BytesIO(data),
+            length=len(data),
+            content_type=content_type,
+        )

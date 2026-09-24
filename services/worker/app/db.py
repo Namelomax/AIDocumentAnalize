@@ -5,6 +5,7 @@ Row shapes are plain dataclasses rather than raw asyncpg Records so the
 pipeline can be driven by hand-built fakes of the same shape in tests.
 """
 
+import uuid
 from dataclasses import dataclass
 from datetime import date, datetime
 
@@ -198,3 +199,39 @@ class Database:
             scenario,
             status,
         )
+
+    async def save_pages(self, file_id: str, pages: list[dict]) -> None:
+        """Replace the pages recorded for a file.
+
+        A re-run must not double the rows: the delete cascades to text_blocks,
+        so the file ends up with exactly one set of pages whatever happened
+        before.
+        """
+        async with self._pool.acquire() as connection:
+            async with connection.transaction():
+                await connection.execute("DELETE FROM pages WHERE file_id = $1", file_id)
+                for page in pages:
+                    page_id = str(uuid.uuid4())
+                    await connection.execute(
+                        """
+                        INSERT INTO pages (id, file_id, page_no, width_pt, height_pt,
+                                           rotation, char_count, needs_ocr, image_key)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                        """,
+                        page_id, file_id, page["page_no"], page["width_pt"],
+                        page["height_pt"], page["rotation"], page["char_count"],
+                        page["needs_ocr"], page.get("image_key"),
+                    )
+                    if not page["blocks"]:
+                        continue
+                    await connection.executemany(
+                        """
+                        INSERT INTO text_blocks (id, page_id, block_no, text, x0, y0, x1, y1)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                        """,
+                        [
+                            (str(uuid.uuid4()), page_id, b["block_no"], b["text"],
+                             b["x0"], b["y0"], b["x1"], b["y1"])
+                            for b in page["blocks"]
+                        ],
+                    )

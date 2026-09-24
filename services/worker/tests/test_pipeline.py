@@ -9,12 +9,24 @@ import logging
 from datetime import date, datetime
 from pathlib import Path
 
+import pymupdf
 import pytest
 
 from app.db import FileRow, ProcessRow
 from app.pipeline import process_start
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def _one_page_pdf(text: str, rotation: int = 0) -> bytes:
+    document = pymupdf.open()
+    page = document.new_page(width=400, height=800)
+    if text:
+        page.insert_text((20, 40), text, fontsize=24)
+    page.set_rotation(rotation)
+    raw = document.tobytes()
+    document.close()
+    return raw
 
 
 def mk_process(**overrides):
@@ -67,6 +79,7 @@ class FakeDb:
         self._files = files
         self.updates: dict[str, dict] = {}
         self.saved: dict | None = None
+        self.saved_pages: dict[str, list[dict]] = {}
 
     async def get_process(self, process_id):
         return self._process
@@ -80,6 +93,9 @@ class FakeDb:
     async def save_processing_result(self, process_id, **fields):
         self.saved = fields
 
+    async def save_pages(self, file_id, pages):
+        self.saved_pages[file_id] = pages
+
 
 class FakeStorage:
     def __init__(self, objects: dict[str, bytes]):
@@ -87,6 +103,9 @@ class FakeStorage:
 
     async def get_object(self, storage_key: str) -> bytes:
         return self._objects[storage_key]
+
+    async def put_object(self, storage_key: str, data: bytes, content_type: str) -> None:
+        self._objects[storage_key] = data
 
 
 @pytest.mark.asyncio
@@ -236,3 +255,53 @@ async def test_process_not_found_does_not_raise():
     await process_start("missing", db, storage)
 
     assert db.saved is None
+
+
+@pytest.mark.asyncio
+async def test_pdf_documents_get_their_pages_extracted():
+    process = mk_process(manifest_uploaded=False)
+    doc = mk_file(id="f-doc", file_name="ar-01.pdf", storage_key="key-doc",
+                  mime_type="application/pdf")
+    db = FakeDb(process, [doc])
+    storage = FakeStorage({"key-doc": _one_page_pdf("Площадь застройки")})
+
+    await process_start("p1", db, storage)
+
+    assert "f-doc" in db.saved_pages
+    page = db.saved_pages["f-doc"][0]
+    assert page["page_no"] == 1
+    assert page["blocks"]
+    assert page["image_key"]
+
+
+@pytest.mark.asyncio
+async def test_a_file_that_is_not_a_pdf_is_left_alone():
+    """Only PDFs have a text layer to read; the registry itself is not a document."""
+    process = mk_process(manifest_uploaded=False)
+    doc = mk_file(id="f-doc", file_name="note.xml", storage_key="key-doc",
+                  mime_type="application/xml")
+    db = FakeDb(process, [doc])
+    storage = FakeStorage({"key-doc": b"<root/>"})
+
+    await process_start("p1", db, storage)
+
+    assert db.saved_pages == {}
+    assert db.saved["status"] == "READY"
+
+
+@pytest.mark.asyncio
+async def test_one_unreadable_pdf_does_not_stop_the_package():
+    """A broken file is a data quality statement, not a reason to strand the rest."""
+    process = mk_process(manifest_uploaded=False)
+    good = mk_file(id="f-good", file_name="a.pdf", storage_key="key-good",
+                   mime_type="application/pdf")
+    bad = mk_file(id="f-bad", file_name="b.pdf", storage_key="key-bad",
+                  mime_type="application/pdf")
+    db = FakeDb(process, [good, bad])
+    storage = FakeStorage({"key-good": _one_page_pdf("текст"), "key-bad": b"not a pdf"})
+
+    await process_start("p1", db, storage)
+
+    assert "f-good" in db.saved_pages
+    assert "f-bad" not in db.saved_pages
+    assert db.saved["status"] == "READY"

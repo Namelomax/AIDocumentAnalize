@@ -65,8 +65,37 @@ OBJECT2=$(curl -fsS -X POST "$API/objects" \
   -d '{"name":"Registry probe"}' \
   | python -c 'import sys,json; print(json.load(sys.stdin)["id"])')
 
-printf '%%PDF-1.7 ar' > .e2e-tmp/ar-01.pdf
-printf '%%PDF-1.7 ov' > .e2e-tmp/ov-01.pdf
+# A bare %PDF magic number satisfies upload validation but has no text layer
+# for the worker to read, so step 10 below would find no pages. These carry
+# a minimal but structurally real page and content stream instead.
+_mkpdf() {
+  cat > "$1" <<PDF
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+5 0 obj
+<< /Length 44 >>
+stream
+BT /F1 24 Tf 20 100 Td ($2) Tj ET
+endstream
+endobj
+trailer
+<< /Root 1 0 R /Size 6 >>
+%%EOF
+PDF
+}
+_mkpdf .e2e-tmp/ar-01.pdf "ar-01 sheet"
+_mkpdf .e2e-tmp/ov-01.pdf "ov-01 sheet"
 printf 'object_id,file_name,doc_stage,discipline,revision,approval_status\n%s,ar-01.pdf,PD,AR,1,APPROVED\n%s,ov-01.pdf,RD,OV,1,FOR_CONSTRUCTION\n' \
   "$OBJECT2" "$OBJECT2" > .e2e-tmp/reestr.csv
 
@@ -88,5 +117,10 @@ done
 [ "$STATUS" = "READY" ] || { echo "process stayed in $STATUS"; exit 1; }
 
 curl -fsS "$API/processes/$PROCESS2" | grep -q '"scenario":"PD_RD_ONLY"'
+
+echo "10. pages with text are recorded for the uploaded documents"
+PAGES=$(docker compose exec -T postgres psql -U inspector -d inspector -tA \
+  -c "SELECT count(*) FROM pages p JOIN files f ON f.id = p.file_id WHERE f.process_id = '$PROCESS2';")
+[ "$PAGES" -ge 1 ] || { echo "no pages extracted for process $PROCESS2"; exit 1; }
 
 echo "PASS"

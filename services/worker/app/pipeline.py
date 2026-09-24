@@ -18,6 +18,8 @@ from datetime import date, datetime
 from app.domain.completeness import STAGES, compute_completeness, determine_scenario
 from app.domain.manifest import parse_manifest
 from app.domain.revisions import FileMeta, select_source_revision
+from app.pdf.extract import extract_pages
+from app.pdf.render import render_page_png
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +34,53 @@ def _as_date(value: date | datetime | None) -> date | None:
 
 def _is_manifest_row(file_row, process) -> bool:
     return file_row.doc_stage is None and file_row.file_hash == process.input_manifest_hash
+
+
+async def _extract_document_pages(process_id: str, files, db, storage) -> None:
+    """Read the text layer of every PDF in the package.
+
+    One unreadable file must not cost the package its other documents, so a
+    failure here is recorded against that file and the rest continue.
+    """
+    for record in files:
+        if record.mime_type != "application/pdf":
+            continue
+        try:
+            raw = await storage.get_object(record.storage_key)
+            pages = extract_pages(raw)
+            stored = []
+            for page in pages:
+                image_key = f"pages/{record.id}/{page.page_no}.png"
+                await storage.put_object(
+                    image_key, render_page_png(raw, page.page_no), "image/png"
+                )
+                stored.append({
+                    "page_no": page.page_no,
+                    "width_pt": page.width_pt,
+                    "height_pt": page.height_pt,
+                    "rotation": page.rotation,
+                    "char_count": page.char_count,
+                    "needs_ocr": page.needs_ocr,
+                    "image_key": image_key,
+                    "blocks": [
+                        {"block_no": b.block_no, "text": b.text,
+                         "x0": b.box.x0, "y0": b.box.y0, "x1": b.box.x1, "y1": b.box.y1}
+                        for b in page.blocks
+                    ],
+                })
+            await db.save_pages(record.id, stored)
+            logger.info("pages extracted", extra={
+                "process_id": process_id,
+                "file_id": record.id,
+                "pages": len(stored),
+                "scans": sum(1 for p in stored if p["needs_ocr"]),
+            })
+        except Exception as exc:  # noqa: BLE001 - reported per file, never fatal
+            logger.error("page extraction failed", extra={
+                "process_id": process_id,
+                "file_id": record.id,
+                "error": str(exc),
+            })
 
 
 async def process_start(process_id: str, db, storage) -> None:
@@ -121,6 +170,10 @@ async def process_start(process_id: str, db, storage) -> None:
             "unmatched_manifest_entries": unmatched_entries,
             "unmatched_files": unmatched_files,
         })
+
+    # The registry row was already excluded from document_files above; it has
+    # no text layer of its own and is not a document of the package.
+    await _extract_document_pages(process_id, document_files, db, storage)
 
     final_files = list(updated.values())
     metas = [
