@@ -4,6 +4,7 @@ import { config } from './config.js';
 import { loggerOptions } from './logger.js';
 import { healthRoutes } from './routes/health.js';
 import { documentRoutes } from './routes/documents.js';
+import { objectRoutes } from './routes/objects.js';
 
 export async function buildServer(): Promise<FastifyInstance> {
   const app = Fastify({
@@ -14,6 +15,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   await app.register(multipart, { limits: { fileSize: config.maxPackageBytes } });
   await app.register(healthRoutes);
   await app.register(documentRoutes);
+  await app.register(objectRoutes);
   return app;
 }
 
