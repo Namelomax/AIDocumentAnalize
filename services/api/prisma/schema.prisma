@@ -135,6 +135,7 @@ model FileRecord {
   process     Process?           @relation(fields: [processId], references: [id])
   predecessor FileRecord?        @relation("RevisionChain", fields: [predecessorId], references: [id])
   successors  FileRecord[]       @relation("RevisionChain")
+  pages       Page[]
 
   @@unique([objectId, fileHash])
   @@index([objectId, docStage, discipline])
@@ -158,6 +159,45 @@ model Process {
   files  FileRecord[]
 
   @@map("processes")
+}
+
+model Page {
+  id        String   @id @default(uuid())
+  fileId    String   @map("file_id")
+  pageNo    Int      @map("page_no")
+  widthPt   Float    @map("width_pt")
+  heightPt  Float    @map("height_pt")
+  rotation  Int
+  charCount Int      @map("char_count")
+  // Set when the page carries too little text to be read without OCR. Stage C
+  // is out of scope here, so the flag is recorded and acted on later.
+  needsOcr  Boolean  @default(false) @map("needs_ocr")
+  imageKey  String?  @map("image_key")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  file   FileRecord  @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  blocks TextBlock[]
+
+  @@unique([fileId, pageNo])
+  @@map("pages")
+}
+
+model TextBlock {
+  id      String @id @default(uuid())
+  pageId  String @map("page_id")
+  blockNo Int    @map("block_no")
+  text    String
+  // Normalized to [0;1] against the displayed page box, so a highlight drawn
+  // from these numbers lands correctly whatever the sheet size or rotation.
+  x0      Float
+  y0      Float
+  x1      Float
+  y1      Float
+
+  page Page @relation(fields: [pageId], references: [id], onDelete: Cascade)
+
+  @@index([pageId])
+  @@map("text_blocks")
 }
 
 model AuditLog {
