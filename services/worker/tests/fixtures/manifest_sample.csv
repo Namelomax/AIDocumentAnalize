@@ -1,0 +1,3 @@
+object_id,file_name,sha256,doc_stage,discipline,document_code,revision,approval_status,approval_date,sheet_page_range,predecessor_id,signature_status
+OBJ-001,ar-01.pdf,aaaa,PD,АР,АНО/150321/1-П-АР,1,APPROVED,2026-01-15,1-24,,SIGNED
+OBJ-001,ov1.pdf,bbbb,RD,ОВ,АНО/150321/1-РД-ОВ1,2,FOR_CONSTRUCTION,2026-03-20,1-12,,SIGNED
