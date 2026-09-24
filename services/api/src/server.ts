@@ -4,7 +4,11 @@ import { loggerOptions } from './logger.js';
 import { healthRoutes } from './routes/health.js';
 
 export async function buildServer(): Promise<FastifyInstance> {
-  const app = Fastify({ logger: loggerOptions, genReqId: () => crypto.randomUUID() });
+  const app = Fastify({
+    logger: loggerOptions,
+    genReqId: () => crypto.randomUUID(),
+    requestIdLogLabel: 'request_id',
+  });
   await app.register(healthRoutes);
   return app;
 }

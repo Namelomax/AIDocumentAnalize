@@ -41,12 +41,24 @@ enum FindingStatus {
   SUSPICION
 }
 
+/// Полнота доказательств по одному параметру Матрицы.
+/// Применяется к находкам; таблицы под них создаются Планом 4.
 enum CompletenessStatus {
   COMPLETE
   MISSING_EVIDENCE
   NOT_APPLICABLE
   NOT_COMPARABLE
   CLARIFICATION_REQUIRED
+}
+
+/// Полнота загрузки одной стадии документации — другой словарь и другой смысл.
+/// Значения обязаны совпадать с теми, что возвращает
+/// services/worker/app/domain/completeness.py.
+enum StageCompleteness {
+  UPLOADED
+  PARTIAL
+  MISSING
+  NOT_APPLICABLE
 }
 
 enum ReviewPriority {
@@ -119,10 +131,10 @@ model FileRecord {
   fromManifest    Boolean        @default(false) @map("from_manifest")
   uploadedAt      DateTime       @default(now()) @map("uploaded_at")
 
-  object       ConstructionObject @relation(fields: [objectId], references: [id])
-  process      Process?           @relation(fields: [processId], references: [id])
-  predecessor  FileRecord?        @relation("RevisionChain", fields: [predecessorId], references: [id])
-  successors   FileRecord[]       @relation("RevisionChain")
+  object      ConstructionObject @relation(fields: [objectId], references: [id])
+  process     Process?           @relation(fields: [processId], references: [id])
+  predecessor FileRecord?        @relation("RevisionChain", fields: [predecessorId], references: [id])
+  successors  FileRecord[]       @relation("RevisionChain")
 
   @@unique([objectId, fileHash])
   @@index([objectId, docStage, discipline])
@@ -130,17 +142,17 @@ model FileRecord {
 }
 
 model Process {
-  id                String        @id @default(uuid())
-  objectId          String        @map("object_id")
-  status            ProcessStatus @default(PENDING)
+  id                String             @id @default(uuid())
+  objectId          String             @map("object_id")
+  status            ProcessStatus      @default(PENDING)
   scenario          LoadScenario?
-  pdCompleteness    String?       @map("pd_completeness")
-  rdCompleteness    String?       @map("rd_completeness")
-  idCompleteness    String?       @map("id_completeness")
-  manifestUploaded  Boolean       @default(false) @map("manifest_uploaded")
-  inputManifestHash String?       @map("input_manifest_hash") @db.Char(64)
-  createdAt         DateTime      @default(now()) @map("created_at")
-  updatedAt         DateTime      @updatedAt @map("updated_at")
+  pdCompleteness    StageCompleteness? @map("pd_completeness")
+  rdCompleteness    StageCompleteness? @map("rd_completeness")
+  idCompleteness    StageCompleteness? @map("id_completeness")
+  manifestUploaded  Boolean            @default(false) @map("manifest_uploaded")
+  inputManifestHash String?            @map("input_manifest_hash") @db.Char(64)
+  createdAt         DateTime           @default(now()) @map("created_at")
+  updatedAt         DateTime           @updatedAt @map("updated_at")
 
   object ConstructionObject @relation(fields: [objectId], references: [id])
   files  FileRecord[]
