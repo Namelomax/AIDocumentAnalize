@@ -10,3 +10,9 @@ models/
 .superpowers/
 .e2e-tmp/
 *.egg-info/
+
+# The designer's web app is its own git repository (github.com/Crooak/chakaton,
+# branch Figm_Cloud_Dips). Adding it here would record a gitlink, which checks
+# out as an empty folder on the stand. Its source is copied into services/web
+# when the frontend is integrated.
+/Инспектор ИИ веб-сервис_Визуал/
