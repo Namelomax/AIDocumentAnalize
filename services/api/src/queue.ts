@@ -11,11 +11,6 @@ export const TASK_QUEUE = config.taskQueue;
 let connection: ChannelModel | null = null;
 let channel: Channel | null = null;
 
-// A broker restart or network blip leaves connection/channel dead. Without
-// these listeners the 'error' event (unhandled on an EventEmitter) would
-// crash the whole process, and without resetting the module state every
-// publish after that point would keep failing against a closed channel
-// until the API itself was restarted.
 // Written by hand rather than through the Fastify logger: this module has no
 // request to hang a logger off, and a broker failure still has to come out in
 // the one log shape the whole solution uses. A bare plain-text line would be
@@ -32,6 +27,11 @@ function logQueueError(message: string, err: unknown): void {
   }) + '\n');
 }
 
+// A broker restart or network blip leaves connection/channel dead. Without
+// these listeners the 'error' event (unhandled on an EventEmitter) would
+// crash the whole process, and without resetting the module state every
+// publish after that point would keep failing against a closed channel
+// until the API itself was restarted.
 function forgetConnection(): void {
   connection = null;
   channel = null;

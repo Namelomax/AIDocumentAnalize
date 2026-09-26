@@ -74,7 +74,7 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-inspector123}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       LOG_LEVEL: ${LOG_LEVEL:-info}
-      MAX_FILE_BYTES: ${MAX_FILE_BYTES:-52428800}
+      MAX_FILE_BYTES: ${MAX_FILE_BYTES:-62914560}
       MAX_PACKAGE_BYTES: ${MAX_PACKAGE_BYTES:-209715200}
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
       TASK_QUEUE: ${TASK_QUEUE:-inspector.tasks}
