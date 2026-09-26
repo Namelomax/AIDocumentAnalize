@@ -4,6 +4,7 @@ import { Prisma } from '@prisma/client';
 import { config } from '../config.js';
 import { prisma } from '../db.js';
 import { sha256, storageKeyFor, putObject } from '../storage.js';
+import { audit } from '../audit.js';
 
 const ALLOWED = new Map([
   ['application/pdf', '.pdf'],
@@ -52,12 +53,62 @@ interface PendingFile {
   isManifest: boolean;
 }
 
+// The names the interface's upload dialog offers the inspector; kept here
+// because the server is the only place both the formats and the limits below
+// are known precisely, and a rejection message quotes both.
+const SUPPORTED_FORMATS = ['PDF', 'DOCX', 'XML'];
+const REGISTRY_FORMATS = ['CSV', 'XLSX', 'JSON'];
+
+// Megabytes as the interface shows them; the limits themselves stay in bytes.
+export function megabytes(bytes: number): string {
+  return `${Math.round(bytes / 1024 / 1024)} МБ`;
+}
+
+// Section 9.1's error handling table: an unsupported format names the formats
+// that are supported, an oversized file names the limit it crossed, and a
+// corrupted file tells the inspector to try again rather than leaving them to
+// guess why nothing was stored.
+function rejection(fileName: string, reason: string) {
+  switch (reason) {
+    case 'UNSUPPORTED_FORMAT':
+      return {
+        file_name: fileName, reason,
+        supported_formats: SUPPORTED_FORMATS, registry_formats: REGISTRY_FORMATS,
+        message: `Неподдерживаемый формат. Документы: ${SUPPORTED_FORMATS.join(', ')}; реестр: ${REGISTRY_FORMATS.join(', ')}`,
+      };
+    case 'FILE_TOO_LARGE':
+      return {
+        file_name: fileName, reason, max_bytes: config.maxFileBytes,
+        message: `Файл больше допустимого размера ${megabytes(config.maxFileBytes)}`,
+      };
+    case 'CORRUPTED_FILE':
+      return { file_name: fileName, reason, message: 'Файл повреждён или не читается. Загрузите файл повторно' };
+    case 'DUPLICATE':
+      return { file_name: fileName, reason, message: 'Такой файл уже загружен по этому объекту' };
+    case 'MULTIPLE_MANIFESTS':
+      return { file_name: fileName, reason, message: 'В пакете может быть только один реестр' };
+    default:
+      return { file_name: fileName, reason, message: 'Файл не сохранён из-за внутренней ошибки. Повторите загрузку' };
+  }
+}
+
 export async function documentRoutes(app: FastifyInstance) {
+  // The interface's upload dialog used to hardcode these numbers, and drifted
+  // from the real limit once MAX_FILE_BYTES was raised past the 50 MB the
+  // specification states (see config.ts). The server is the one place both
+  // figures are exact, so it is the one place they are now read from.
+  app.get('/api/v1/upload/limits', async () => ({
+    max_file_bytes: config.maxFileBytes,
+    max_package_bytes: config.maxPackageBytes,
+    supported_formats: SUPPORTED_FORMATS,
+    registry_formats: REGISTRY_FORMATS,
+  }));
+
   app.post('/api/v1/documents/upload', async (request, reply) => {
     const { object_id: objectId } = querySchema.parse(request.query);
 
     const pending: PendingFile[] = [];
-    const rejected: Array<{ file_name: string; reason: string }> = [];
+    const rejected: Array<ReturnType<typeof rejection>> = [];
     let packageBytes = 0;
     let manifestSeen = false;
 
@@ -73,7 +124,7 @@ export async function documentRoutes(app: FastifyInstance) {
       const isManifest = MANIFEST_TYPES.has(part.mimetype);
       const extension = isManifest ? MANIFEST_TYPES.get(part.mimetype) : ALLOWED.get(part.mimetype);
       if (!extension) {
-        rejected.push({ file_name: part.filename, reason: 'UNSUPPORTED_FORMAT' });
+        rejected.push(rejection(part.filename, 'UNSUPPORTED_FORMAT'));
         continue;
       }
       // Two registries contradict each other and nothing here can pick the
@@ -81,17 +132,17 @@ export async function documentRoutes(app: FastifyInstance) {
       // ones are rejected outright, without spending a validity check on them.
       if (isManifest) {
         if (manifestSeen) {
-          rejected.push({ file_name: part.filename, reason: 'MULTIPLE_MANIFESTS' });
+          rejected.push(rejection(part.filename, 'MULTIPLE_MANIFESTS'));
           continue;
         }
         manifestSeen = true;
       }
       if (body.length > config.maxFileBytes) {
-        rejected.push({ file_name: part.filename, reason: 'FILE_TOO_LARGE' });
+        rejected.push(rejection(part.filename, 'FILE_TOO_LARGE'));
         continue;
       }
       if (looksCorrupted(extension, body)) {
-        rejected.push({ file_name: part.filename, reason: 'CORRUPTED_FILE' });
+        rejected.push(rejection(part.filename, 'CORRUPTED_FILE'));
         continue;
       }
       pending.push({ fileName: part.filename, body, mimeType: part.mimetype, isManifest });
@@ -104,6 +155,8 @@ export async function documentRoutes(app: FastifyInstance) {
         error: 'PACKAGE_TOO_LARGE',
         limit_bytes: config.maxPackageBytes,
         received_bytes: packageBytes,
+        max_bytes: config.maxPackageBytes,
+        message: `Пакет больше допустимого объёма ${megabytes(config.maxPackageBytes)}`,
       });
     }
 
@@ -152,13 +205,13 @@ export async function documentRoutes(app: FastifyInstance) {
         // insert: a pre-check still loses the race between two concurrent
         // uploads of the same file.
         if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
-          rejected.push({ file_name: file.fileName, reason: 'DUPLICATE' });
+          rejected.push(rejection(file.fileName, 'DUPLICATE'));
           continue;
         }
         // One failed file must not sink the package: the others are already
         // stored, and the caller has to learn which ones.
         request.log.error({ file_name: file.fileName, err: error }, 'failed to store file');
-        rejected.push({ file_name: file.fileName, reason: 'INTERNAL_ERROR' });
+        rejected.push(rejection(file.fileName, 'INTERNAL_ERROR'));
       }
     }
 
@@ -166,8 +219,22 @@ export async function documentRoutes(app: FastifyInstance) {
     // indistinguishable from one still being parsed.
     if (accepted.length === 0) {
       await prisma.process.delete({ where: { id: process.id } });
+      // A refused package is still an action the user took (section 12.4
+      // records every one), just as a failed login is.
+      await audit(request, 'DOCUMENTS_REJECTED', objectId, {
+        rejected: rejected.length,
+        reasons: [...new Set(rejected.map((r) => r.reason))],
+      });
       return reply.code(422).send({ accepted: [], rejected });
     }
+
+    // objectId is the construction object the package belongs to; process_id
+    // travels in details since a single object accumulates many processes.
+    await audit(request, 'DOCUMENTS_UPLOADED', objectId, {
+      process_id: process.id,
+      accepted: accepted.length,
+      rejected: rejected.length,
+    });
 
     return reply.code(201).send({ process_id: process.id, accepted, rejected });
   });

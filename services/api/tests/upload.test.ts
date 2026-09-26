@@ -3,6 +3,8 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { buildServer } from '../src/server.js';
 import { prisma } from '../src/db.js';
 import { ensureBucket } from '../src/storage.js';
+import { config } from '../src/config.js';
+import { megabytes } from '../src/routes/documents.js';
 import { authHeaders } from './helpers/auth.js';
 
 let objectId: string;
@@ -60,7 +62,12 @@ describe('POST /api/v1/documents/upload', () => {
       payload,
     });
 
-    expect(res.json().rejected[0].reason).toBe('UNSUPPORTED_FORMAT');
+    expect(res.json().rejected[0]).toMatchObject({
+      reason: 'UNSUPPORTED_FORMAT',
+      supported_formats: ['PDF', 'DOCX', 'XML'],
+      registry_formats: ['CSV', 'XLSX', 'JSON'],
+      message: expect.stringContaining('PDF, DOCX, XML'),
+    });
     await app.close();
   });
 
@@ -78,6 +85,7 @@ describe('POST /api/v1/documents/upload', () => {
     });
 
     expect(res.json().rejected[0].reason).toBe('CORRUPTED_FILE');
+    expect(res.json().rejected[0].message).toMatch(/загрузите файл повторно/i);
     await app.close();
   });
 
@@ -139,9 +147,13 @@ describe('POST /api/v1/documents/upload', () => {
 
   it('rejects a file above the per-file limit', async () => {
     const app = await buildServer();
+    // One byte past config.maxFileBytes rather than a literal figure: the
+    // limit differs between the test environment and the shipped default
+    // (see .env), and a hardcoded size would silently stop testing the limit
+    // it once matched.
     const oversized = Buffer.concat([
       Buffer.from('%PDF-1.7'),
-      Buffer.alloc(52_428_801 - 8),
+      Buffer.alloc(config.maxFileBytes + 1 - 8),
     ]);
     const { boundary, payload } = form([
       { name: 'huge.pdf', body: oversized, type: 'application/pdf' },
@@ -154,7 +166,11 @@ describe('POST /api/v1/documents/upload', () => {
       payload,
     });
 
-    expect(res.json().rejected[0].reason).toBe('FILE_TOO_LARGE');
+    expect(res.json().rejected[0]).toMatchObject({
+      reason: 'FILE_TOO_LARGE',
+      max_bytes: config.maxFileBytes,
+      message: expect.stringContaining(megabytes(config.maxFileBytes)),
+    });
     await app.close();
   });
 
@@ -175,6 +191,12 @@ describe('POST /api/v1/documents/upload', () => {
     expect(res.statusCode).toBe(422);
     expect(res.json().process_id).toBeUndefined();
     expect(await prisma.process.count({ where: { objectId } })).toBe(before);
+    // The refused attempt is still recorded: every user action is (12.4).
+    const refused = await prisma.auditLog.findFirst({
+      where: { action: 'DOCUMENTS_REJECTED', objectId },
+      orderBy: { timestamp: 'desc' },
+    });
+    expect(refused).not.toBeNull();
     await app.close();
   });
 
@@ -256,7 +278,9 @@ describe('POST /api/v1/documents/upload', () => {
     });
 
     expect(res.statusCode).toBe(201);
-    expect(res.json().rejected).toContainEqual({ file_name: 'registry.xlsx', reason: 'CORRUPTED_FILE' });
+    expect(res.json().rejected).toContainEqual(
+      expect.objectContaining({ file_name: 'registry.xlsx', reason: 'CORRUPTED_FILE' }),
+    );
 
     // The package still stands on its documents, and the registry simply
     // never got flagged on the process.
@@ -304,7 +328,9 @@ describe('POST /api/v1/documents/upload', () => {
     expect(res.statusCode).toBe(201);
     const body = res.json();
     expect(body.accepted.map((f: { file_name: string }) => f.file_name)).toEqual(['registry-a.csv']);
-    expect(body.rejected).toEqual([{ file_name: 'registry-b.json', reason: 'MULTIPLE_MANIFESTS' }]);
+    expect(body.rejected).toEqual([
+      expect.objectContaining({ file_name: 'registry-b.json', reason: 'MULTIPLE_MANIFESTS' }),
+    ]);
     await app.close();
   });
 
@@ -325,6 +351,18 @@ describe('POST /api/v1/documents/upload', () => {
     const process = await prisma.process.findUniqueOrThrow({ where: { id: res.json().process_id } });
     expect(process.manifestUploaded).toBe(false);
     expect(process.inputManifestHash).toBeNull();
+    await app.close();
+  });
+
+  it('publishes the limits the interface shows', async () => {
+    const app = await buildServer();
+    const res = await app.inject({ method: 'GET', url: '/api/v1/upload/limits', headers: await authHeaders() });
+    expect(res.json()).toEqual({
+      max_file_bytes: config.maxFileBytes,
+      max_package_bytes: config.maxPackageBytes,
+      supported_formats: ['PDF', 'DOCX', 'XML'],
+      registry_formats: ['CSV', 'XLSX', 'JSON'],
+    });
     await app.close();
   });
 });

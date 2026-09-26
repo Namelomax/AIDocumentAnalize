@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '../db.js';
+import { audit } from '../audit.js';
 
 const createSchema = z.object({
   // trim() before min(1): without it a name of spaces passes validation and
@@ -29,6 +30,8 @@ export async function objectRoutes(app: FastifyInstance) {
         permitNumber: parsed.data.permit_number,
       },
     });
+
+    await audit(request, 'OBJECT_CREATED', created.id);
 
     return reply.code(201).send({
       id: created.id,

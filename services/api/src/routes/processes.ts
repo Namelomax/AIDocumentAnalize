@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '../db.js';
 import { publishTask } from '../queue.js';
+import { audit } from '../audit.js';
 
 const paramsSchema = z.object({ process_id: z.string().uuid() });
 
@@ -70,6 +71,8 @@ export async function processRoutes(app: FastifyInstance) {
       });
       return reply.code(503).send({ error: 'QUEUE_UNAVAILABLE' });
     }
+
+    await audit(request, 'PROCESS_STARTED', process.objectId, { process_id: process.id });
 
     return reply.code(202).send({ process_id: process.id, status: 'PARSING' });
   });
