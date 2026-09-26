@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { buildServer } from '../src/server.js';
 import { prisma } from '../src/db.js';
+import { authHeaders } from './helpers/auth.js';
 
 const PREFIX = `T${Date.now().toString(36)}`;
 
@@ -28,7 +29,7 @@ afterAll(async () => {
 describe('GET /api/v1/params', () => {
   it('returns parameters under the field names of section 8.1', async () => {
     const app = await buildServer();
-    const res = await app.inject({ method: 'GET', url: '/api/v1/params?section=ТЕСТ-А' });
+    const res = await app.inject({ method: 'GET', url: '/api/v1/params?section=ТЕСТ-А', headers: await authHeaders() });
 
     expect(res.statusCode).toBe(200);
     const body = res.json();
@@ -49,17 +50,18 @@ describe('GET /api/v1/params', () => {
   it('filters by priority and by activity', async () => {
     const app = await buildServer();
 
-    const inactive = await app.inject({ method: 'GET', url: '/api/v1/params?section=ТЕСТ-Б&active=false' });
+    const headers = await authHeaders();
+    const inactive = await app.inject({ method: 'GET', url: '/api/v1/params?section=ТЕСТ-Б&active=false', headers });
     expect(inactive.json().items.map((p: { code: string }) => p.code)).toEqual([`${PREFIX}-B`]);
 
-    const medium = await app.inject({ method: 'GET', url: '/api/v1/params?section=ТЕСТ-Б&priority=MEDIUM' });
+    const medium = await app.inject({ method: 'GET', url: '/api/v1/params?section=ТЕСТ-Б&priority=MEDIUM', headers });
     expect(medium.json().total).toBe(1);
     await app.close();
   });
 
   it('refuses an unknown priority', async () => {
     const app = await buildServer();
-    const res = await app.inject({ method: 'GET', url: '/api/v1/params?priority=URGENT' });
+    const res = await app.inject({ method: 'GET', url: '/api/v1/params?priority=URGENT', headers: await authHeaders() });
     expect(res.statusCode).toBe(400);
     await app.close();
   });

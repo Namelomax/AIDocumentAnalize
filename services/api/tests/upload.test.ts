@@ -3,6 +3,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { buildServer } from '../src/server.js';
 import { prisma } from '../src/db.js';
 import { ensureBucket } from '../src/storage.js';
+import { authHeaders } from './helpers/auth.js';
 
 let objectId: string;
 
@@ -35,7 +36,7 @@ describe('POST /api/v1/documents/upload', () => {
     const res = await app.inject({
       method: 'POST',
       url: `/api/v1/documents/upload?object_id=${objectId}`,
-      headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+      headers: { ...(await authHeaders()), 'content-type': `multipart/form-data; boundary=${boundary}` },
       payload,
     });
 
@@ -55,7 +56,7 @@ describe('POST /api/v1/documents/upload', () => {
     const res = await app.inject({
       method: 'POST',
       url: `/api/v1/documents/upload?object_id=${objectId}`,
-      headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+      headers: { ...(await authHeaders()), 'content-type': `multipart/form-data; boundary=${boundary}` },
       payload,
     });
 
@@ -72,7 +73,7 @@ describe('POST /api/v1/documents/upload', () => {
     const res = await app.inject({
       method: 'POST',
       url: `/api/v1/documents/upload?object_id=${objectId}`,
-      headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+      headers: { ...(await authHeaders()), 'content-type': `multipart/form-data; boundary=${boundary}` },
       payload,
     });
 
@@ -86,14 +87,14 @@ describe('POST /api/v1/documents/upload', () => {
     const first = form([{ name: 'dup.pdf', body, type: 'application/pdf' }]);
     await app.inject({
       method: 'POST', url: `/api/v1/documents/upload?object_id=${objectId}`,
-      headers: { 'content-type': `multipart/form-data; boundary=${first.boundary}` },
+      headers: { ...(await authHeaders()), 'content-type': `multipart/form-data; boundary=${first.boundary}` },
       payload: first.payload,
     });
 
     const second = form([{ name: 'dup-again.pdf', body, type: 'application/pdf' }]);
     const res = await app.inject({
       method: 'POST', url: `/api/v1/documents/upload?object_id=${objectId}`,
-      headers: { 'content-type': `multipart/form-data; boundary=${second.boundary}` },
+      headers: { ...(await authHeaders()), 'content-type': `multipart/form-data; boundary=${second.boundary}` },
       payload: second.payload,
     });
 
@@ -110,7 +111,7 @@ describe('POST /api/v1/documents/upload', () => {
     const res = await app.inject({
       method: 'POST',
       url: `/api/v1/documents/upload?object_id=${objectId}`,
-      headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+      headers: { ...(await authHeaders()), 'content-type': `multipart/form-data; boundary=${boundary}` },
       payload,
     });
 
@@ -127,7 +128,7 @@ describe('POST /api/v1/documents/upload', () => {
     const res = await app.inject({
       method: 'POST',
       url: `/api/v1/documents/upload?object_id=${objectId}`,
-      headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+      headers: { ...(await authHeaders()), 'content-type': `multipart/form-data; boundary=${boundary}` },
       payload,
     });
 
@@ -149,7 +150,7 @@ describe('POST /api/v1/documents/upload', () => {
     const res = await app.inject({
       method: 'POST',
       url: `/api/v1/documents/upload?object_id=${objectId}`,
-      headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+      headers: { ...(await authHeaders()), 'content-type': `multipart/form-data; boundary=${boundary}` },
       payload,
     });
 
@@ -167,7 +168,7 @@ describe('POST /api/v1/documents/upload', () => {
     const res = await app.inject({
       method: 'POST',
       url: `/api/v1/documents/upload?object_id=${objectId}`,
-      headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+      headers: { ...(await authHeaders()), 'content-type': `multipart/form-data; boundary=${boundary}` },
       payload,
     });
 
@@ -188,7 +189,7 @@ describe('POST /api/v1/documents/upload', () => {
     const res = await app.inject({
       method: 'POST',
       url: `/api/v1/documents/upload?object_id=${objectId}`,
-      headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+      headers: { ...(await authHeaders()), 'content-type': `multipart/form-data; boundary=${boundary}` },
       payload,
     });
 
@@ -223,7 +224,7 @@ describe('POST /api/v1/documents/upload', () => {
     const res = await app.inject({
       method: 'POST',
       url: `/api/v1/documents/upload?object_id=${objectId}`,
-      headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+      headers: { ...(await authHeaders()), 'content-type': `multipart/form-data; boundary=${boundary}` },
       payload,
     });
 
@@ -250,7 +251,7 @@ describe('POST /api/v1/documents/upload', () => {
     const res = await app.inject({
       method: 'POST',
       url: `/api/v1/documents/upload?object_id=${objectId}`,
-      headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+      headers: { ...(await authHeaders()), 'content-type': `multipart/form-data; boundary=${boundary}` },
       payload,
     });
 
@@ -273,7 +274,7 @@ describe('POST /api/v1/documents/upload', () => {
     const res = await app.inject({
       method: 'POST',
       url: `/api/v1/documents/upload?object_id=${objectId}`,
-      headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+      headers: { ...(await authHeaders()), 'content-type': `multipart/form-data; boundary=${boundary}` },
       payload,
     });
 
@@ -296,7 +297,7 @@ describe('POST /api/v1/documents/upload', () => {
     const res = await app.inject({
       method: 'POST',
       url: `/api/v1/documents/upload?object_id=${objectId}`,
-      headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+      headers: { ...(await authHeaders()), 'content-type': `multipart/form-data; boundary=${boundary}` },
       payload,
     });
 
@@ -316,7 +317,7 @@ describe('POST /api/v1/documents/upload', () => {
     const res = await app.inject({
       method: 'POST',
       url: `/api/v1/documents/upload?object_id=${objectId}`,
-      headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+      headers: { ...(await authHeaders()), 'content-type': `multipart/form-data; boundary=${boundary}` },
       payload,
     });
 

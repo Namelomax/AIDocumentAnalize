@@ -26,4 +26,9 @@ export async function authRoutes(app: FastifyInstance) {
       user: { id: user.id, login: user.login, full_name: user.fullName, role: user.role },
     };
   });
+
+  app.get('/api/v1/auth/me', async (request) => {
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: request.user.id } });
+    return { id: user.id, login: user.login, full_name: user.fullName, role: user.role };
+  });
 }

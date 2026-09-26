@@ -6,6 +6,7 @@ import { prisma } from '../src/db.js';
 import { closeQueue, TASK_QUEUE } from '../src/queue.js';
 import * as queue from '../src/queue.js';
 import { config } from '../src/config.js';
+import { authHeaders } from './helpers/auth.js';
 
 let objectId: string;
 
@@ -56,7 +57,7 @@ async function drainQueue(): Promise<unknown[]> {
 describe('process routes', () => {
   it('returns 404 for an unknown process', async () => {
     const app = await buildServer();
-    const res = await app.inject({ method: 'GET', url: `/api/v1/processes/${randomUUID()}` });
+    const res = await app.inject({ method: 'GET', url: `/api/v1/processes/${randomUUID()}`, headers: await authHeaders() });
     expect(res.statusCode).toBe(404);
     await app.close();
   });
@@ -65,7 +66,7 @@ describe('process routes', () => {
     const app = await buildServer();
     const process = await makeProcess(2);
 
-    const res = await app.inject({ method: 'GET', url: `/api/v1/processes/${process.id}` });
+    const res = await app.inject({ method: 'GET', url: `/api/v1/processes/${process.id}`, headers: await authHeaders() });
 
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ status: 'PENDING', files_count: 2 });
@@ -77,7 +78,7 @@ describe('process routes', () => {
     const process = await makeProcess(0);
 
     const res = await app.inject({
-      method: 'POST', url: `/api/v1/processes/${process.id}/start`,
+      method: 'POST', url: `/api/v1/processes/${process.id}/start`, headers: await authHeaders(),
     });
 
     expect(res.statusCode).toBe(409);
@@ -91,7 +92,7 @@ describe('process routes', () => {
     const process = await makeProcess(1);
 
     const res = await app.inject({
-      method: 'POST', url: `/api/v1/processes/${process.id}/start`,
+      method: 'POST', url: `/api/v1/processes/${process.id}/start`, headers: await authHeaders(),
     });
 
     expect(res.statusCode).toBe(202);
@@ -107,10 +108,11 @@ describe('process routes', () => {
   it('refuses to start the same process twice', async () => {
     const app = await buildServer();
     const process = await makeProcess(1);
+    const headers = await authHeaders();
 
-    await app.inject({ method: 'POST', url: `/api/v1/processes/${process.id}/start` });
+    await app.inject({ method: 'POST', url: `/api/v1/processes/${process.id}/start`, headers });
     const second = await app.inject({
-      method: 'POST', url: `/api/v1/processes/${process.id}/start`,
+      method: 'POST', url: `/api/v1/processes/${process.id}/start`, headers,
     });
 
     expect(second.statusCode).toBe(409);
@@ -126,7 +128,7 @@ describe('process routes', () => {
     const process = await makeProcess(1);
 
     const res = await app.inject({
-      method: 'POST', url: `/api/v1/processes/${process.id}/start`,
+      method: 'POST', url: `/api/v1/processes/${process.id}/start`, headers: await authHeaders(),
     });
 
     expect(res.statusCode).toBe(503);
@@ -145,16 +147,17 @@ describe('process routes', () => {
       .mockRejectedValueOnce(new Error('broker unreachable'));
     const app = await buildServer();
     const process = await makeProcess(1);
+    const headers = await authHeaders();
 
     const failed = await app.inject({
-      method: 'POST', url: `/api/v1/processes/${process.id}/start`,
+      method: 'POST', url: `/api/v1/processes/${process.id}/start`, headers,
     });
     expect(failed.statusCode).toBe(503);
     publishSpy.mockRestore();
 
     await drainQueue();
     const retried = await app.inject({
-      method: 'POST', url: `/api/v1/processes/${process.id}/start`,
+      method: 'POST', url: `/api/v1/processes/${process.id}/start`, headers,
     });
 
     expect(retried.statusCode).toBe(202);

@@ -1,6 +1,7 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import multipart from '@fastify/multipart';
 import fastifyJwt from '@fastify/jwt';
+import type { UserRole } from '@prisma/client';
 import { config } from './config.js';
 import { loggerOptions } from './logger.js';
 import { healthRoutes } from './routes/health.js';
@@ -11,15 +12,45 @@ import { paramRoutes } from './routes/params.js';
 import { authRoutes } from './routes/auth.js';
 import { ensureBucket } from './storage.js';
 import { seedDemoUsers } from './auth/seed.js';
+import { authPlugin } from './auth/plugin.js';
+import { enterRequestContext, setCurrentUser } from './auth/context.js';
 
-export async function buildServer(): Promise<FastifyInstance> {
+export interface BuildServerOptions {
+  logStream?: NodeJS.WritableStream;
+}
+
+export async function buildServer(options: BuildServerOptions = {}): Promise<FastifyInstance> {
   const app = Fastify({
-    logger: loggerOptions,
+    logger: options.logStream ? { ...loggerOptions, stream: options.logStream } : loggerOptions,
     genReqId: () => crypto.randomUUID(),
     requestIdLogLabel: 'request_id',
   });
   await app.register(multipart, { limits: { fileSize: config.maxPackageBytes } });
   await app.register(fastifyJwt, { secret: config.jwtSecret, sign: { expiresIn: config.jwtTtl } });
+
+  // Fastify logs "incoming request" before any onRequest hook runs, so the
+  // auth hook that verifies the token and enters the user into
+  // AsyncLocalStorage (auth/plugin.ts) is always one line too late for that
+  // first line of a request. setGenReqId runs earlier still - before the
+  // request's child logger even exists - so a token found here is verified
+  // on the spot and the user is already in context by the time anything
+  // logs. The onRequest hook still owns rejecting a request outright: a
+  // malformed or missing token here is silently left for it to answer.
+  app.setGenReqId((req) => {
+    enterRequestContext();
+    const header = req.headers.authorization;
+    if (header?.startsWith('Bearer ')) {
+      try {
+        const payload = app.jwt.verify<{ sub: string; login: string; role: UserRole }>(header.slice(7));
+        setCurrentUser({ id: payload.sub, login: payload.login, role: payload.role });
+      } catch {
+        // Left to the onRequest hook in auth/plugin.ts, which owns the 401.
+      }
+    }
+    return crypto.randomUUID();
+  });
+
+  await app.register(authPlugin);
   await app.register(healthRoutes);
   await app.register(documentRoutes);
   await app.register(objectRoutes);
