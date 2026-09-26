@@ -235,3 +235,41 @@ class Database:
                             for b in page["blocks"]
                         ],
                     )
+
+    async def seed_params(self, matrix) -> int:
+        """Insert the parameters the table does not have yet.
+
+        Existing rows are left alone on purpose: after the first start the
+        database is the source of truth, and section 7 (module 8) lets an
+        administrator change thresholds there without a redeploy. Overwriting
+        from the spec files on every start would silently undo that.
+        """
+        inserted = 0
+        async with self._pool.acquire() as connection:
+            async with connection.transaction():
+                for spec in matrix.params:
+                    status = await connection.execute(
+                        """
+                        INSERT INTO params (
+                            code, section, parameter_name, unit, source_pd, source_rd,
+                            source_id, trigger_logic, review_priority, sp_reference,
+                            gost_reference, fz_reference, other_normative, data_type,
+                            min_value, max_value, regex_pattern, modality, compare_op,
+                            compare_threshold, implemented, matrix_version, updated_at
+                        )
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+                                $14, $15, $16, $17, $18, $19, $20, $21, $22, now())
+                        ON CONFLICT (code) DO NOTHING
+                        """,
+                        spec.code, spec.section, spec.parameter_name, spec.unit,
+                        spec.source_pd, spec.source_rd, spec.source_id, spec.trigger_logic,
+                        spec.review_priority, spec.sp_reference, spec.gost_reference,
+                        spec.fz_reference, spec.other_normative, spec.data_type,
+                        spec.min_value, spec.max_value, spec.regex_pattern, spec.modality,
+                        spec.compare_op, spec.compare_threshold, spec.implemented,
+                        matrix.version,
+                    )
+                    # asyncpg reports "INSERT 0 1" for a new row, "INSERT 0 0" for a skip.
+                    if status.endswith(" 1"):
+                        inserted += 1
+        return inserted

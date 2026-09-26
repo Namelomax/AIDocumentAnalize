@@ -948,11 +948,13 @@ if __name__ == "__main__":
 
 - [ ] **Step 3: Положить спецификации в образ**
 
-В `services/worker/Dockerfile` рядом с `COPY app ./app` добавить:
+В `services/worker/Dockerfile` **после** строки `RUN pip install --no-cache-dir .` добавить:
 
 ```dockerfile
 COPY specs ./specs
 ```
+
+Именно после установки: если каталог `specs/` лежит рядом с `app/` в момент `pip install`, автообнаружение пакетов setuptools принимает его за второй пакет верхнего уровня и отказывается собирать.
 
 Без этой строки образ собирается, а воркер падает при старте: `load_specs` не найдёт каталог. Путь `SPECS_DIR` вычисляется от пакета `app`, поэтому в контейнере это `/app/specs/params`.
 
