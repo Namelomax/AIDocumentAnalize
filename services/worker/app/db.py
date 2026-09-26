@@ -226,11 +226,11 @@ class Database:
                         continue
                     await connection.executemany(
                         """
-                        INSERT INTO text_blocks (id, page_id, block_no, text, x0, y0, x1, y1)
-                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                        INSERT INTO text_blocks (id, page_id, block_no, line_no, text, x0, y0, x1, y1)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                         """,
                         [
-                            (str(uuid.uuid4()), page_id, b["block_no"], b["text"],
+                            (str(uuid.uuid4()), page_id, b["block_no"], b["line_no"], b["text"],
                              b["x0"], b["y0"], b["x1"], b["y1"])
                             for b in page["blocks"]
                         ],

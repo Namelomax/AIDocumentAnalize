@@ -63,9 +63,11 @@ async def _extract_document_pages(process_id: str, files, db, storage) -> None:
                     "needs_ocr": page.needs_ocr,
                     "image_key": image_key,
                     "blocks": [
-                        {"block_no": b.block_no, "text": b.text,
-                         "x0": b.box.x0, "y0": b.box.y0, "x1": b.box.x1, "y1": b.box.y1}
+                        {"block_no": b.block_no, "line_no": line.line_no, "text": line.text,
+                         "x0": line.box.x0, "y0": line.box.y0,
+                         "x1": line.box.x1, "y1": line.box.y1}
                         for b in page.blocks
+                        for line in b.lines
                     ],
                 })
             await db.save_pages(record.id, stored)

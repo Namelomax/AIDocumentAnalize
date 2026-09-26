@@ -186,6 +186,10 @@ model TextBlock {
   id      String @id @default(uuid())
   pageId  String @map("page_id")
   blockNo Int    @map("block_no")
+  // One row per PDF line, not per block: a room label keeps its number and
+  // its area on separate lines, and gluing them produced "1.0.95,95", which
+  // no parser can split back into room 1.0.9 and 5.95 m².
+  lineNo  Int    @default(0) @map("line_no")
   text    String
   // Normalized to [0;1] against the displayed page box, so a highlight drawn
   // from these numbers lands correctly whatever the sheet size or rotation.

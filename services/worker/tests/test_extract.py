@@ -87,6 +87,38 @@ def test_rotation_is_honoured_on_the_real_extraction_path():
     assert len(set(positions.values())) == 4, positions
 
 
+def test_lines_keep_their_own_text_and_box():
+    """Adjacent lines of a block must not be glued together.
+
+    A CAD room label is one block with the room number on one line and the
+    area on the next. Joined without a separator they read "1.0.95,95" -
+    room 1.0.9 of 5.95 m², or room 1.0.95 of 0.95? The file knows; a glued
+    string does not.
+    """
+    document = pymupdf.open()
+    page = document.new_page(width=400, height=800)
+    page.insert_htmlbox(pymupdf.Rect(20, 20, 200, 80), "<p>1.0.9<br>5,95</p>")
+    raw = document.tobytes()
+    document.close()
+
+    block = extract_pages(raw, scan_char_threshold=0)[0].blocks[0]
+
+    assert [line.text for line in block.lines] == ["1.0.9", "5,95"]
+    assert block.text == "1.0.9\n5,95"
+    first, second = block.lines
+    assert first.box.y1 <= second.box.y0 + 0.01
+
+
+def test_reference_room_label_is_split_into_lines():
+    """The label that produced "1.0.95,95" on the reference sheet."""
+    if not REFERENCE_PDF.exists():
+        pytest.skip("reference package is not in the checkout")
+    page = extract_pages(REFERENCE_PDF.read_bytes())[21]  # page 22
+
+    texts = [[line.text for line in b.lines] for b in page.blocks]
+    assert ["1.0.9", "5,95"] in texts
+
+
 @pytest.mark.skipif(not REFERENCE_PDF.exists(), reason="reference package is not in the checkout")
 def test_reads_the_reference_package_without_ocr():
     """The architecture's central assumption, checked against the real file.

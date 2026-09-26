@@ -14,10 +14,18 @@ from app.pdf.geometry import NormalizedBox, normalize_box
 
 
 @dataclass(frozen=True)
+class ExtractedLine:
+    line_no: int
+    text: str
+    box: NormalizedBox
+
+
+@dataclass(frozen=True)
 class ExtractedBlock:
     block_no: int
     text: str
     box: NormalizedBox
+    lines: list[ExtractedLine]
 
 
 @dataclass(frozen=True)
@@ -31,12 +39,12 @@ class ExtractedPage:
     blocks: list[ExtractedBlock]
 
 
-def _block_text(block: dict) -> str:
-    return "".join(
-        span.get("text", "")
-        for line in block.get("lines", [])
-        for span in line.get("spans", [])
-    )
+def _line_text(line: dict) -> str:
+    # Spans are style runs within one line and may split a word, so they are
+    # joined without a separator. Lines are distinct text objects and are not:
+    # a CAD room label is one block with the room number on one line and the
+    # area on the next, and gluing those together read "1.0.95,95".
+    return "".join(span.get("text", "") for span in line.get("spans", []))
 
 
 def extract_pages(raw: bytes, scan_char_threshold: int = 100) -> list[ExtractedPage]:
@@ -61,17 +69,29 @@ def extract_pages(raw: bytes, scan_char_threshold: int = 100) -> list[ExtractedP
                 # at this level and are left to the VLM stage.
                 if block.get("type") != 0:
                     continue
-                text = _block_text(block)
-                if not text.strip():
+                lines: list[ExtractedLine] = []
+                for line in block.get("lines", []):
+                    text = _line_text(line).strip()
+                    if not text:
+                        continue
+                    shown = pymupdf.Rect(line["bbox"]) * rotation_matrix
+                    lines.append(ExtractedLine(
+                        line_no=len(lines),
+                        text=text,
+                        box=normalize_box((shown.x0, shown.y0, shown.x1, shown.y1), page_box),
+                    ))
+                if not lines:
                     continue
-                char_count += len(text.strip())
+                block_text = "\n".join(line.text for line in lines)
+                char_count += sum(len(line.text) for line in lines)
                 displayed = pymupdf.Rect(block["bbox"]) * rotation_matrix
                 blocks.append(ExtractedBlock(
                     block_no=len(blocks),
-                    text=text,
+                    text=block_text,
                     box=normalize_box(
                         (displayed.x0, displayed.y0, displayed.x1, displayed.y1), page_box
                     ),
+                    lines=lines,
                 ))
 
             pages.append(ExtractedPage(

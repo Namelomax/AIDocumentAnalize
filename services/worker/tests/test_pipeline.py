@@ -271,6 +271,7 @@ async def test_pdf_documents_get_their_pages_extracted():
     page = db.saved_pages["f-doc"][0]
     assert page["page_no"] == 1
     assert page["blocks"]
+    assert "line_no" in page["blocks"][0]
     assert page["image_key"]
 
 
