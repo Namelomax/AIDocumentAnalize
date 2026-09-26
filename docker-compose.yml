@@ -78,6 +78,11 @@ services:
       MAX_PACKAGE_BYTES: ${MAX_PACKAGE_BYTES:-209715200}
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
       TASK_QUEUE: ${TASK_QUEUE:-inspector.tasks}
+      DEMO_ADMIN_PASSWORD: ${DEMO_ADMIN_PASSWORD:-admin123}
+      DEMO_INSPECTOR_PASSWORD: ${DEMO_INSPECTOR_PASSWORD:-inspector123}
+      DEMO_SUPERVISOR_PASSWORD: ${DEMO_SUPERVISOR_PASSWORD:-supervisor123}
+      DEMO_ML_PASSWORD: ${DEMO_ML_PASSWORD:-ml123}
+      JWT_TTL: ${JWT_TTL:-12h}
     ports:
       - "3000:3000"
     depends_on:

@@ -17,6 +17,14 @@ const schema = z.object({
   MAX_PACKAGE_BYTES: z.coerce.number().default(209_715_200),
   LOG_LEVEL: z.string().default('info'),
   TASK_QUEUE: z.string().default('inspector.tasks'),
+  // Demo accounts are created on first start so the verification stand, run
+  // without the team, has someone to log in as. The defaults are documented
+  // in the README; override them for anything beyond a demo.
+  DEMO_ADMIN_PASSWORD: z.string().default('admin123'),
+  DEMO_INSPECTOR_PASSWORD: z.string().default('inspector123'),
+  DEMO_SUPERVISOR_PASSWORD: z.string().default('supervisor123'),
+  DEMO_ML_PASSWORD: z.string().default('ml123'),
+  JWT_TTL: z.string().default('12h'),
 });
 
 const parsed = schema.parse(process.env);
@@ -37,4 +45,11 @@ export const config = {
   maxPackageBytes: parsed.MAX_PACKAGE_BYTES,
   logLevel: parsed.LOG_LEVEL,
   taskQueue: parsed.TASK_QUEUE,
+  demoPasswords: {
+    admin: parsed.DEMO_ADMIN_PASSWORD,
+    inspector: parsed.DEMO_INSPECTOR_PASSWORD,
+    supervisor: parsed.DEMO_SUPERVISOR_PASSWORD,
+    ml: parsed.DEMO_ML_PASSWORD,
+  },
+  jwtTtl: parsed.JWT_TTL,
 };
