@@ -213,3 +213,41 @@ model AuditLog {
   @@index([timestamp])
   @@map("audit_log")
 }
+
+// Field names follow section 8.1 of the customer's specification verbatim:
+// the jury compares the schema against it.
+model Param {
+  id               Int      @id @default(autoincrement())
+  code             String   @unique @db.VarChar(20)
+  section          String   @db.VarChar(50)
+  parameterName    String   @map("parameter_name") @db.VarChar(255)
+  unit             String   @db.VarChar(20)
+  sourcePd         String?  @map("source_pd")
+  sourceRd         String?  @map("source_rd")
+  sourceId         String?  @map("source_id")
+  triggerLogic     String?  @map("trigger_logic")
+  // Order of expert review only; the specification states it is not a legal
+  // action and it must never be read as a violation status.
+  reviewPriority   String   @map("review_priority") @db.VarChar(20)
+  spReference      String?  @map("sp_reference")
+  gostReference    String?  @map("gost_reference")
+  fzReference      String?  @map("fz_reference")
+  otherNormative   String?  @map("other_normative")
+  dataType         String   @map("data_type") @db.VarChar(20)
+  minValue         Float?   @map("min_value")
+  maxValue         Float?   @map("max_value")
+  regexPattern     String?  @map("regex_pattern") @db.VarChar(255)
+  isActive         Boolean  @default(true) @map("is_active")
+  // Beyond section 8.1: how the value is extracted, the inter-stage rule the
+  // trigger text describes, and whether an extractor exists at all.
+  modality         String   @db.VarChar(20)
+  compareOp        String?  @map("compare_op") @db.VarChar(30)
+  compareThreshold Float?   @map("compare_threshold")
+  implemented      Boolean  @default(false)
+  matrixVersion    String   @map("matrix_version") @db.VarChar(20)
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  @@index([section])
+  @@map("params")
+}
