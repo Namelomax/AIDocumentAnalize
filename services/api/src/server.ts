@@ -6,6 +6,7 @@ import { healthRoutes } from './routes/health.js';
 import { documentRoutes } from './routes/documents.js';
 import { objectRoutes } from './routes/objects.js';
 import { processRoutes } from './routes/processes.js';
+import { paramRoutes } from './routes/params.js';
 import { ensureBucket } from './storage.js';
 
 export async function buildServer(): Promise<FastifyInstance> {
@@ -19,6 +20,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   await app.register(documentRoutes);
   await app.register(objectRoutes);
   await app.register(processRoutes);
+  await app.register(paramRoutes);
   return app;
 }
 
