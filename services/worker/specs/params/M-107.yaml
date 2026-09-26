@@ -1,0 +1,21 @@
+code: M-107
+section: ППМ
+parameter_name: Класс пожарной опасности отделочных материалов
+unit: Класс (КМ)
+data_type: enum
+modality: scalar_text
+review_priority: HIGH
+source_pd: Требования к отделке стен/полов (ППМ)
+source_rd: Ведомости отделки (АР)
+source_id: Сертификаты; Пожарные декларации
+trigger_logic: Подмена КМ0/КМ1 на КМ3 на путях эвакуации в РД/ИД.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

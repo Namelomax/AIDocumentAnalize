@@ -1,0 +1,22 @@
+code: M-044
+section: АР
+parameter_name: Послойный состав пирога кровли
+unit: мм (слои)
+data_type: number
+modality: scalar_text
+review_priority: HIGH
+source_pd: Узлы кровли; Разрезы; Спецификация (АР)
+source_rd: План кровли; Детальные чертежи; Спецификация (АР)
+source_id: Акты АОСР на устройство кровли
+trigger_logic: Замена кровельной мембраны на класс ниже; исключение пароизоляционного
+  слоя.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

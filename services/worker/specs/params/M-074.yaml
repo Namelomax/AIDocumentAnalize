@@ -1,0 +1,21 @@
+code: M-074
+section: ИОС3
+parameter_name: Диаметры выпусков и магистралей К1/К2
+unit: мм
+data_type: number
+modality: drawing_measure
+review_priority: HIGH
+source_pd: Принципиальные схемы канализации (ИОС3)
+source_rd: Планы подвала; Аксонометрия К1/К2 (ВК)
+source_id: Исполнительные схемы К1/К2 (диаметры)
+trigger_logic: Уменьшение диаметров выпусков канализации из здания в РД (риск засоров).
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

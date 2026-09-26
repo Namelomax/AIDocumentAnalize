@@ -1,0 +1,21 @@
+code: M-082
+section: ПОС
+parameter_name: Продолжительность этапов строительства (Календарный график)
+unit: дни
+data_type: number
+modality: scalar_text
+review_priority: MEDIUM
+source_pd: Текст ПОС; Нормативный срок; Календарный план
+source_rd: Укрупненный график СМР (ППР)
+source_id: Общий журнал работ (даты начала/окончания этапов)
+trigger_logic: Превышение продолжительности критического этапа в графике РД > 10%.
+compare_op: relative_delta_gt
+compare_threshold: 0.1
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

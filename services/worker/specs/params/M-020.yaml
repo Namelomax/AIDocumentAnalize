@@ -1,0 +1,21 @@
+code: M-020
+section: ПЗ
+parameter_name: Коэффициент использования территории (КИТ)
+unit: '%'
+data_type: number
+modality: scalar_text
+review_priority: HIGH
+source_pd: 'Раздел ПЗ: Таблица ТЭП земельного участка'
+source_rd: 'Раздел ПП (ГП): Лист "Общие данные", Таблица ТЭП'
+source_id: Справка о ТЭП для ввода в эксплуатацию
+trigger_logic: Выход за нормативные рамки плотности, утвержденные в ПД.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

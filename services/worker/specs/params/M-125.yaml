@@ -1,0 +1,22 @@
+code: M-125
+section: ЗУ
+parameter_name: Толщина теплоизоляционного слоя наружных стен
+unit: мм
+data_type: number
+modality: scalar_text
+review_priority: HIGH
+source_pd: Теплоизоляционный расчет; Разрезы стен (ЗУ/АР)
+source_rd: Спецификация фасадных систем; Разрезы стен (АР)
+source_id: Акты АОСР на утепление; Паспорта на утеплитель
+trigger_logic: Уменьшение толщины утеплителя в РД, ведущее к падению сопротивления
+  теплопередаче.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

@@ -1,0 +1,21 @@
+code: M-060
+section: КР
+parameter_name: Геометрические сечения несущих колонн и пилонов
+unit: мм²
+data_type: number
+modality: scalar_text
+review_priority: HIGH
+source_pd: Схемы расположения; Сечения (КР)
+source_rd: Опалубочные чертежи колонн; Ведомости (КЖ)
+source_id: Исполнительная схема колонн (промеры сечений)
+trigger_logic: Уменьшение площади поперечного сечения несущей вертикальной конструкции.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

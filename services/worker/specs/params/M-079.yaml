@@ -1,0 +1,21 @@
+code: M-079
+section: ИОС4
+parameter_name: Характеристики вентиляторов общеобменной вентиляции
+unit: м³/ч / Па / кВт
+data_type: number
+modality: scalar_text
+review_priority: HIGH
+source_pd: Спецификация; Мощность вентиляторов (ИОС4)
+source_rd: Таблицы систем; Спецификация (ОВ)
+source_id: Технические паспорта; Паспорта вентсистем
+trigger_logic: Подмена установок на аналоги с меньшей кратностью воздухообмена.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

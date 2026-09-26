@@ -1,0 +1,22 @@
+code: M-115
+section: ОДИ
+parameter_name: Технические параметры и наличие инвалидных подъемников
+unit: —
+data_type: string
+modality: drawing_entity
+review_priority: HIGH
+source_pd: Структурные схемы ОДИ; Спецификация
+source_rd: Чертежи установки подъемников (АР/ТХ)
+source_id: Технические паспорта; Декларации; Акты ПНР
+trigger_logic: Исключение подъемника из РД или замена на модель без автоматического
+  управления.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

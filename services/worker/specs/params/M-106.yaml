@@ -1,0 +1,21 @@
+code: M-106
+section: ППМ
+parameter_name: Направление открывания дверей на путях эвакуации
+unit: —
+data_type: string
+modality: drawing_entity
+review_priority: HIGH
+source_pd: Схемы направления движения (ППМ)
+source_rd: Рабочие планы этажей (АР)
+source_id: Акты проверки систем ПЗ; Фотофиксация
+trigger_logic: Дверь открывается внутрь или блокирует смежный поток эвакуации.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

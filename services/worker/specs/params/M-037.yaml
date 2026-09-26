@@ -1,0 +1,21 @@
+code: M-037
+section: СПЗУ
+parameter_name: Количество и разметка парковочных мест на участке
+unit: шт.
+data_type: number
+modality: scalar_text
+review_priority: HIGH
+source_pd: Схема планировочной организации (СПЗУ)
+source_rd: План благоустройства; Разметка автостоянок (ПП)
+source_id: Исполнительная схема дорожной разметки
+trigger_logic: Сокращение количества наземных парковочных мест в РД.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

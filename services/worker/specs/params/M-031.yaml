@@ -1,0 +1,21 @@
+code: M-031
+section: СПЗУ
+parameter_name: Радиусы поворота дорог и пожарных проездов
+unit: м
+data_type: number
+modality: drawing_measure
+review_priority: HIGH
+source_pd: План проездов; Радиусы закруглений (СПЗУ)
+source_rd: Разбивочный план проездов (ПП)
+source_id: Исполнительная геодезическая схема
+trigger_logic: Уменьшение радиуса поворота пожарной техники < 10-12 м (норматив).
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

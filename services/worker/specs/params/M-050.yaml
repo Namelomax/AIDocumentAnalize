@@ -1,0 +1,21 @@
+code: M-050
+section: АР
+parameter_name: Спецификация и типы внутренней отделки помещений
+unit: Класс (КМ)
+data_type: enum
+modality: scalar_text
+review_priority: HIGH
+source_pd: Ведомость отделки (ГОСТ 21.501) (АР)
+source_rd: Ведомость отделки; Спецификация ЛКМ/плитки (АР)
+source_id: Сертификаты; Пожарные декларации на материалы
+trigger_logic: Подмена негорючей отделки (КМ0/КМ1) на горючую (КМ3) на путях эвакуации.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: ГОСТ 21.501
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

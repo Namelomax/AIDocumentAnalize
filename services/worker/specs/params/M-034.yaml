@@ -1,0 +1,22 @@
+code: M-034
+section: СПЗУ
+parameter_name: Точки и координаты подключения внешних сетей
+unit: Коорд.
+data_type: coordinate
+modality: drawing_measure
+review_priority: HIGH
+source_pd: Сводный план инженерных сетей (СПЗУ)
+source_rd: Наружные сети (НВК/НТС); Разбивочные чертежи
+source_id: Исполнительная геодезическая схема до точки врезки
+trigger_logic: Смещение точки подключения наружной сети относительно ТУ и ПД > 0.5
+  м.
+compare_op: delta_gt
+compare_threshold: 0.5
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

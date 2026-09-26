@@ -1,0 +1,21 @@
+code: M-071
+section: ИОС2
+parameter_name: Диаметры стояков и разводящих трубопроводов В1/Т3
+unit: мм
+data_type: number
+modality: scalar_text
+review_priority: HIGH
+source_pd: Принципиальные схемы ХВС/ГВС (ИОС2)
+source_rd: Планы разводки; Аксонометрия; Спецификация труб (ВК)
+source_id: Исполнительные схемы В1/Т3 (с диаметрами)
+trigger_logic: Уменьшение диаметров стояков или магистралей ХВС/ГВС в РД/ИД.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

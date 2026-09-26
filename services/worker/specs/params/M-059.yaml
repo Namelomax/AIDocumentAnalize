@@ -1,0 +1,21 @@
+code: M-059
+section: КР
+parameter_name: Толщина монолитных плит перекрытий и покрытия
+unit: мм
+data_type: number
+modality: drawing_measure
+review_priority: HIGH
+source_pd: Опалубочные схемы перекрытий (КР)
+source_rd: Опалубочные чертежи; Разрезы (КЖ)
+source_id: Исполнительная геодезическая схема нивелировки поверхности плит
+trigger_logic: Уменьшение конструктивной толщины диска перекрытия (риск деформаций).
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

@@ -1,0 +1,22 @@
+code: M-130
+section: ЗУ
+parameter_name: Установка энергосберегающего осветительного оборудования
+unit: —
+data_type: string
+modality: drawing_entity
+review_priority: MEDIUM
+source_pd: Спецификации светильников (ЗУ/ИОС1)
+source_rd: Спецификация оборудования (ЭОМ)
+source_id: Сертификаты; Накладные; Фотофиксация
+trigger_logic: Замена светодиодных светильников (LED) на люминесцентные или лампы
+  накаливания.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

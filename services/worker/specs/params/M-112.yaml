@@ -1,0 +1,21 @@
+code: M-112
+section: ППМ
+parameter_name: Производительность вентиляторов ДУ и подпора воздуха
+unit: м³/ч / Па
+data_type: number
+modality: scalar_text
+review_priority: HIGH
+source_pd: Расчетные расходы ДУ (ППМ/ИОС)
+source_rd: Таблицы систем; Спецификация (ОВ)
+source_id: Технические паспорта; Акты аэродинамических испытаний
+trigger_logic: Занижение производительности или давления вентиляторов ДУ в РД.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

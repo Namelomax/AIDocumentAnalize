@@ -1,0 +1,21 @@
+code: M-052
+section: АР
+parameter_name: Цветовое решение и материалы облицовки фасадов
+unit: RAL / Артикул
+data_type: string
+modality: scalar_text
+review_priority: MEDIUM
+source_pd: Чертежи фасадов в цвете (Паспорт фасадов)
+source_rd: Рабочие чертежи фасадов; Раскладка плитки (АР)
+source_id: Паспорта качества на фасадные панели; Акты АОСР
+trigger_logic: Изменение колористического решения фасада в РД без согласования.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

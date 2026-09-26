@@ -1,0 +1,22 @@
+code: M-048
+section: АР
+parameter_name: Количество и параметры лестничных маршей и ступеней
+unit: шт. / мм
+data_type: number
+modality: scalar_text
+review_priority: HIGH
+source_pd: Разрезы лестничных клеток; Планы этажей (АР)
+source_rd: Детальные чертежи лестниц; Спецификация (АР)
+source_id: Исполнительная схема лестниц (фактические промеры)
+trigger_logic: Изменение количества ступеней; высота подступенка > 150 мм или проступь
+  < 300 мм.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

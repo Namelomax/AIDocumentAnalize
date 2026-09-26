@@ -1,0 +1,21 @@
+code: M-042
+section: АР
+parameter_name: Высота путей эвакуации и проемов
+unit: м
+data_type: number
+modality: drawing_measure
+review_priority: HIGH
+source_pd: Разрезы здания; Высотные отметки (АР)
+source_rd: Рабочие размеры; Чертежи лестничных клеток (АР)
+source_id: Исполнительная геодезическая схема (высоты интерьеров)
+trigger_logic: Высота коридоров < 2.0 м или дверей < 1.9 м (СП 1.13130).
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: СП 1.13130
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

@@ -1,0 +1,22 @@
+code: M-098
+section: ООС
+parameter_name: Регистрация лимитов в АИС "ОСИГ"
+unit: Статус
+data_type: enum
+modality: doc_presence
+review_priority: HIGH
+source_pd: Проектные ТЭП отходов (ООС)
+source_rd: Технологический регламент (ТРПО)
+source_id: Электронный паспорт в АИС "ОСИГ"
+trigger_logic: Начало земляных/демонтажных работ без открытого разрешения на перемещение
+  ОСС.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

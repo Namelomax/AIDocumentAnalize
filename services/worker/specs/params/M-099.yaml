@@ -1,0 +1,21 @@
+code: M-099
+section: ООС
+parameter_name: Верфикация транспортных средств (ГЛОНАСС)
+unit: Статус
+data_type: enum
+modality: doc_presence
+review_priority: HIGH
+source_pd: Мероприятия по эко-транспортировке (ООС)
+source_rd: Перечень спецтехники (ТРПО)
+source_id: Логи РНИС; Телеметрия в АИС "ОСИГ"
+trigger_logic: Рейс самосвала без ГЛОНАСС-трекера или не зарегистрированного в РНИС.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

@@ -1,0 +1,22 @@
+code: M-070
+section: ИОС1
+parameter_name: Параметры и контуры заземления и молниезащиты
+unit: Ом / мм²
+data_type: number
+modality: scalar_text
+review_priority: HIGH
+source_pd: Схемы контуров заземления (ИОС1)
+source_rd: Расходные схемы; Схемы заземления (ЭГ/ЭМ)
+source_id: Акты АОСР на заземление; Протоколы сопротивления
+trigger_logic: Уменьшение количества заземлителей или исключение элементов молниезащиты
+  в РД.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

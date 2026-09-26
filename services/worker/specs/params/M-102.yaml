@@ -1,0 +1,22 @@
+code: M-102
+section: ППМ
+parameter_name: Деление здания на пожарные отсеки
+unit: —
+data_type: string
+modality: drawing_entity
+review_priority: HIGH
+source_pd: Схемы деления на отсеки; Площади (ППМ)
+source_rd: Кладочные планы; Маркировка отсеков (АР/КР)
+source_id: Исполнительные схемы конструкций
+trigger_logic: Нарушение непрерывности противопожарных стен в РД/ИД; увеличение площади
+  отсека.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

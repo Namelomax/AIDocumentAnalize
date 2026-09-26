@@ -1,0 +1,21 @@
+code: M-101
+section: ООС
+parameter_name: Сверка легитимности полной утилизации
+unit: Статус
+data_type: enum
+modality: doc_presence
+review_priority: HIGH
+source_pd: Перечень конечных объектов (КПО/полигоны) (ООС)
+source_rd: Договоры с полигонами (ТРПО)
+source_id: Электронные отметки полигона; ГРОО
+trigger_logic: Выгрузка отходов на полигон, не входящий в ТРПО или без лицензии ГРОО.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

@@ -1,0 +1,21 @@
+code: M-124
+section: ЗУ
+parameter_name: Класс энергетической эффективности здания
+unit: Буква
+data_type: enum
+modality: scalar_text
+review_priority: HIGH
+source_pd: Энергетический паспорт (ЗУ)
+source_rd: Лист "Общие данные"; Маркировка класса (АР/ОВ)
+source_id: Фактический энергопаспорт (по замерам)
+trigger_logic: Снижение проектного класса энергоэффективности в РД/ИД.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

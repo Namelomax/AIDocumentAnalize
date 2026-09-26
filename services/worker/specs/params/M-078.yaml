@@ -1,0 +1,22 @@
+code: M-078
+section: ИОС4
+parameter_name: Сечения и геометрия воздуховодов общеобменной вентиляции
+unit: мм²
+data_type: number
+modality: scalar_text
+review_priority: HIGH
+source_pd: Принципиальные схемы вентиляции (ИОС4)
+source_rd: Поэтажные планы; Разрезы; Спецификация (ОВ)
+source_id: Исполнительные схемы вентиляции (геометрия коробов)
+trigger_logic: Уменьшение площади сечения воздуховода в РД (падение объема воздуха,
+  рост шума).
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

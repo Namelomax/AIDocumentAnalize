@@ -1,0 +1,21 @@
+code: M-021
+section: ПЗ
+parameter_name: Класс энергетической эффективности
+unit: Буква
+data_type: enum
+modality: scalar_text
+review_priority: HIGH
+source_pd: 'Раздел ПЗ: Текст "Энергоэффективность"'
+source_rd: 'Раздел АР/ОВ: Требования в "Общих данных"'
+source_id: Энергетический паспорт (фактический по замерам)
+trigger_logic: Снижение класса энергоэффективности в РД/ИД относительно ПД.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

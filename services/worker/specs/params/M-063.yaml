@@ -1,0 +1,21 @@
+code: M-063
+section: КР
+parameter_name: Наличие и конструктивное исполнение деформационных швов
+unit: —
+data_type: string
+modality: drawing_entity
+review_priority: HIGH
+source_pd: Схема расположения швов (КР)
+source_rd: Чертежи узлов температурных швов (КЖ/КМ)
+source_id: Акты АОСР на устройство швов
+trigger_logic: Отсутствие, исключение или конструктивное искажение узла шва в РД.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

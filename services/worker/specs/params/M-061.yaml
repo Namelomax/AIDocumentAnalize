@@ -1,0 +1,21 @@
+code: M-061
+section: КР
+parameter_name: Толщина несущих монолитных стен (ядра жесткости)
+unit: мм
+data_type: number
+modality: drawing_measure
+review_priority: HIGH
+source_pd: Схемы расположения стен; Разрезы (КР)
+source_rd: Опалубочные чертежи стен; Шахт (КЖ)
+source_id: Исполнительная геодезическая схема стен (толщины)
+trigger_logic: Уменьшение толщины стен лифтовых шахт или пилонов диафрагм жесткости.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

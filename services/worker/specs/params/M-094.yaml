@@ -1,0 +1,21 @@
+code: M-094
+section: ПОД
+parameter_name: Масса и класс опасности образующихся отходов
+unit: т / Класс
+data_type: enum
+modality: scalar_text
+review_priority: MEDIUM
+source_pd: Расчет объемов и классов опасности (ПОД)
+source_rd: Регламенты по отходам (ППР)
+source_id: Справки об утилизации; Талоны с полигонов
+trigger_logic: Превышение объемов опасных отходов в ИД или занижение класса опасности.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

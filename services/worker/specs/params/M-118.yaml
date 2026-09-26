@@ -1,0 +1,21 @@
+code: M-118
+section: ОДИ
+parameter_name: Высота порогов в дверных проемах на путях МГН
+unit: м
+data_type: number
+modality: scalar_text
+review_priority: MEDIUM
+source_pd: Текст ОДИ; Детали проемов
+source_rd: Детальные узлы сопряжения полов (АР)
+source_id: Акты АОСР на устройство полов (фактические замеры)
+trigger_logic: Высота порога > 0.014 м (СП 59.13330).
+compare_op: value_gt
+compare_threshold: 0.014
+min_value: null
+max_value: 0.014
+sp_reference: СП 59.13330
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

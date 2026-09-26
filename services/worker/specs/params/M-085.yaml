@@ -1,0 +1,22 @@
+code: M-085
+section: ПОС
+parameter_name: Места размещения площадок складирования материалов
+unit: —
+data_type: string
+modality: drawing_entity
+review_priority: HIGH
+source_pd: Строительный генплан; Зоны складирования (ПОС)
+source_rd: Зоны складирования (ППР)
+source_id: Общий журнал работ; Фотофиксация (ОКР)
+trigger_logic: Размещение тяжелых конструкций в зоне откосов котлована или на непредусмотренных
+  перекрытиях.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

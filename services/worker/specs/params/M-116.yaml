@@ -1,0 +1,21 @@
+code: M-116
+section: ОДИ
+parameter_name: Ширина коридоров на путях движения МГН
+unit: м
+data_type: number
+modality: drawing_measure
+review_priority: HIGH
+source_pd: Планы этажей; Пути движения (ОДИ)
+source_rd: Кладочные планы; Линейные размеры (АР)
+source_id: Исполнительная схема поэтажных планов (обмеры)
+trigger_logic: Сужение коридоров < 1.5-1.8 м (СП 59.13330).
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: СП 59.13330
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

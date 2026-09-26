@@ -1,0 +1,21 @@
+code: M-104
+section: ППМ
+parameter_name: Ширина и высота эвакуационных проходов
+unit: м
+data_type: number
+modality: scalar_text
+review_priority: HIGH
+source_pd: Расчет путей эвакуации (ППМ)
+source_rd: Кладочные планы; Линейные размеры (АР)
+source_id: Исполнительная схема поэтажных планов (обмеры)
+trigger_logic: Сужение коридоров < 1.2 м (СП 1.13130).
+compare_op: value_lt
+compare_threshold: 1.2
+min_value: 1.2
+max_value: null
+sp_reference: СП 1.13130
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

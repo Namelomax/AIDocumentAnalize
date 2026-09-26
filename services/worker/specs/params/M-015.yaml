@@ -1,0 +1,21 @@
+code: M-015
+section: ПЗ
+parameter_name: Категория надежности электроснабжения
+unit: Кат.
+data_type: enum
+modality: scalar_text
+review_priority: HIGH
+source_pd: 'Раздел ПЗ: Текст (Требования к надежности)'
+source_rd: 'Раздел ЭОМ: Принципиальная схема ВРУ/ГРЩ'
+source_id: Акт допуска Ростехнадзора
+trigger_logic: Снижение категории (например, перевод ИТП с 1-й на 2-ю категорию).
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

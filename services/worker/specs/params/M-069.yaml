@@ -1,0 +1,22 @@
+code: M-069
+section: ИОС1
+parameter_name: Сечение жил и маркировка распределительных кабелей
+unit: мм²
+data_type: number
+modality: scalar_text
+review_priority: HIGH
+source_pd: Схемы распределительных сетей; Спецификация (ИОС1)
+source_rd: Кабельные журналы; Поэтажные планы (ЭОМ/ЭМ)
+source_id: Акты АОСР на прокладку; Протоколы изоляции
+trigger_logic: Занижение сечения кабелей или подмена негорючих марок (например, FRLS
+  на обычный LS).
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

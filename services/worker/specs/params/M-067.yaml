@@ -1,0 +1,21 @@
+code: M-067
+section: КР
+parameter_name: Ведомости расхода материалов (бетон, сталь)
+unit: м³ / т
+data_type: number
+modality: scalar_text
+review_priority: MEDIUM
+source_pd: Сводные таблицы расхода (КР)
+source_rd: Ведомости расхода стали (ВРС) (КЖ/КМ)
+source_id: Общий журнал работ; Реестр накладных КС-2
+trigger_logic: Итоговое расхождение объемов материалов между ПД, РД и ИД > 2%.
+compare_op: relative_delta_gt
+compare_threshold: 0.02
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

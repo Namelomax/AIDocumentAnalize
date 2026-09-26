@@ -1,0 +1,21 @@
+code: M-119
+section: ОДИ
+parameter_name: Габариты и планировка санузлов для инвалидов (универсальные кабины)
+unit: м² / м
+data_type: number
+modality: scalar_text
+review_priority: HIGH
+source_pd: Чертежи планировки санузлов (ОДИ)
+source_rd: Детальные чертежи санузлов (АР/ВК)
+source_id: Исполнительная схема санузлов (обмеры и привязки)
+trigger_logic: Внутренние размеры универсальной кабины в РД/ИД < 1.5 м (СП 59.13330).
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: СП 59.13330
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

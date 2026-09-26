@@ -1,0 +1,22 @@
+code: M-129
+section: ЗУ
+parameter_name: Наличие приборов учета расхода энергоресурсов
+unit: шт.
+data_type: number
+modality: scalar_text
+review_priority: MEDIUM
+source_pd: Описание систем учета (ЗУ)
+source_rd: Схемы узлов учета (ИОС1/ИОС2/ОВ)
+source_id: Акты допуска приборов; Паспорта счетчиков
+trigger_logic: Отсутствие в РД общедомовых/поквартирных счетчиков (электричество,
+  вода, тепло).
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

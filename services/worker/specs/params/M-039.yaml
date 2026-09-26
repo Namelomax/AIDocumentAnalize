@@ -1,0 +1,21 @@
+code: M-039
+section: СПЗУ
+parameter_name: Мероприятия по инженерной подготовке (дренажи)
+unit: —
+data_type: string
+modality: drawing_entity
+review_priority: HIGH
+source_pd: Схема инженерной подготовки (СПЗУ)
+source_rd: Схемы дождевой канализации; Дренажные системы (НВК)
+source_id: Акты АОСР на устройство дренажа; Исполнительные схемы
+trigger_logic: Исключение из РД открытых лотков или закрытых систем пристенного дренажа.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

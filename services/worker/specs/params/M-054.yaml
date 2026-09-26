@@ -1,0 +1,21 @@
+code: M-054
+section: КР
+parameter_name: Шаг и привязка координационных осей несущего каркаса
+unit: мм
+data_type: number
+modality: drawing_measure
+review_priority: HIGH
+source_pd: Схема расположения осей (КР)
+source_rd: Разбивочные планы фундаментов; Стен (КЖ/КМ)
+source_id: Исполнительная геодезическая схема осей
+trigger_logic: Самовольное изменение шага колонн или сдвиг осей в РД/ИД.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

@@ -1,0 +1,21 @@
+code: M-058
+section: КР
+parameter_name: Толщина монолитной фундаментной плиты / ростверка
+unit: мм
+data_type: number
+modality: drawing_measure
+review_priority: HIGH
+source_pd: Опалубочный чертеж фундамента (КР)
+source_rd: Опалубочные чертежи плиты; Разрезы (КЖ)
+source_id: Исполнительная геодезическая схема нивелировки верха/низа плиты
+trigger_logic: Уменьшение проектной толщины плиты в РД или по факту заливки (ИД).
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

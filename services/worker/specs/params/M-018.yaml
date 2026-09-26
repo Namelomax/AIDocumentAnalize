@@ -1,0 +1,21 @@
+code: M-018
+section: ПЗ
+parameter_name: Максимальный часовой расход газа
+unit: м³/ч
+data_type: number
+modality: scalar_text
+review_priority: HIGH
+source_pd: 'Раздел ПЗ: Текст (ТУ газа)'
+source_rd: 'Раздел ГСВ: Лист "Общие данные"; Схема ГРП/Ш'
+source_id: Акт приемки газопровода; Договор поставки газа
+trigger_logic: Увеличение потребления газа в РД выше лимита, одобренного в ПД.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

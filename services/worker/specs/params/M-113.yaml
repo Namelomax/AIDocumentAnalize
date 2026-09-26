@@ -1,0 +1,22 @@
+code: M-113
+section: ППМ
+parameter_name: Расход воды и количество струй внутреннего пожаротушения (ВПВ)
+unit: л/с / шт.
+data_type: number
+modality: scalar_text
+review_priority: HIGH
+source_pd: Расчет расхода на ВПВ (ППМ)
+source_rd: Планы сети ВПВ; Аксонометрия (ВК)
+source_id: Исполнительные схемы ВПВ; Акты испытаний на водоотдачу
+trigger_logic: Уменьшение диаметра кольцевого трубопровода ВПВ; сокращение количества
+  кранов.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

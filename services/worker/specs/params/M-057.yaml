@@ -1,0 +1,21 @@
+code: M-057
+section: КР
+parameter_name: Марка и класс прочности рабочей арматуры
+unit: Класс (А)
+data_type: enum
+modality: scalar_text
+review_priority: HIGH
+source_pd: Общие указания; Спецификация (КР)
+source_rd: Общие указания; Ведомость расхода стали (КЖ)
+source_id: Акты АОСР на армирование; Сертификаты на сталь
+trigger_logic: Замена класса арматуры на менее пластичный (например, А500С на А400).
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

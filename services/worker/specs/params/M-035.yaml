@@ -1,0 +1,21 @@
+code: M-035
+section: СПЗУ
+parameter_name: Охранные зоны существующих коммуникаций
+unit: —
+data_type: string
+modality: drawing_entity
+review_priority: HIGH
+source_pd: Ситуационный план; Сводный план с границами (СПЗУ)
+source_rd: Планы прокладки трасс; Посадка зданий (ПП)
+source_id: Исполнительная разбивка осей зданий и сетей
+trigger_logic: Посадка временных зданий, кранов или сетей в охранную зону.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

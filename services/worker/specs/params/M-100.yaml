@@ -1,0 +1,21 @@
+code: M-100
+section: ООС
+parameter_name: Фиксация рейсов через мобильный КПТС
+unit: Статус
+data_type: enum
+modality: doc_presence
+review_priority: HIGH
+source_pd: Требования к весовому контролю (ООС)
+source_rd: Места размещения постов КПП (ППР)
+source_id: Лог-данные "Мобильный КПТС"
+trigger_logic: Выезд самосвала с отходами без генерации QR-кода в "Мобильном КПТС".
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

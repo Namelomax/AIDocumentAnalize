@@ -1,0 +1,21 @@
+code: M-096
+section: ПОД
+parameter_name: Узлы временного расчленения сохраняемых конструкций
+unit: —
+data_type: string
+modality: drawing_entity
+review_priority: HIGH
+source_pd: Чертежи временных подпорок (ПОД)
+source_rd: Детальные узлы крепелей; Спецификация (КР/ППР)
+source_id: Акты АОСР на устройство креплений; Фотофиксация
+trigger_logic: Занижение сечений элементов расчленения в РД; отсутствие актов монтажа.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

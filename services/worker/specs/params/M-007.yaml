@@ -1,0 +1,21 @@
+code: M-007
+section: ПЗ
+parameter_name: Этажность (надземная)
+unit: ед.
+data_type: number
+modality: scalar_text
+review_priority: HIGH
+source_pd: 'Раздел ПЗ: Таблица ТЭП'
+source_rd: 'Раздел АР: Заглавные листы, чертежи фасадов'
+source_id: Разрешение на ввод; Технический план БТИ
+trigger_logic: Несовпадение количества надземных этажей в РД с утвержденной ПД.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

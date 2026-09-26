@@ -1,0 +1,22 @@
+code: M-097
+section: ПОД
+parameter_name: Места и габариты площадок временного складирования лома
+unit: м²
+data_type: number
+modality: drawing_measure
+review_priority: HIGH
+source_pd: Строительный генплан демонтажа (ПОД)
+source_rd: Зоны накопления бункера (ППР)
+source_id: Исполнительная схема площадки; Записи в ОКР
+trigger_logic: Складирование тяжелого мусора на бровке котлована или над действующими
+  сетями.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

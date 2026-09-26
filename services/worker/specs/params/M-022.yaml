@@ -1,0 +1,21 @@
+code: M-022
+section: ПЗ
+parameter_name: Степень огнестойкости здания
+unit: Степень
+data_type: enum
+modality: scalar_text
+review_priority: HIGH
+source_pd: 'Раздел ПЗ: Противопожарные характеристики'
+source_rd: 'Раздел АР/КР: Лист "Общие данные" (маркировка)'
+source_id: Заключение ГПН (МЧС)
+trigger_logic: Снижение степени огнестойкости (например, с I на II) в РД.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

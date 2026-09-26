@@ -1,0 +1,21 @@
+code: M-064
+section: КР
+parameter_name: Привязки и габариты лифтовых шахт
+unit: мм
+data_type: number
+modality: drawing_measure
+review_priority: HIGH
+source_pd: Планы перекрытий; Отверстия (КР)
+source_rd: Чертежи лифтовых шахт; Закладные (КЖ)
+source_id: Исполнительная геодезическая схема шахт
+trigger_logic: Сужение шахты или смещение закладных элементов в РД (риск монтажа лифта).
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

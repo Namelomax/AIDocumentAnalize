@@ -1,0 +1,22 @@
+code: M-122
+section: ОДИ
+parameter_name: Наличие и расстановка тактильно-контрастных указателей
+unit: —
+data_type: string
+modality: drawing_entity
+review_priority: MEDIUM
+source_pd: Планы этажей и территории (ОДИ)
+source_rd: Планы покрытий; Планы полов (ГП/АР)
+source_id: Акты АОСР на устройство полов; Исполнительные схемы
+trigger_logic: Отсутствие в РД предупреждающих тактильных полос перед лестницами и
+  дверями.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

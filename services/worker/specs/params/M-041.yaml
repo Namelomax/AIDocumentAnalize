@@ -1,0 +1,21 @@
+code: M-041
+section: АР
+parameter_name: Ширина эвакуационных выходов (дверей)
+unit: м
+data_type: number
+modality: scalar_text
+review_priority: HIGH
+source_pd: Ведомость заполнения проемов (АР)
+source_rd: Спецификация дверей (ГОСТ 21.101); Детальные узлы (АР)
+source_id: Паспорта на двери; Акты АОСР (фактический замер)
+trigger_logic: Ширина дверного полотна на путях эвакуации в РД/ИД < 0.9 м.
+compare_op: value_lt
+compare_threshold: 0.9
+min_value: 0.9
+max_value: null
+sp_reference: null
+gost_reference: ГОСТ 21.101
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

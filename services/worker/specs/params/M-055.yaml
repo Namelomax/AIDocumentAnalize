@@ -1,0 +1,22 @@
+code: M-055
+section: КР
+parameter_name: Класс прочности бетона монолитных конструкций
+unit: Марка (B)
+data_type: enum
+modality: scalar_text
+review_priority: HIGH
+source_pd: Общие данные; Спецификация материалов (КР)
+source_rd: Общие указания; Спецификация элементов (КЖ)
+source_id: Журнал бетонных работ; Паспорта на БСГ; Протоколы испытаний
+trigger_logic: Понижение класса бетона несущих элементов (например, B35 на B30) в
+  РД/ИД.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

@@ -1,0 +1,22 @@
+code: M-087
+section: ПОС
+parameter_name: Технологическая последовательность возведения
+unit: —
+data_type: string
+modality: drawing_entity
+review_priority: HIGH
+source_pd: 'Текст ПОС: Методы производства работ'
+source_rd: Технологические карты (ППР)
+source_id: Общий журнал работ (записи о ходе работ)
+trigger_logic: Самовольное изменение критических технологий (например, монолит на
+  сборный ЖБ).
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

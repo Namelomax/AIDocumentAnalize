@@ -1,0 +1,21 @@
+code: M-051
+section: АР
+parameter_name: Параметры естественного освещения (КЕО)
+unit: '%'
+data_type: number
+modality: scalar_text
+review_priority: MEDIUM
+source_pd: Расчет КЕО (АР)
+source_rd: Спецификация окон; Планы этажей (АР)
+source_id: Заключение экспертизы; Лабораторные замеры КЕО
+trigger_logic: Изменение конфигурации оконных переплетов в РД, снижающее светопропускание.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

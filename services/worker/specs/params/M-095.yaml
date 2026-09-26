@@ -1,0 +1,22 @@
+code: M-095
+section: ПОД
+parameter_name: Мероприятия по пылеподавлению и снижению шума
+unit: —
+data_type: string
+modality: drawing_entity
+review_priority: MEDIUM
+source_pd: 'Текст ПОД: Требования к орошению/экранам'
+source_rd: Технологические карты; Места водных пушек (ППР)
+source_id: Журнал производственного экоконтроля (замеры шума/пыли)
+trigger_logic: Отсутствие систем гидроорошения или защитных экранов в РД при демонтаже
+  стен.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

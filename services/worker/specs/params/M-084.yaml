@@ -1,0 +1,21 @@
+code: M-084
+section: ПОС
+parameter_name: Схемы движения и ширина временных автодорог
+unit: м
+data_type: number
+modality: drawing_measure
+review_priority: MEDIUM
+source_pd: Строительный генплан; Ширина проездов (ПОС)
+source_rd: Схемы движения транспорта (ППР)
+source_id: Исполнительная съемка дорог (фактические обмеры)
+trigger_logic: Сужение временных дорог < 3.5-4.5 м (нарушение ПОС).
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

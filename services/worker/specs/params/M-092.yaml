@@ -1,0 +1,21 @@
+code: M-092
+section: ПОД
+parameter_name: Мероприятия по защите действующих коммуникаций
+unit: —
+data_type: string
+modality: drawing_entity
+review_priority: HIGH
+source_pd: Схемы защитных коробок (ПОД)
+source_rd: Чертежи защитных сооружений (ППР)
+source_id: Акты АОСР на устройство защитных ограждений
+trigger_logic: Отсутствие в ППР защитных мероприятий для сетей в зоне работы техники.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

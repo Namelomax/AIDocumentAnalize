@@ -1,0 +1,21 @@
+code: M-131
+section: ЗУ
+parameter_name: Удельный годовой расход тепловой энергии на отопление
+unit: кВт·ч/м²
+data_type: number
+modality: scalar_text
+review_priority: HIGH
+source_pd: Итоговая таблица Паспорта ЗУ
+source_rd: Лист "Общие данные"; Таблица нагрузок (ОВ)
+source_id: Фактический энергопаспорт
+trigger_logic: Превышение удельного годового расхода энергии в РД над лимитом из ПД.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

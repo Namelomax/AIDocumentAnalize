@@ -1,0 +1,21 @@
+code: M-030
+section: СПЗУ
+parameter_name: Ширина внутриплощадочных дорог и проездов
+unit: м
+data_type: number
+modality: drawing_measure
+review_priority: HIGH
+source_pd: План проездов; Линейные размеры (СПЗУ)
+source_rd: План благоустройства; Полосы проезжей части (ПП)
+source_id: Исполнительная схема покрытий (фактические обмеры)
+trigger_logic: Ширина пожарного проезда в РД или в натуре (ИД) менее 4.2 м.
+compare_op: value_lt
+compare_threshold: 4.2
+min_value: 4.2
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

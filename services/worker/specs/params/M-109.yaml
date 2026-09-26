@@ -1,0 +1,22 @@
+code: M-109
+section: ППМ
+parameter_name: Пожарная маркировка кабелей систем ПЗ (СПЗ)
+unit: Марка
+data_type: enum
+modality: scalar_text
+review_priority: HIGH
+source_pd: Требования к живучести кабелей (ППМ)
+source_rd: Кабельные журналы; Спецификации (ЭОМ/АПС)
+source_id: Сертификаты на кабели; Акты АОСР на прокладку
+trigger_logic: Применение кабеля без индекса огнестойкости (например, замена FRLS
+  на обычный LS).
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

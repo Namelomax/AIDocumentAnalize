@@ -1,0 +1,21 @@
+code: M-056
+section: КР
+parameter_name: Марка стали и класс прочности металлопроката
+unit: Марка (С)
+data_type: enum
+modality: scalar_text
+review_priority: HIGH
+source_pd: Текст КР; Спецификация металлопроката
+source_rd: Ведомости материалов; Спецификация (КМ/КМД)
+source_id: Журнал сварочных работ; Сертификаты на металл
+trigger_logic: Подмена марки стали на менее прочную (например, С345 на С245).
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

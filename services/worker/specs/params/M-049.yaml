@@ -1,0 +1,21 @@
+code: M-049
+section: АР
+parameter_name: Высота и тип ограждений лестниц, балкона, кровли
+unit: м
+data_type: number
+modality: scalar_text
+review_priority: HIGH
+source_pd: Фасады; Разрезы; Узлы ограждений (АР)
+source_rd: Детальные рабочие чертежи; Спецификация (АР)
+source_id: Акты АОСР на монтаж; Замеры высоты (ИД)
+trigger_logic: Снижение высоты ограждения < 1.2 м для кровли/балкона (СП 54.13330).
+compare_op: value_lt
+compare_threshold: 1.2
+min_value: 1.2
+max_value: null
+sp_reference: СП 54.13330
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

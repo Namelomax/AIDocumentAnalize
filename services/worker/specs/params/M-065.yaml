@@ -1,0 +1,21 @@
+code: M-065
+section: КР
+parameter_name: Схемы расположения и площади технологических проемов
+unit: м²
+data_type: number
+modality: drawing_measure
+review_priority: HIGH
+source_pd: Планы перекрытий; Отверстия (КР)
+source_rd: Чертежи планов перекрытий; Закладные (КЖ)
+source_id: Исполнительная схема шахт
+trigger_logic: Самовольная заделка крупных проемов в РД без обрамляющего армирования.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

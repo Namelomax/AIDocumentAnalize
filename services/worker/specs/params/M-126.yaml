@@ -1,0 +1,21 @@
+code: M-126
+section: ЗУ
+parameter_name: Коэффициент теплопроводности (λ) утеплителя стен
+unit: Вт/(м·С)
+data_type: number
+modality: scalar_text
+review_priority: HIGH
+source_pd: Теплоизоляционный расчет; Марка материала (ЗУ)
+source_rd: Спецификация материалов стен; Фасадов (АР)
+source_id: Паспорта качества; Сертификаты на утеплитель
+trigger_logic: Замена утеплителя на аналог с более высоким коэффициентом теплопроводности.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

@@ -1,0 +1,21 @@
+code: M-089
+section: ПОС
+parameter_name: Расположение пунктов мойки колес и выездов
+unit: —
+data_type: string
+modality: drawing_entity
+review_priority: MEDIUM
+source_pd: Строительный генплан; Посты очистки (ПОС)
+source_rd: Схемы организации выездов (ППР)
+source_id: Акты АОСР на устройство выезда; Мойки
+trigger_logic: Отсутствие или перенос пункта мойки колес в зону без оборотного водоснабжения.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

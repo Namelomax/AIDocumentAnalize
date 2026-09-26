@@ -1,0 +1,22 @@
+code: M-072
+section: ИОС2
+parameter_name: Материал и класс давления напорных труб В1/Т3
+unit: Марка
+data_type: enum
+modality: scalar_text
+review_priority: MEDIUM
+source_pd: Спецификация материалов (ИОС2)
+source_rd: Спецификация оборудования (ВК)
+source_id: Паспорта и сертификаты на трубы
+trigger_logic: Подмена оцинкованных/чугунных труб на полипропилен без перерасчета
+  расширения.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

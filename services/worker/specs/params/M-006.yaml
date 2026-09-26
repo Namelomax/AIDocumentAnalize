@@ -1,0 +1,21 @@
+code: M-006
+section: ПЗ
+parameter_name: Строительный объем (Надземный)
+unit: м³
+data_type: number
+modality: scalar_text
+review_priority: HIGH
+source_pd: 'Раздел ПЗ: Таблица ТЭП'
+source_rd: 'Раздел АР/КР: Чертежи фасадов и разрезов'
+source_id: Разрешение на ввод; ЗОС
+trigger_logic: Изменение общего числа этажей (включая технический) в РД.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

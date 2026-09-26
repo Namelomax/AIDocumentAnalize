@@ -1,0 +1,22 @@
+code: M-121
+section: ОДИ
+parameter_name: Количество и габариты парковочных мест для инвалидов
+unit: шт. / м
+data_type: number
+modality: scalar_text
+review_priority: HIGH
+source_pd: Схема парковочных зон (ОДИ/СПЗУ)
+source_rd: План благоустройства; Разметка (ПП)
+source_id: Исполнительная схема разметки
+trigger_logic: Сокращение количества мест для инвалидов; уменьшение ширины места <
+  3.5 м.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

@@ -1,0 +1,22 @@
+code: M-083
+section: ПОС
+parameter_name: Посадка и габариты временных зданий и сооружений
+unit: м
+data_type: number
+modality: scalar_text
+review_priority: HIGH
+source_pd: Экспликация временных зданий (ПОС)
+source_rd: Строительный план (ППР)
+source_id: Исполнительная геодезическая съемка (расположение)
+trigger_logic: Размещение бытовок в охранных зонах сетей или с нарушением пожарных
+  разрывов.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

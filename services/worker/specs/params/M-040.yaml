@@ -1,0 +1,21 @@
+code: M-040
+section: АР
+parameter_name: Ширина магистральных эвакуационных коридоров
+unit: м
+data_type: number
+modality: drawing_measure
+review_priority: HIGH
+source_pd: Планы этажей; Схемы путей эвакуации (АР)
+source_rd: Кладочные планы; Линейные размеры (АР)
+source_id: Исполнительная схема поэтажных планов (обмеры после отделки)
+trigger_logic: Снижение ширины коридора в РД/ИД менее 1.2 м (СП 1.13130).
+compare_op: value_lt
+compare_threshold: 1.2
+min_value: 1.2
+max_value: null
+sp_reference: СП 1.13130
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

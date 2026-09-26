@@ -1,0 +1,22 @@
+code: M-080
+section: ИОС5
+parameter_name: Состав и емкость систем пожарной сигнализации (АПС)
+unit: шт. / зоны
+data_type: number
+modality: scalar_text
+review_priority: HIGH
+source_pd: Структурная схема АПС (ИОС5/ППМ)
+source_rd: Поэтажные планы; Схемы расстановки (СС/АПС)
+source_id: Паспорта на датчики; Исполнительные схемы шлейфов
+trigger_logic: Сокращение количества извещателей в РД или нарушение расстояний между
+  ними.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

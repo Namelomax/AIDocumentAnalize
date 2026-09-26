@@ -1,0 +1,21 @@
+code: M-017
+section: ПЗ
+parameter_name: Суммарная тепловая нагрузка
+unit: Гкал/ч
+data_type: number
+modality: scalar_text
+review_priority: HIGH
+source_pd: 'Раздел ПЗ: Текст (ТУ теплосети)'
+source_rd: 'Раздел ОВ: Лист "Общие данные", Таблица нагрузок'
+source_id: Акт готовности систем; Договор теплоснабжения
+trigger_logic: Превышение суммарной тепловой нагрузки в спецификациях и таблицах РД.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

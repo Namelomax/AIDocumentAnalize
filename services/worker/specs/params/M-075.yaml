@@ -1,0 +1,21 @@
+code: M-075
+section: ИОС3
+parameter_name: Материал и тип канализационных труб и фасонных частей
+unit: Марка
+data_type: enum
+modality: scalar_text
+review_priority: MEDIUM
+source_pd: Спецификация материалов (ИОС3)
+source_rd: Спецификация оборудования (ВК/НВК)
+source_id: Сертификаты; Накладные на трубы
+trigger_logic: Самовольная замена малошумных или чугунных труб на тонкостенный ПВХ.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

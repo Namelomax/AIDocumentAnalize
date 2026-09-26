@@ -1,0 +1,21 @@
+code: M-123
+section: ОДИ
+parameter_name: Состав систем двухсторонней связи и вызова помощника
+unit: —
+data_type: string
+modality: drawing_entity
+review_priority: HIGH
+source_pd: Структурные схемы СС/ОДИ
+source_rd: Планы кабельных сетей; Спецификация (СС)
+source_id: Паспорта на оборудование; Акты ПНР
+trigger_logic: Отсутствие в РД кнопок вызова персонала в санузлах или на входе в здание.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

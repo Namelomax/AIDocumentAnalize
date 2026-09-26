@@ -1,0 +1,22 @@
+code: M-132
+section: СМ
+parameter_name: Итоговая стоимость по Сводному сметному расчету (ССР)
+unit: тыс. руб.
+data_type: number
+modality: scalar_text
+review_priority: MEDIUM
+source_pd: Сводный сметный расчет (Главы 1-12) (СМ)
+source_rd: Сводная объектная смета (на основании РД)
+source_id: Справка о стоимости выполненных работ (КС-3)
+trigger_logic: Превышение итоговой стоимости строительства в РД/ИД над утвержденной
+  ПД > 5%.
+compare_op: relative_delta_gt
+compare_threshold: 0.05
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

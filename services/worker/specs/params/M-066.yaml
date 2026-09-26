@@ -1,0 +1,21 @@
+code: M-066
+section: КР
+parameter_name: Антикоррозионная и огнезащитная обработка конструкций
+unit: Марка / Толщина
+data_type: enum
+modality: scalar_text
+review_priority: HIGH
+source_pd: Требования к защите (КР)
+source_rd: Спецификация; Указания по защите (КЖ/КМ)
+source_id: Акты АОСР на нанесение; Паспорта составов; Замеры слоя
+trigger_logic: Замена состава на менее огнестойкий (снижение предела REI).
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

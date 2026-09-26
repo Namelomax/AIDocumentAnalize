@@ -1,0 +1,21 @@
+code: M-053
+section: АР
+parameter_name: Конструктивные мероприятия по защите от шума
+unit: —
+data_type: string
+modality: drawing_entity
+review_priority: MEDIUM
+source_pd: 'Текст АР: Звукоизоляция перегородок'
+source_rd: Чертежи деформационных швов; Прокладки (АР)
+source_id: Акты АОСР на устройство прокладок
+trigger_logic: Отсутствие в РД демпферных лент в местах сопряжения перегородок и перекрытий.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

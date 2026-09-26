@@ -1,0 +1,21 @@
+code: M-025
+section: СПЗУ
+parameter_name: Площадь асфальтобетонного покрытия
+unit: м²
+data_type: number
+modality: scalar_text
+review_priority: MEDIUM
+source_pd: Ведомость проездов, тротуаров и площадок (СПЗУ)
+source_rd: План благоустройства; Ведомость покрытий (ПП)
+source_id: Исполнительная схема покрытий; Акты АОСР
+trigger_logic: Увеличение или уменьшение площади твердых покрытий > 5%.
+compare_op: relative_delta_gt
+compare_threshold: 0.05
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

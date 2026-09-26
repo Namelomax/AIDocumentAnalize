@@ -1,0 +1,21 @@
+code: M-093
+section: ПОД
+parameter_name: Общие объемы демонтируемых конструкций (по типам)
+unit: м³
+data_type: number
+modality: scalar_text
+review_priority: MEDIUM
+source_pd: Сводная ведомость объемов демонтажа (ПОД)
+source_rd: Спецификации и ведомости (ППР)
+source_id: Акт обследования площадки; Реестр фактически демонтированных
+trigger_logic: Расхождение объемов лома между ПД и РД/ИД > 5%.
+compare_op: relative_delta_gt
+compare_threshold: 0.05
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

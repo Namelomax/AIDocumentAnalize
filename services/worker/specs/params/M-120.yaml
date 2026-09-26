@@ -1,0 +1,21 @@
+code: M-120
+section: ОДИ
+parameter_name: Спецификация опорных стационарных и откидных поручней
+unit: шт.
+data_type: number
+modality: scalar_text
+review_priority: HIGH
+source_pd: Схемы оснащения поручнями (ОДИ)
+source_rd: Детальные чертежи санузлов; Спецификация (АР)
+source_id: Паспорта на поручни; Акты АОСР на монтаж
+trigger_logic: Отсутствие в РД откидных и стационарных поручней в санузлах для инвалидов.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

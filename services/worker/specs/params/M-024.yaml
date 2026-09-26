@@ -1,0 +1,21 @@
+code: M-024
+section: СПЗУ
+parameter_name: Объем грунта (выемка/насыпь)
+unit: м³
+data_type: number
+modality: scalar_text
+review_priority: MEDIUM
+source_pd: Ведомость объемов работ (СПЗУ)
+source_rd: 'Раздел ПП: План земляных масс; Ведомость выемки'
+source_id: Журнал учета транспорта; Накладные на вывоз/завоз
+trigger_logic: Дельта объемов выемки и обратной засыпки между стадиями > 5%.
+compare_op: relative_delta_gt
+compare_threshold: 0.05
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

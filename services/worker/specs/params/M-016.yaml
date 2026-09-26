@@ -1,0 +1,22 @@
+code: M-016
+section: ПЗ
+parameter_name: Суточный расход водопотребления
+unit: м³/сут
+data_type: number
+modality: scalar_text
+review_priority: HIGH
+source_pd: 'Раздел ПЗ: Баланс водопотребления'
+source_rd: 'Раздел ВК: Лист "Общие данные", Таблица расходов'
+source_id: Договор ХВС/ГВС (лимиты)
+trigger_logic: Выход расчетного расхода в РД за объемы, утвержденные экспертизой в
+  ПД.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false

@@ -1,0 +1,21 @@
+code: M-062
+section: КР
+parameter_name: Диаметр продольной (рабочей) арматуры в колоннах/пилонах
+unit: мм
+data_type: number
+modality: scalar_text
+review_priority: HIGH
+source_pd: Схемы армирования (КР)
+source_rd: Спецификации армирования (КЖ)
+source_id: Акты АОСР на армирование (вертикальные элементы)
+trigger_logic: Занижение диаметра продольных арматурных стержней в спецификациях РД.
+compare_op: null
+compare_threshold: null
+min_value: null
+max_value: null
+sp_reference: null
+gost_reference: null
+fz_reference: null
+other_normative: null
+regex_pattern: null
+implemented: false
