@@ -13,6 +13,7 @@ db and storage are passed in rather than constructed here so the pipeline can
 be driven by fakes in tests without a real PostgreSQL or MinIO.
 """
 
+import hashlib
 import logging
 from dataclasses import replace
 from datetime import date, datetime
@@ -367,7 +368,21 @@ async def _explication_checks(process_id: str, object_id: str, files, db,
     return checks
 
 
-async def process_start(process_id: str, db, storage) -> None:
+def input_manifest_hash(process, files) -> str:
+    """The fingerprint of what a protocol was computed from.
+
+    The uploaded registry's hash when there is one. Without a registry, the
+    sorted hashes of the package's files: section 14.2 requires every result
+    to carry an input fingerprint, and a package without a registry is still
+    a definite set of inputs.
+    """
+    if process.input_manifest_hash:
+        return process.input_manifest_hash
+    joined = "\n".join(sorted(f.file_hash for f in files))
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()
+
+
+async def process_start(process_id: str, db, storage, config) -> None:
     process = await db.get_process(process_id)
     if process is None:
         # A race with the API (task published before the row is visible, or
@@ -529,6 +544,25 @@ async def process_start(process_id: str, db, storage) -> None:
         await db.save_checks(process_id, process.object_id, checks)
     except Exception as exc:  # noqa: BLE001 - the protocol still reaches READY without it
         logger.error("saving checks failed", extra={
+            "process_id": process_id, "error": str(exc),
+        })
+
+    try:
+        # Section 9.2: a versioned protocol is issued once processing has run,
+        # carrying the matrix/model/dataset versions and input fingerprint
+        # section 14.2 requires. A failure here is logged, not fatal: the
+        # process must still reach READY so an inspector is not blocked by it.
+        protocol_version = await db.create_protocol(
+            process.id, process.object_id, specs.version, config.model_version,
+            config.dataset_version, input_manifest_hash(process, final_files),
+        )
+        logger.info("protocol created", extra={
+            "process_id": process_id,
+            "object_id": process.object_id,
+            "version": protocol_version,
+        })
+    except Exception as exc:  # noqa: BLE001 - see comment above
+        logger.error("protocol creation failed", extra={
             "process_id": process_id, "error": str(exc),
         })
 

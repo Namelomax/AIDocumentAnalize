@@ -13,10 +13,20 @@ from pathlib import Path
 import pymupdf
 import pytest
 
+from app.config import Config
 from app.db import FileRow, ProcessRow
-from app.pipeline import process_start
+from app.pipeline import input_manifest_hash, process_start
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+# Stands in for the config passed alongside db and storage; only the two
+# version fields the pipeline reads are exercised here, the rest are unused
+# placeholders required by the dataclass.
+CONFIG = Config(
+    database_url="", rabbitmq_url="", log_level="INFO", minio_endpoint="",
+    minio_root_user="", minio_root_password="", minio_bucket="",
+    model_version="rules-2026.09", dataset_version="none",
+)
 
 
 def _one_page_pdf(text: str, rotation: int = 0) -> bytes:
@@ -127,6 +137,8 @@ class FakeDb:
         self.saved: dict | None = None
         self.saved_pages: dict[str, list[dict]] = {}
         self.saved_checks: list[dict] | None = None
+        self.protocol_calls: list[dict] = []
+        self._protocol_versions: dict[str, int] = {}
 
     async def get_process(self, process_id):
         return self._process
@@ -160,6 +172,21 @@ class FakeDb:
     async def save_checks(self, process_id, object_id, checks):
         self.saved_checks = checks
 
+    async def create_protocol(self, process_id, object_id, matrix_version,
+                               model_version, dataset_version, input_manifest_hash):
+        # Fake mirrors the real per-object counter (app.db.Database.create_protocol)
+        # closely enough for tests that assert on the version number.
+        version = self._protocol_versions.get(object_id, 0) + 1
+        self._protocol_versions[object_id] = version
+        self.protocol_calls.append({
+            "process_id": process_id, "object_id": object_id,
+            "matrix_version": matrix_version, "model_version": model_version,
+            "dataset_version": dataset_version,
+            "input_manifest_hash": input_manifest_hash,
+            "version": version,
+        })
+        return version
+
 
 class FakeStorage:
     def __init__(self, objects: dict[str, bytes]):
@@ -183,7 +210,7 @@ async def test_manifest_package_writes_metadata_completeness_and_scenario():
     db = FakeDb(process, [manifest_row, ar, ov])
     storage = FakeStorage({"key-manifest": (FIXTURES / "manifest_sample.csv").read_bytes()})
 
-    await process_start("p1", db, storage)
+    await process_start("p1", db, storage, CONFIG)
 
     assert db.updates["f-ar"]["doc_stage"] == "PD"
     assert db.updates["f-ar"]["approval_status"] == "APPROVED"
@@ -207,7 +234,7 @@ async def test_package_without_manifest_completes_with_missing_completeness_and_
     db = FakeDb(process, files)
     storage = FakeStorage({})
 
-    await process_start("p1", db, storage)
+    await process_start("p1", db, storage, CONFIG)
 
     # doc_stage is unknown for every file, so every stage is MISSING, not
     # NOT_APPLICABLE: there is no registry declaring the stage out of scope.
@@ -229,7 +256,7 @@ async def test_unparseable_manifest_logs_warning_and_still_completes(caplog):
     storage = FakeStorage({"key-broken": b""})
 
     with caplog.at_level(logging.WARNING, logger="app.pipeline"):
-        await process_start("p1", db, storage)
+        await process_start("p1", db, storage, CONFIG)
 
     warnings = [r for r in caplog.records if r.levelname == "WARNING"]
     assert any(r.msg == "manifest parse issue" for r in warnings)
@@ -251,7 +278,7 @@ async def test_unreadable_manifest_reports_stages_missing_not_inapplicable():
     db = FakeDb(process, [manifest_row, doc])
     storage = FakeStorage({"key-broken": b""})
 
-    await process_start("p1", db, storage)
+    await process_start("p1", db, storage, CONFIG)
 
     assert db.saved["pd_completeness"] == "MISSING"
     assert db.saved["rd_completeness"] == "MISSING"
@@ -274,7 +301,7 @@ async def test_predecessor_referencing_unknown_file_is_not_invented(caplog):
     storage = FakeStorage({"key-manifest": manifest_json})
 
     with caplog.at_level(logging.WARNING, logger="app.pipeline"):
-        await process_start("p1", db, storage)
+        await process_start("p1", db, storage, CONFIG)
 
     assert db.updates["f-doc"]["predecessor_id"] is None
     warnings = [r for r in caplog.records if r.levelname == "WARNING"]
@@ -301,7 +328,7 @@ async def test_source_selection_picks_the_current_revision_not_the_superseded_on
     storage = FakeStorage({"key-manifest": manifest_json})
 
     with caplog.at_level(logging.INFO, logger="app.pipeline"):
-        await process_start("p1", db, storage)
+        await process_start("p1", db, storage, CONFIG)
 
     selections = [r for r in caplog.records
                   if r.msg == "source selection" and r.stage == "PD"]
@@ -316,7 +343,7 @@ async def test_process_not_found_does_not_raise():
     db = FakeDb(None, [])
     storage = FakeStorage({})
 
-    await process_start("missing", db, storage)
+    await process_start("missing", db, storage, CONFIG)
 
     assert db.saved is None
 
@@ -329,7 +356,7 @@ async def test_pdf_documents_get_their_pages_extracted():
     db = FakeDb(process, [doc])
     storage = FakeStorage({"key-doc": _one_page_pdf("Площадь застройки")})
 
-    await process_start("p1", db, storage)
+    await process_start("p1", db, storage, CONFIG)
 
     assert "f-doc" in db.saved_pages
     page = db.saved_pages["f-doc"][0]
@@ -348,7 +375,7 @@ async def test_a_file_that_is_not_a_pdf_is_left_alone():
     db = FakeDb(process, [doc])
     storage = FakeStorage({"key-doc": b"<root/>"})
 
-    await process_start("p1", db, storage)
+    await process_start("p1", db, storage, CONFIG)
 
     assert db.saved_pages == {}
     assert db.saved["status"] == "READY"
@@ -365,7 +392,7 @@ async def test_one_unreadable_pdf_does_not_stop_the_package():
     db = FakeDb(process, [good, bad])
     storage = FakeStorage({"key-good": _one_page_pdf("текст"), "key-bad": b"not a pdf"})
 
-    await process_start("p1", db, storage)
+    await process_start("p1", db, storage, CONFIG)
 
     assert "f-good" in db.saved_pages
     assert "f-bad" not in db.saved_pages
@@ -388,7 +415,7 @@ async def test_room_area_change_produces_one_candidate_and_the_rest_not_comparab
         "key-rd": _room_sheet_pdf("1.1", "12,50"),
     })
 
-    await process_start("p1", db, storage)
+    await process_start("p1", db, storage, CONFIG)
 
     assert db.saved["status"] == "READY"
     checks = db.saved_checks
@@ -442,7 +469,7 @@ async def test_evidence_group_ids_stay_unique_across_two_floor_pairs():
         "key-rd2": _floor_sheet_pdf("2.1", "10,00", "220,00"),
     })
 
-    await process_start("p1", db, storage)
+    await process_start("p1", db, storage, CONFIG)
 
     assert db.saved["status"] == "READY"
     checks = db.saved_checks
@@ -476,7 +503,7 @@ async def test_two_different_documents_are_each_compared_not_conflated(caplog):
     storage = FakeStorage({"key-ar1": _one_page_pdf("текст"), "key-ar2": _one_page_pdf("текст")})
 
     with caplog.at_level(logging.INFO, logger="app.pipeline"):
-        await process_start("p1", db, storage)
+        await process_start("p1", db, storage, CONFIG)
 
     selections = [r for r in caplog.records if r.msg == "source selection" and r.stage == "PD"]
     assert {r.document_code for r in selections} == {"AR-01", "AR-02"}
@@ -500,7 +527,7 @@ async def test_two_unlinked_revisions_of_one_document_need_clarification():
     db = FakeDb(process, [rev_a, rev_b])
     storage = FakeStorage({"key-a": _one_page_pdf("текст"), "key-b": _one_page_pdf("текст")})
 
-    await process_start("p1", db, storage)
+    await process_start("p1", db, storage, CONFIG)
 
     m003_checks = [c for c in db.saved_checks if c["param_code"] == "M-003"]
     assert any(c["completeness_status"] == "CLARIFICATION_REQUIRED" for c in m003_checks)
@@ -518,7 +545,7 @@ async def test_file_without_a_document_code_is_not_guessed_at():
     db = FakeDb(process, [doc])
     storage = FakeStorage({"key-doc": _one_page_pdf("текст")})
 
-    await process_start("p1", db, storage)
+    await process_start("p1", db, storage, CONFIG)
 
     m003_checks = [c for c in db.saved_checks if c["param_code"] == "M-003"]
     matching = [
@@ -527,3 +554,72 @@ async def test_file_without_a_document_code_is_not_guessed_at():
     ]
     assert matching
     assert not any(c["finding_status"] == "CANDIDATE" for c in m003_checks)
+
+
+@pytest.mark.asyncio
+async def test_process_start_issues_a_protocol_with_matrix_model_and_hash():
+    """Section 9.2/14.2: a protocol is created once processing has run,
+    carrying the matrix version, the configured model version, and a
+    fingerprint of the registry that drove the run."""
+    process = mk_process(manifest_uploaded=True, input_manifest_hash="manifest-hash")
+    manifest_row = mk_file(id="f-manifest", file_name="manifest_sample.csv",
+                            file_hash="manifest-hash", storage_key="key-manifest",
+                            mime_type="text/csv")
+    ar = mk_file(id="f-ar", file_name="ar-01.pdf", storage_key="key-ar", file_hash="hash-ar")
+    ov = mk_file(id="f-ov", file_name="ov1.pdf", storage_key="key-ov", file_hash="hash-ov")
+    db = FakeDb(process, [manifest_row, ar, ov])
+    storage = FakeStorage({"key-manifest": (FIXTURES / "manifest_sample.csv").read_bytes()})
+
+    await process_start("p1", db, storage, CONFIG)
+
+    assert len(db.protocol_calls) == 1
+    call = db.protocol_calls[0]
+    assert call["process_id"] == "p1"
+    assert call["object_id"] == "o1"
+    assert call["matrix_version"] == "1.1"
+    assert call["model_version"] == CONFIG.model_version
+    assert call["dataset_version"] == CONFIG.dataset_version
+    # A registry was uploaded: its own hash is the fingerprint, not a
+    # recomputation over the package's files.
+    assert call["input_manifest_hash"] == "manifest-hash"
+
+
+@pytest.mark.asyncio
+async def test_protocol_creation_failure_still_reaches_ready(caplog):
+    """A failed protocol write is a data-quality statement about that write,
+    never a reason to strand the process before READY."""
+    process = mk_process(manifest_uploaded=False)
+    doc = mk_file(id="f-doc", file_name="a.pdf", storage_key="key-doc")
+    db = FakeDb(process, [doc])
+
+    async def _broken_create_protocol(*args, **kwargs):
+        raise RuntimeError("protocols table unreachable")
+
+    db.create_protocol = _broken_create_protocol
+    storage = FakeStorage({})
+
+    with caplog.at_level(logging.ERROR, logger="app.pipeline"):
+        await process_start("p1", db, storage, CONFIG)
+
+    assert db.saved["status"] == "READY"
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert any(r.msg == "protocol creation failed" for r in errors)
+
+
+def test_input_manifest_hash_uses_the_registry_hash_when_present():
+    process = mk_process(input_manifest_hash="manifest-hash")
+    assert input_manifest_hash(process, []) == "manifest-hash"
+
+
+def test_input_manifest_hash_is_order_independent_without_a_registry():
+    """No registry: the fingerprint is derived from the package's own files,
+    and must not depend on the order files happen to be listed in."""
+    process = mk_process(input_manifest_hash=None)
+    a = mk_file(id="f-a", file_hash="hash-a")
+    b = mk_file(id="f-b", file_hash="hash-b")
+
+    forward = input_manifest_hash(process, [a, b])
+    backward = input_manifest_hash(process, [b, a])
+
+    assert forward == backward
+    assert len(forward) == 64

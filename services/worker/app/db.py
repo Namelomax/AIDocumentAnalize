@@ -352,6 +352,43 @@ class Database:
                         ],
                     )
 
+    async def create_protocol(
+        self,
+        process_id: str,
+        object_id: str,
+        matrix_version: str,
+        model_version: str,
+        dataset_version: str,
+        input_manifest_hash: str,
+    ) -> int:
+        """Add the next protocol version of the object.
+
+        Versions count per object, not per process: section 9.2 keeps the
+        previous version in the history when a package is reprocessed, and the
+        inspector reads them as successive versions of one object's protocol.
+        """
+        async with self._pool.acquire() as connection:
+            async with connection.transaction():
+                # Serialises concurrent protocol creation for one object, so
+                # two finishing processes cannot both take the same version.
+                await connection.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))", object_id
+                )
+                version = await connection.fetchval(
+                    "SELECT COALESCE(MAX(version), 0) + 1 FROM protocols WHERE object_id = $1",
+                    object_id,
+                )
+                await connection.execute(
+                    """
+                    INSERT INTO protocols (id, object_id, process_id, version, matrix_version,
+                                           model_version, dataset_version, input_manifest_hash, status)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'READY')
+                    """,
+                    str(uuid.uuid4()), object_id, process_id, version, matrix_version,
+                    model_version, dataset_version, input_manifest_hash,
+                )
+                return version
+
     async def seed_params(self, matrix) -> int:
         """Insert the parameters the table does not have yet.
 

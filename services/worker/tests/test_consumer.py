@@ -19,6 +19,14 @@ class FakeStorage:
     pass
 
 
+class FakeConfig:
+    """Stands in for app.config.Config: these tests never reach the branch
+    that reads model_version/dataset_version (get_process returns None), so
+    a minimal stand-in is enough."""
+    model_version = "rules-2026.09"
+    dataset_version = "none"
+
+
 def test_routes_process_start_to_the_pipeline_handler():
     payload = {"type": "process.start", "process_id": "p1", "object_id": "o1"}
     assert handle_task(payload) is process_start
@@ -74,7 +82,7 @@ async def test_bad_message_does_not_stop_the_loop_and_is_rejected_without_requeu
     good_payload = {"type": "process.start", "process_id": "p1", "object_id": "o1"}
     good = FakeMessage(json.dumps(good_payload).encode())
 
-    await _consume_messages(_fake_messages(bad, good), FakeDb(), FakeStorage())
+    await _consume_messages(_fake_messages(bad, good), FakeDb(), FakeStorage(), FakeConfig())
 
     assert bad.rejected is True
     assert bad.acked is False
@@ -87,7 +95,7 @@ async def test_bad_message_is_logged_at_error_with_process_id_when_available(cap
     message = FakeMessage(json.dumps(payload).encode())
 
     with caplog.at_level(logging.ERROR, logger="app.consumer"):
-        await _consume_messages(_fake_messages(message), FakeDb(), FakeStorage())
+        await _consume_messages(_fake_messages(message), FakeDb(), FakeStorage(), FakeConfig())
 
     assert len(caplog.records) == 1
     record = caplog.records[0]
@@ -102,4 +110,4 @@ async def test_cancelled_error_is_not_swallowed():
             raise asyncio.CancelledError()
 
     with pytest.raises(asyncio.CancelledError):
-        await _consume_messages(_fake_messages(CancellingMessage(b"{}")), FakeDb(), FakeStorage())
+        await _consume_messages(_fake_messages(CancellingMessage(b"{}")), FakeDb(), FakeStorage(), FakeConfig())

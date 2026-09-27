@@ -151,3 +151,39 @@ async def test_save_checks_replaces_the_previous_set(db, scenario):
 
     # A second run must replace the first set, not add to it.
     assert len(rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_create_protocol_versions_are_per_object(db, scenario):
+    """Section 9.2: versions count per object, so a second run of the same
+    object gets version 2, not a fresh version 1 or a unique-key collision."""
+    object_id, process_id, file_id = scenario
+
+    first = await db.create_protocol(
+        process_id, object_id, "1.1", "rules-2026.09", "none", "a" * 64,
+    )
+    second = await db.create_protocol(
+        process_id, object_id, "1.1", "rules-2026.09", "none", "a" * 64,
+    )
+
+    try:
+        assert first == 1
+        assert second == 2
+
+        async with db._pool.acquire() as connection:
+            rows = await connection.fetch(
+                "SELECT version, status, matrix_version, model_version, dataset_version "
+                "FROM protocols WHERE object_id = $1 ORDER BY version",
+                object_id,
+            )
+        assert [row["version"] for row in rows] == [1, 2]
+        assert all(row["status"] == "READY" for row in rows)
+        assert all(row["matrix_version"] == "1.1" for row in rows)
+        assert all(row["model_version"] == "rules-2026.09" for row in rows)
+        assert all(row["dataset_version"] == "none" for row in rows)
+    finally:
+        # Protocols are not covered by the scenario fixture's own cleanup
+        # (they cascade from processes, but the assertions above need the
+        # rows to still exist at that point) - delete explicitly here.
+        async with db._pool.acquire() as connection:
+            await connection.execute("DELETE FROM protocols WHERE object_id = $1", object_id)

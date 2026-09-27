@@ -26,7 +26,7 @@ async def _run() -> None:
             "inserted": inserted,
         })
         storage = ManifestStorage(config)
-        await consume(config.rabbitmq_url, db, storage)
+        await consume(config.rabbitmq_url, db, storage, config)
     finally:
         await db.close()
 

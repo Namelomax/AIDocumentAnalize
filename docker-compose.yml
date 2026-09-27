@@ -113,6 +113,8 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-inspector123}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       TASK_QUEUE: ${TASK_QUEUE:-inspector.tasks}
+      MODEL_VERSION: ${MODEL_VERSION:-rules-2026.09}
+      DATASET_VERSION: ${DATASET_VERSION:-none}
     depends_on:
       postgres: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }

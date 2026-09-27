@@ -11,6 +11,12 @@ class Config:
     minio_root_user: str
     minio_root_password: str
     minio_bucket: str
+    # Honest values, not placeholders: the comparison is a rule engine with no
+    # trained model behind it yet, and no GOLD dataset has been released. The
+    # specification requires both versions in every protocol; claiming a model
+    # or a dataset that does not exist would misstate how a result was made.
+    model_version: str
+    dataset_version: str
 
 
 def load_config() -> Config:
@@ -22,4 +28,6 @@ def load_config() -> Config:
         minio_root_user=os.environ["MINIO_ROOT_USER"],
         minio_root_password=os.environ["MINIO_ROOT_PASSWORD"],
         minio_bucket=os.environ["MINIO_BUCKET"],
+        model_version=os.environ.get("MODEL_VERSION", "rules-2026.09"),
+        dataset_version=os.environ.get("DATASET_VERSION", "none"),
     )
