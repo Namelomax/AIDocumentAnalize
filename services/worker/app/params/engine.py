@@ -14,7 +14,10 @@ from app.params.specs import MatrixSpecs, ParamSpec
 
 logger = logging.getLogger(__name__)
 
-NOT_IMPLEMENTED = "no extractor is implemented for this parameter yet"
+# Reason strings land in checks.rationale, the completeness table an
+# inspector reads directly, so they are written in Russian; comments in this
+# module stay English.
+NOT_IMPLEMENTED = "Извлечение значения для этого параметра пока не реализовано"
 
 
 @dataclass(frozen=True)
@@ -39,7 +42,9 @@ def evaluate_all(specs: MatrixSpecs, evaluators: dict[str, Evaluator]) -> list[P
         except Exception as exc:  # noqa: BLE001 - one rule must not sink the protocol
             logger.error("parameter evaluation failed",
                          extra={"param_code": spec.code, "error": str(exc)})
-            outcomes.append(ParamOutcome(spec.code, "NOT_COMPARABLE", f"evaluation failed: {exc}"))
+            outcomes.append(ParamOutcome(
+                spec.code, "NOT_COMPARABLE", f"Сбой при оценке параметра: {exc}",
+            ))
             continue
 
         # Section 9.2: CONFIRMED_VIOLATION is assigned by the inspector only.
@@ -50,7 +55,7 @@ def evaluate_all(specs: MatrixSpecs, evaluators: dict[str, Evaluator]) -> list[P
                          extra={"param_code": spec.code})
             outcomes.append(ParamOutcome(
                 spec.code, "NOT_COMPARABLE",
-                "only an inspector can confirm a violation; the rule returned it itself",
+                "Нарушение подтверждает только инспектор; правило вернуло такой статус само",
             ))
             continue
 

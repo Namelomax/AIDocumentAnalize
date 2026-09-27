@@ -27,6 +27,18 @@ class ProcessRow:
 
 
 @dataclass
+class PageLineRow:
+    page_no: int
+    block_no: int
+    line_no: int
+    text: str
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+
+
+@dataclass
 class FileRow:
     id: str
     object_id: str
@@ -62,6 +74,19 @@ def _process_row(record: asyncpg.Record) -> ProcessRow:
         manifest_uploaded=record["manifest_uploaded"],
         input_manifest_hash=record["input_manifest_hash"],
         updated_at=record["updated_at"],
+    )
+
+
+def _page_line_row(record: asyncpg.Record) -> PageLineRow:
+    return PageLineRow(
+        page_no=record["page_no"],
+        block_no=record["block_no"],
+        line_no=record["line_no"],
+        text=record["text"],
+        x0=record["x0"],
+        y0=record["y0"],
+        x1=record["x1"],
+        y1=record["y1"],
     )
 
 
@@ -233,6 +258,97 @@ class Database:
                             (str(uuid.uuid4()), page_id, b["block_no"], b["line_no"], b["text"],
                              b["x0"], b["y0"], b["x1"], b["y1"])
                             for b in page["blocks"]
+                        ],
+                    )
+
+    async def get_page_lines(self, file_id: str) -> list[PageLineRow]:
+        """Every text line of a file's pages, in reading order.
+
+        The explication comparator (app.explication.parse) rebuilds its own
+        block/line shape out of this flat list, so the order it is read back
+        in - page, then block, then line - is part of the contract, not an
+        incidental default.
+        """
+        records = await self._pool.fetch(
+            """
+            SELECT p.page_no, tb.block_no, tb.line_no, tb.text,
+                   tb.x0, tb.y0, tb.x1, tb.y1
+            FROM pages p
+            JOIN text_blocks tb ON tb.page_id = p.id
+            WHERE p.file_id = $1
+            ORDER BY p.page_no, tb.block_no, tb.line_no
+            """,
+            file_id,
+        )
+        return [_page_line_row(record) for record in records]
+
+    async def save_checks(self, process_id: str, object_id: str, checks: list[dict]) -> None:
+        """Replace every check recorded for a process with a fresh set.
+
+        A re-run must not accumulate stale findings alongside new ones: the
+        delete cascades to evidence_fragments, so the process ends up with
+        exactly one set of checks whatever was there before - the same
+        replace-in-one-transaction shape as save_pages uses for a file.
+        """
+        async with self._pool.acquire() as connection:
+            async with connection.transaction():
+                await connection.execute("DELETE FROM checks WHERE process_id = $1", process_id)
+                for check in checks:
+                    check_id = str(uuid.uuid4())
+                    await connection.execute(
+                        """
+                        INSERT INTO checks (
+                            id, process_id, object_id, param_id, param_code,
+                            evidence_group_id, subject, expected_value, actual_value,
+                            delta, completeness_status, finding_status, review_priority,
+                            rationale, matrix_version
+                        )
+                        VALUES (
+                            $1, $2, $3, (SELECT id FROM params WHERE code = $4), $4,
+                            $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
+                        )
+                        """,
+                        check_id,
+                        process_id,
+                        object_id,
+                        check["param_code"],
+                        check["evidence_group_id"],
+                        check.get("subject"),
+                        check.get("expected_value"),
+                        check.get("actual_value"),
+                        check.get("delta"),
+                        check["completeness_status"],
+                        check.get("finding_status"),
+                        check["review_priority"],
+                        check.get("rationale"),
+                        check["matrix_version"],
+                    )
+
+                    fragments = check.get("fragments") or []
+                    if not fragments:
+                        continue
+                    await connection.executemany(
+                        """
+                        INSERT INTO evidence_fragments (
+                            id, check_id, evidence_group_id, file_id, file_sha256,
+                            stage, document_code, revision, approval_status,
+                            sheet_page, x0, y0, x1, y1, extracted_value, role
+                        )
+                        VALUES (
+                            $1, $2, $3, $4, $5, $6::"DocStage", $7, $8,
+                            $9::"ApprovalStatus", $10, $11, $12, $13, $14, $15, $16
+                        )
+                        """,
+                        [
+                            (
+                                str(uuid.uuid4()), check_id, check["evidence_group_id"],
+                                fragment["file_id"], fragment["file_sha256"], fragment["stage"],
+                                fragment.get("document_code"), fragment.get("revision"),
+                                fragment["approval_status"], fragment["sheet_page"],
+                                fragment["x0"], fragment["y0"], fragment["x1"], fragment["y1"],
+                                fragment.get("extracted_value"), fragment["role"],
+                            )
+                            for fragment in fragments
                         ],
                     )
 

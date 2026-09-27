@@ -6,6 +6,7 @@ app.storage.ManifestStorage: no real PostgreSQL or MinIO is touched here.
 
 import json
 import logging
+from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 
@@ -24,6 +25,39 @@ def _one_page_pdf(text: str, rotation: int = 0) -> bytes:
     if text:
         page.insert_text((20, 40), text, fontsize=24)
     page.set_rotation(rotation)
+    raw = document.tobytes()
+    document.close()
+    return raw
+
+
+def _room_sheet_pdf(number: str, area: str) -> bytes:
+    """A one-room, one-page sheet: a CAD-style plan label, number then area
+    on their own lines - the shape app.explication.parse's Detector 1 reads."""
+    document = pymupdf.open()
+    page = document.new_page(width=400, height=800)
+    page.insert_htmlbox(pymupdf.Rect(20, 20, 200, 80), f"<p>{number}<br>{area}</p>")
+    raw = document.tobytes()
+    document.close()
+    return raw
+
+
+def _floor_sheet_pdf(number: str, area: str, total: str) -> bytes:
+    """A one-room sheet that also carries a floor total line.
+
+    The label and the value of the total are two separate insert_htmlbox
+    calls at the same height: app.explication.parse.find_floor_totals pairs
+    a label with a value line by row position, not by block, the same way a
+    real explication table's own cells routinely land in separate PyMuPDF
+    blocks that merely share a horizontal. insert_htmlbox is used rather than
+    insert_text because the base-14 "helv" font has no Cyrillic glyphs on
+    this platform and would silently corrupt "Общий итог по этажу".
+    """
+    document = pymupdf.open()
+    page = document.new_page(width=400, height=800)
+    page.insert_htmlbox(pymupdf.Rect(20, 20, 200, 80), f"<p>{number}<br>{area}</p>")
+    page.insert_htmlbox(pymupdf.Rect(20, 200, 220, 220), "Общий итог по этажу",
+                         css="* {font-size:14px;}")
+    page.insert_htmlbox(pymupdf.Rect(250, 200, 350, 220), total, css="* {font-size:14px;}")
     raw = document.tobytes()
     document.close()
     return raw
@@ -73,6 +107,18 @@ def mk_file(**overrides):
     return FileRow(**defaults)
 
 
+@dataclass
+class _FakePageLine:
+    page_no: int
+    block_no: int
+    line_no: int
+    text: str
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+
+
 class FakeDb:
     def __init__(self, process, files):
         self._process = process
@@ -80,6 +126,7 @@ class FakeDb:
         self.updates: dict[str, dict] = {}
         self.saved: dict | None = None
         self.saved_pages: dict[str, list[dict]] = {}
+        self.saved_checks: list[dict] | None = None
 
     async def get_process(self, process_id):
         return self._process
@@ -95,6 +142,23 @@ class FakeDb:
 
     async def save_pages(self, file_id, pages):
         self.saved_pages[file_id] = pages
+
+    async def get_page_lines(self, file_id):
+        # Real storage keeps one row per PDF line; this rebuilds that same
+        # flat shape out of whatever save_pages recorded for the file, so the
+        # fake round-trips exactly like the database it stands in for.
+        pages = self.saved_pages.get(file_id, [])
+        return [
+            _FakePageLine(
+                page_no=page["page_no"], block_no=block["block_no"], line_no=block["line_no"],
+                text=block["text"], x0=block["x0"], y0=block["y0"], x1=block["x1"], y1=block["y1"],
+            )
+            for page in pages
+            for block in page["blocks"]
+        ]
+
+    async def save_checks(self, process_id, object_id, checks):
+        self.saved_checks = checks
 
 
 class FakeStorage:
@@ -229,9 +293,9 @@ async def test_source_selection_picks_the_current_revision_not_the_superseded_on
 
     manifest_json = json.dumps([
         {"object_id": "o1", "file_name": "ar-01-rev1.pdf", "doc_stage": "PD",
-         "approval_status": "APPROVED", "revision": "1"},
+         "document_code": "AR-01", "approval_status": "APPROVED", "revision": "1"},
         {"object_id": "o1", "file_name": "ar-01-rev2.pdf", "doc_stage": "PD",
-         "approval_status": "APPROVED", "revision": "2",
+         "document_code": "AR-01", "approval_status": "APPROVED", "revision": "2",
          "predecessor_id": "ar-01-rev1.pdf"},
     ]).encode()
     storage = FakeStorage({"key-manifest": manifest_json})
@@ -306,3 +370,160 @@ async def test_one_unreadable_pdf_does_not_stop_the_package():
     assert "f-good" in db.saved_pages
     assert "f-bad" not in db.saved_pages
     assert db.saved["status"] == "READY"
+
+
+@pytest.mark.asyncio
+async def test_room_area_change_produces_one_candidate_and_the_rest_not_comparable():
+    """The full loop: extraction, comparison, and one checks row per parameter."""
+    process = mk_process(manifest_uploaded=False)
+    pd = mk_file(id="f-pd", file_name="pd.pdf", storage_key="key-pd",
+                 mime_type="application/pdf", doc_stage="PD", document_code="AR-01",
+                 approval_status="APPROVED")
+    rd = mk_file(id="f-rd", file_name="rd.pdf", storage_key="key-rd",
+                 mime_type="application/pdf", doc_stage="RD", document_code="AR-01",
+                 approval_status="FOR_CONSTRUCTION")
+    db = FakeDb(process, [pd, rd])
+    storage = FakeStorage({
+        "key-pd": _room_sheet_pdf("1.1", "10,00"),
+        "key-rd": _room_sheet_pdf("1.1", "12,50"),
+    })
+
+    await process_start("p1", db, storage)
+
+    assert db.saved["status"] == "READY"
+    checks = db.saved_checks
+    assert checks is not None
+
+    m003_candidates = [
+        c for c in checks if c["param_code"] == "M-003" and c["finding_status"] == "CANDIDATE"
+    ]
+    assert len(m003_candidates) == 1
+    candidate = m003_candidates[0]
+    assert candidate["subject"] == "room 1.1"
+    assert len(candidate["fragments"]) == 2
+    assert {f["role"] for f in candidate["fragments"]} == {"expected", "actual"}
+
+    other_not_comparable = [
+        c for c in checks if c["param_code"] != "M-003" and c["completeness_status"] == "NOT_COMPARABLE"
+    ]
+    assert len(other_not_comparable) == 131
+
+
+@pytest.mark.asyncio
+async def test_evidence_group_ids_stay_unique_across_two_floor_pairs():
+    """Two PD/RD floor pairs, each with its own changed floor total.
+
+    "floor total" is the same literal subject on every floor; a group id
+    built from the subject alone collides the moment a package has more than
+    one comparable floor, and save_checks writes every check of a process in
+    one transaction - one collision there would lose the whole protocol, not
+    just the second floor.
+    """
+    process = mk_process(manifest_uploaded=False)
+    files = [
+        mk_file(id="f-pd1", file_name="pd1.pdf", storage_key="key-pd1",
+                mime_type="application/pdf", doc_stage="PD", document_code="AR-01",
+                approval_status="APPROVED"),
+        mk_file(id="f-rd1", file_name="rd1.pdf", storage_key="key-rd1",
+                mime_type="application/pdf", doc_stage="RD", document_code="AR-01",
+                approval_status="FOR_CONSTRUCTION"),
+        mk_file(id="f-pd2", file_name="pd2.pdf", storage_key="key-pd2",
+                mime_type="application/pdf", doc_stage="PD", document_code="AR-02",
+                approval_status="APPROVED"),
+        mk_file(id="f-rd2", file_name="rd2.pdf", storage_key="key-rd2",
+                mime_type="application/pdf", doc_stage="RD", document_code="AR-02",
+                approval_status="FOR_CONSTRUCTION"),
+    ]
+    db = FakeDb(process, files)
+    storage = FakeStorage({
+        "key-pd1": _floor_sheet_pdf("1.1", "10,00", "100,00"),
+        "key-rd1": _floor_sheet_pdf("1.1", "10,00", "120,00"),
+        "key-pd2": _floor_sheet_pdf("2.1", "10,00", "200,00"),
+        "key-rd2": _floor_sheet_pdf("2.1", "10,00", "220,00"),
+    })
+
+    await process_start("p1", db, storage)
+
+    assert db.saved["status"] == "READY"
+    checks = db.saved_checks
+    assert checks is not None
+
+    floor_total_candidates = [
+        c for c in checks
+        if c["param_code"] == "M-003" and c["subject"] == "floor total"
+        and c["finding_status"] == "CANDIDATE"
+    ]
+    # Both floors must actually be answered for the uniqueness check below to
+    # mean anything - two candidates that silently collapsed into one row
+    # would trivially "have unique ids" too.
+    assert len(floor_total_candidates) == 2
+
+    group_ids = [c["evidence_group_id"] for c in checks]
+    assert len(group_ids) == len(set(group_ids)), group_ids
+
+
+@pytest.mark.asyncio
+async def test_two_different_documents_are_each_compared_not_conflated(caplog):
+    """Revisions only compete within one document; two documents never do."""
+    process = mk_process(manifest_uploaded=False)
+    ar1 = mk_file(id="f-ar1", file_name="ar1.pdf", storage_key="key-ar1",
+                  mime_type="application/pdf", doc_stage="PD", document_code="AR-01",
+                  approval_status="APPROVED")
+    ar2 = mk_file(id="f-ar2", file_name="ar2.pdf", storage_key="key-ar2",
+                  mime_type="application/pdf", doc_stage="PD", document_code="AR-02",
+                  approval_status="APPROVED")
+    db = FakeDb(process, [ar1, ar2])
+    storage = FakeStorage({"key-ar1": _one_page_pdf("текст"), "key-ar2": _one_page_pdf("текст")})
+
+    with caplog.at_level(logging.INFO, logger="app.pipeline"):
+        await process_start("p1", db, storage)
+
+    selections = [r for r in caplog.records if r.msg == "source selection" and r.stage == "PD"]
+    assert {r.document_code for r in selections} == {"AR-01", "AR-02"}
+    assert all(r.selection_status == "COMPLETE" for r in selections)
+    assert not any(
+        c["param_code"] == "M-003" and c["completeness_status"] == "CLARIFICATION_REQUIRED"
+        for c in db.saved_checks
+    )
+
+
+@pytest.mark.asyncio
+async def test_two_unlinked_revisions_of_one_document_need_clarification():
+    """No predecessor link, no dates: nothing tells the two revisions apart."""
+    process = mk_process(manifest_uploaded=False)
+    rev_a = mk_file(id="f-a", file_name="a.pdf", storage_key="key-a",
+                    mime_type="application/pdf", doc_stage="PD", document_code="AR-01",
+                    approval_status="APPROVED")
+    rev_b = mk_file(id="f-b", file_name="b.pdf", storage_key="key-b",
+                    mime_type="application/pdf", doc_stage="PD", document_code="AR-01",
+                    approval_status="APPROVED")
+    db = FakeDb(process, [rev_a, rev_b])
+    storage = FakeStorage({"key-a": _one_page_pdf("текст"), "key-b": _one_page_pdf("текст")})
+
+    await process_start("p1", db, storage)
+
+    m003_checks = [c for c in db.saved_checks if c["param_code"] == "M-003"]
+    assert any(c["completeness_status"] == "CLARIFICATION_REQUIRED" for c in m003_checks)
+    assert not any(c["finding_status"] == "CANDIDATE" for c in m003_checks)
+
+
+@pytest.mark.asyncio
+async def test_file_without_a_document_code_is_not_guessed_at():
+    """Section 9.1 makes the document code mandatory for revision selection;
+    a file missing it is not silently assigned to some other document."""
+    process = mk_process(manifest_uploaded=False)
+    doc = mk_file(id="f-doc", file_name="a.pdf", storage_key="key-doc",
+                  mime_type="application/pdf", doc_stage="PD", document_code=None,
+                  approval_status="APPROVED")
+    db = FakeDb(process, [doc])
+    storage = FakeStorage({"key-doc": _one_page_pdf("текст")})
+
+    await process_start("p1", db, storage)
+
+    m003_checks = [c for c in db.saved_checks if c["param_code"] == "M-003"]
+    matching = [
+        c for c in m003_checks
+        if c["completeness_status"] == "CLARIFICATION_REQUIRED" and "шифр" in (c["rationale"] or "")
+    ]
+    assert matching
+    assert not any(c["finding_status"] == "CANDIDATE" for c in m003_checks)

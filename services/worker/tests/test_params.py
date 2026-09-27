@@ -64,7 +64,7 @@ def test_an_evaluator_cannot_confirm_a_violation():
 
     by_code = {o.code: o for o in outcomes}
     assert by_code["M-041"].status == "NOT_COMPARABLE"
-    assert "inspector" in by_code["M-041"].reason
+    assert "инспектор" in by_code["M-041"].reason
 
 
 def test_a_duplicated_code_is_refused(tmp_path):
