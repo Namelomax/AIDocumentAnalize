@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import type { Readable } from 'node:stream';
 import { Client } from 'minio';
 import { config } from './config.js';
 
@@ -34,4 +35,16 @@ export async function getObject(key: string): Promise<Buffer> {
   const chunks: Buffer[] = [];
   for await (const chunk of stream) chunks.push(chunk as Buffer);
   return Buffer.concat(chunks);
+}
+
+// Streamed rather than buffered: a page image serves the evidence card
+// directly, and there is no reason to hold the whole PNG in memory first.
+export async function getObjectStream(key: string): Promise<Readable> {
+  return client.getObject(config.minio.bucket, key);
+}
+
+// Used by tests to remove a fixture object after the run; nothing in the
+// running API deletes stored documents or page images.
+export async function removeObject(key: string): Promise<void> {
+  await client.removeObject(config.minio.bucket, key);
 }
