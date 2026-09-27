@@ -156,11 +156,59 @@ model Process {
   createdAt         DateTime           @default(now()) @map("created_at")
   updatedAt         DateTime           @updatedAt @map("updated_at")
 
-  object ConstructionObject @relation(fields: [objectId], references: [id])
-  files  FileRecord[]
-  checks Check[]
+  object    ConstructionObject @relation(fields: [objectId], references: [id])
+  files     FileRecord[]
+  checks    Check[]
+  protocols Protocol[]
 
   @@map("processes")
+}
+
+// One version of the protocol of a process (section 9.2, table Protocols of
+// section 10). A re-run or an incremental update adds a version; earlier ones
+// stay for the record.
+model Protocol {
+  id                String    @id @default(uuid())
+  objectId          String    @map("object_id")
+  processId         String    @map("process_id")
+  version           Int
+  matrixVersion     String    @map("matrix_version") @db.VarChar(20)
+  datasetVersion    String    @map("dataset_version") @db.VarChar(40)
+  modelVersion      String    @map("model_version") @db.VarChar(40)
+  inputManifestHash String    @map("input_manifest_hash") @db.Char(64)
+  // READY -> VERIFYING -> VERIFICATION_COMPLETED -> PROTOCOL_FINALIZED
+  // (section 9.3); unfinalizing returns it to VERIFICATION_COMPLETED.
+  status            String    @db.VarChar(30)
+  // PENDING_SYNC / SYNCED for the transfer to ИАИС «РиН» (section 9.6); null
+  // until a transfer is attempted.
+  syncStatus        String?   @map("sync_status") @db.VarChar(20)
+  createdAt         DateTime  @default(now()) @map("created_at")
+  finalizedAt       DateTime? @map("finalized_at")
+  finalizedBy       String?   @map("finalized_by")
+
+  process Process @relation(fields: [processId], references: [id], onDelete: Cascade)
+
+  @@unique([objectId, version])
+  @@index([processId])
+  @@map("protocols")
+}
+
+// Section 10, table Rejection_Log: every candidate an inspector rejected,
+// with what the system had said, for the retraining loop of section 9.4.
+model RejectionLog {
+  id               String   @id @default(uuid())
+  checkId          String   @map("check_id")
+  rejectionReason  String   @map("rejection_reason") @db.VarChar(30)
+  aiVerdict        String   @map("ai_verdict") @db.VarChar(30)
+  comment          String
+  // Section 9.4: a rejection enters a dataset only after a curator's review.
+  retrainingStatus String   @default("DRAFT") @map("retraining_status") @db.VarChar(20)
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  check Check @relation(fields: [checkId], references: [id], onDelete: Cascade)
+
+  @@index([checkId])
+  @@map("rejection_log")
 }
 
 model Page {
@@ -262,33 +310,45 @@ model Param {
 // compared (section 9.2). Field names follow section 10 of the specification
 // and the GOLD schema sheet of the customer's matrix.
 model Check {
-  id                 String   @id @default(uuid())
-  processId          String   @map("process_id")
-  objectId           String   @map("object_id")
-  paramId            Int?     @map("param_id")
-  paramCode          String   @map("param_code") @db.VarChar(20)
+  id                  String    @id @default(uuid())
+  processId           String    @map("process_id")
+  objectId            String    @map("object_id")
+  paramId             Int?      @map("param_id")
+  paramCode           String    @map("param_code") @db.VarChar(20)
   // Stable across re-runs of the same package, so an incremental update can
   // replace a group instead of duplicating it.
-  evidenceGroupId    String   @map("evidence_group_id")
+  evidenceGroupId     String    @map("evidence_group_id")
   // What this group is about within the parameter: a room number, a floor
   // total, or null for a parameter-level outcome.
-  subject            String?
-  expectedValue      String?  @map("expected_value")
-  actualValue        String?  @map("actual_value")
-  delta              String?
+  subject             String?
+  expectedValue       String?   @map("expected_value")
+  actualValue         String?   @map("actual_value")
+  delta               String?
   // COMPLETE / MISSING_EVIDENCE / NOT_APPLICABLE / NOT_COMPARABLE /
   // CLARIFICATION_REQUIRED - a statement about the input, never a violation.
-  completenessStatus String   @map("completeness_status") @db.VarChar(30)
+  completenessStatus  String    @map("completeness_status") @db.VarChar(30)
   // CANDIDATE / NEGATIVE_VERIFIED from the engine; CONFIRMED_VIOLATION only
   // ever from an inspector's verdict. Null when nothing could be compared.
-  findingStatus      String?  @map("finding_status") @db.VarChar(30)
-  reviewPriority     String   @map("review_priority") @db.VarChar(20)
-  rationale          String?
-  matrixVersion      String   @map("matrix_version") @db.VarChar(20)
-  createdAt          DateTime @default(now()) @map("created_at")
+  findingStatus       String?   @map("finding_status") @db.VarChar(30)
+  reviewPriority      String    @map("review_priority") @db.VarChar(20)
+  rationale           String?
+  matrixVersion       String    @map("matrix_version") @db.VarChar(20)
+  createdAt           DateTime  @default(now()) @map("created_at")
+  // What the engine said before any inspector decision. Kept so the pair
+  // "system said / inspector decided" survives for the retraining loop.
+  engineStatus        String?   @map("engine_status") @db.VarChar(30)
+  verifiedBy          String?   @map("verified_by")
+  verifiedAt          DateTime? @map("verified_at")
+  verdictReasonCode   String?   @map("verdict_reason_code") @db.VarChar(30)
+  verdictComment      String?   @map("verdict_comment")
+  // When the inspector resolves a revision conflict, the file they chose as
+  // authoritative and why (section 9.2: "выбрать авторитетную редакцию и
+  // зафиксировать основание").
+  authoritativeFileId String?   @map("authoritative_file_id")
 
-  process   Process            @relation(fields: [processId], references: [id], onDelete: Cascade)
-  fragments EvidenceFragment[]
+  process    Process            @relation(fields: [processId], references: [id], onDelete: Cascade)
+  fragments  EvidenceFragment[]
+  rejections RejectionLog[]
 
   @@unique([processId, evidenceGroupId])
   @@index([processId, findingStatus])
@@ -296,25 +356,25 @@ model Check {
 }
 
 model EvidenceFragment {
-  id              String @id @default(uuid())
-  checkId         String @map("check_id")
-  evidenceGroupId String @map("evidence_group_id")
-  fileId          String @map("file_id")
-  fileSha256      String @map("file_sha256") @db.Char(64)
+  id              String         @id @default(uuid())
+  checkId         String         @map("check_id")
+  evidenceGroupId String         @map("evidence_group_id")
+  fileId          String         @map("file_id")
+  fileSha256      String         @map("file_sha256") @db.Char(64)
   stage           DocStage
-  documentCode    String? @map("document_code")
+  documentCode    String?        @map("document_code")
   revision        String?
   approvalStatus  ApprovalStatus @map("approval_status")
-  sheetPage       Int    @map("sheet_page")
+  sheetPage       Int            @map("sheet_page")
   // Normalized to [0;1] against the displayed page, after CropBox, MediaBox
   // and Rotate (section 9.1, item 4).
   x0              Float
   y0              Float
   x1              Float
   y1              Float
-  extractedValue  String? @map("extracted_value")
+  extractedValue  String?        @map("extracted_value")
   // "expected" for the reference source, "actual" for the one checked against it.
-  role            String @db.VarChar(10)
+  role            String         @db.VarChar(10)
 
   check Check      @relation(fields: [checkId], references: [id], onDelete: Cascade)
   file  FileRecord @relation(fields: [fileId], references: [id])
