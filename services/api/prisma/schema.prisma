@@ -345,6 +345,12 @@ model Check {
   // authoritative and why (section 9.2: "выбрать авторитетную редакцию и
   // зафиксировать основание").
   authoritativeFileId String?   @map("authoritative_file_id")
+  // How a free-search hypothesis was found (section 9.5): LOGICAL,
+  // SEMANTIC, NORMATIVE or ML. Null for matrix checks.
+  detectionMethod     String?   @map("detection_method") @db.VarChar(20)
+  // The model's own confidence for a hypothesis. Kept for the inspector's
+  // ordering only; it never turns a hypothesis into a candidate.
+  confidence          Float?
 
   process    Process            @relation(fields: [processId], references: [id], onDelete: Cascade)
   fragments  EvidenceFragment[]
