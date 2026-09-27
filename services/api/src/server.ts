@@ -8,6 +8,7 @@ import { healthRoutes } from './routes/health.js';
 import { documentRoutes } from './routes/documents.js';
 import { objectRoutes } from './routes/objects.js';
 import { processRoutes } from './routes/processes.js';
+import { dashboardRoutes } from './routes/dashboard.js';
 import { paramRoutes } from './routes/params.js';
 import { authRoutes } from './routes/auth.js';
 import { protocolRoutes } from './routes/protocols.js';
@@ -58,6 +59,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
   await app.register(documentRoutes);
   await app.register(objectRoutes);
   await app.register(processRoutes);
+  await app.register(dashboardRoutes);
   await app.register(paramRoutes);
   await app.register(authRoutes);
   await app.register(protocolRoutes);

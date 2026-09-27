@@ -21,6 +21,19 @@ function hash64() {
   return (randomUUID() + randomUUID()).replace(/-/g, '');
 }
 
+const PARAM_CODE = 'M-903';
+
+async function ensureParam() {
+  const existing = await prisma.param.findUnique({ where: { code: PARAM_CODE } });
+  if (existing) return existing;
+  return prisma.param.create({
+    data: {
+      code: PARAM_CODE, section: 'ПЗ', parameterName: 'Ход обработки', unit: 'м²',
+      reviewPriority: 'MEDIUM', dataType: 'number', modality: 'scalar_text', matrixVersion: '1.1',
+    },
+  });
+}
+
 async function makeProcess(fileCount: number) {
   const process = await prisma.process.create({ data: { objectId, status: 'PENDING' } });
   for (let i = 0; i < fileCount; i += 1) {
@@ -184,6 +197,52 @@ describe('process routes', () => {
     const messages = await drainQueue();
     expect(messages).toContainEqual({
       type: 'process.start', process_id: process.id, object_id: objectId,
+    });
+    await app.close();
+  });
+});
+
+describe('GET /api/v1/processes/:process_id/progress', () => {
+  it('returns 404 for an unknown process', async () => {
+    const app = await buildServer();
+    const res = await app.inject({
+      method: 'GET', url: `/api/v1/processes/${randomUUID()}/progress`, headers: await authHeaders(),
+    });
+    expect(res.statusCode).toBe(404);
+    await app.close();
+  });
+
+  it('reports files, extracted pages and checks for the process', async () => {
+    const app = await buildServer();
+    const process = await makeProcess(2); // two PDFs
+    const files = await prisma.fileRecord.findMany({ where: { processId: process.id } });
+    await prisma.page.create({
+      data: { fileId: files[0].id, pageNo: 1, widthPt: 841.9, heightPt: 595.3, rotation: 0, charCount: 50 },
+    });
+
+    const param = await ensureParam();
+    for (let i = 0; i < 3; i += 1) {
+      await prisma.check.create({
+        data: {
+          processId: process.id, objectId, paramCode: param.code,
+          evidenceGroupId: `${process.id}:check-${i}`, completenessStatus: 'COMPLETE',
+          findingStatus: i === 0 ? 'CANDIDATE' : 'NEGATIVE_VERIFIED',
+          reviewPriority: 'MEDIUM', matrixVersion: '1.1',
+        },
+      });
+    }
+
+    const res = await app.inject({
+      method: 'GET', url: `/api/v1/processes/${process.id}/progress`, headers: await authHeaders(),
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({
+      status: 'PENDING',
+      files: { total: 2, pdf: 2 },
+      pages: { extracted: 1, needs_ocr: 0 },
+      checks: { total: 3, candidates: 1 },
+      protocol_id: null,
     });
     await app.close();
   });

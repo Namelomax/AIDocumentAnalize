@@ -76,4 +76,41 @@ export async function processRoutes(app: FastifyInstance) {
 
     return reply.code(202).send({ process_id: process.id, status: 'PARSING' });
   });
+
+  // The processing screen's four stages (Plan 7): "recognition" reads
+  // against pages extracted vs. PDFs uploaded, "value extraction" against
+  // the checks produced, "matching" against the process's own status. The
+  // fourth stage, drawing analysis, has no GPU stand behind it yet, so this
+  // endpoint reports only the honest numbers above - which stage each one
+  // feeds is the interface's job, not this route's.
+  app.get('/api/v1/processes/:process_id/progress', async (request, reply) => {
+    const parsed = paramsSchema.safeParse(request.params);
+    if (!parsed.success) return reply.code(400).send({ error: 'VALIDATION_FAILED' });
+
+    const process = await prisma.process.findUnique({ where: { id: parsed.data.process_id } });
+    if (!process) return reply.code(404).send({ error: 'PROCESS_NOT_FOUND' });
+
+    const [filesTotal, filesPdf, pagesExtracted, pagesNeedsOcr, checksTotal, checksCandidates, protocol] =
+      await Promise.all([
+        prisma.fileRecord.count({ where: { processId: process.id } }),
+        prisma.fileRecord.count({ where: { processId: process.id, mimeType: 'application/pdf' } }),
+        prisma.page.count({ where: { file: { processId: process.id } } }),
+        prisma.page.count({ where: { file: { processId: process.id }, needsOcr: true } }),
+        prisma.check.count({ where: { processId: process.id } }),
+        prisma.check.count({ where: { processId: process.id, findingStatus: 'CANDIDATE' } }),
+        prisma.protocol.findFirst({
+          where: { processId: process.id },
+          orderBy: { version: 'desc' },
+          select: { id: true },
+        }),
+      ]);
+
+    return {
+      status: process.status,
+      files: { total: filesTotal, pdf: filesPdf },
+      pages: { extracted: pagesExtracted, needs_ocr: pagesNeedsOcr },
+      checks: { total: checksTotal, candidates: checksCandidates },
+      protocol_id: protocol?.id ?? null,
+    };
+  });
 }
