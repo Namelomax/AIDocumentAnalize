@@ -119,3 +119,17 @@ services:
       postgres: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
     restart: unless-stopped
+
+  web:
+    image: inspector-web:1.0.0
+    build: ./services/web
+    ports:
+      - "8080:80"
+    depends_on:
+      api: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
