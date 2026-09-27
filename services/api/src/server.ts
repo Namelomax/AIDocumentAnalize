@@ -28,6 +28,13 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
     logger: options.logStream ? { ...loggerOptions, stream: options.logStream } : loggerOptions,
     genReqId: () => crypto.randomUUID(),
     requestIdLogLabel: 'request_id',
+    // Behind nginx every request arrives from the proxy, and the audit log of
+    // section 12.4 would record the proxy's address for every action. Only
+    // private networks are trusted to set X-Forwarded-For: the web container
+    // always sits on the internal Docker network, while trusting everyone
+    // would let a client calling the api port directly write any address it
+    // likes into the audit log.
+    trustProxy: '127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16',
   });
   await app.register(multipart, { limits: { fileSize: config.maxPackageBytes } });
   await app.register(fastifyJwt, { secret: config.jwtSecret, sign: { expiresIn: config.jwtTtl } });

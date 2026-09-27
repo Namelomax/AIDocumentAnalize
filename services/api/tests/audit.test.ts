@@ -20,6 +20,38 @@ describe('audit log', () => {
     await app.close();
   });
 
+  it('records the client address the proxy forwarded, not the proxy', async () => {
+    const app = await buildServer();
+    const res = await app.inject({
+      method: 'POST', url: '/api/v1/objects', headers: {
+        ...(await authHeaders()), 'x-forwarded-for': '203.0.113.7',
+      },
+      payload: { name: 'Объект через прокси' },
+      remoteAddress: '172.18.0.8',
+    });
+
+    const entry = await prisma.auditLog.findFirst({ where: { action: 'OBJECT_CREATED', objectId: res.json().id } });
+    expect(entry?.ipAddress).toBe('203.0.113.7');
+    await app.close();
+  });
+
+  it('ignores a forwarded address from a caller outside the private networks', async () => {
+    // A client reaching the api port directly must not be able to put any
+    // address it likes into the audit log.
+    const app = await buildServer();
+    const res = await app.inject({
+      method: 'POST', url: '/api/v1/objects', headers: {
+        ...(await authHeaders()), 'x-forwarded-for': '203.0.113.7',
+      },
+      payload: { name: 'Объект с подменой адреса' },
+      remoteAddress: '198.51.100.20',
+    });
+
+    const entry = await prisma.auditLog.findFirst({ where: { action: 'OBJECT_CREATED', objectId: res.json().id } });
+    expect(entry?.ipAddress).toBe('198.51.100.20');
+    await app.close();
+  });
+
   it('records a failed login without a user but with the attempted login', async () => {
     const app = await buildServer();
     const login = `nobody-${Date.now()}`;
