@@ -26,6 +26,7 @@ CONFIG = Config(
     database_url="", rabbitmq_url="", log_level="INFO", minio_endpoint="",
     minio_root_user="", minio_root_password="", minio_bucket="",
     model_version="rules-2026.09", dataset_version="none",
+    llm_base_url="", llm_model="", llm_timeout_s=60.0,
 )
 
 

@@ -17,6 +17,14 @@ class Config:
     # or a dataset that does not exist would misstate how a result was made.
     model_version: str
     dataset_version: str
+    # Address of an OpenAI-compatible /chat/completions endpoint for the free
+    # -search hypothesis checks (plan 8). Empty means no model is configured
+    # -- the worker must keep working without one, so this is never required
+    # like the values above. No default ever names a real host: that would
+    # put an address in the code, which the architecture forbids.
+    llm_base_url: str
+    llm_model: str
+    llm_timeout_s: float
 
 
 def load_config() -> Config:
@@ -30,4 +38,7 @@ def load_config() -> Config:
         minio_bucket=os.environ["MINIO_BUCKET"],
         model_version=os.environ.get("MODEL_VERSION", "rules-2026.09"),
         dataset_version=os.environ.get("DATASET_VERSION", "none"),
+        llm_base_url=os.environ.get("LLM_BASE_URL", ""),
+        llm_model=os.environ.get("LLM_MODEL", ""),
+        llm_timeout_s=float(os.environ.get("LLM_TIMEOUT_S", "60")),
     )

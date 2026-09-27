@@ -115,6 +115,17 @@ services:
       TASK_QUEUE: ${TASK_QUEUE:-inspector.tasks}
       MODEL_VERSION: ${MODEL_VERSION:-rules-2026.09}
       DATASET_VERSION: ${DATASET_VERSION:-none}
+      # A local language model behind an OpenAI-compatible interface (plan
+      # 8). Left blank, the worker runs without one and reports
+      # NOT_COMPARABLE for the checks that need it -- no default here may
+      # name a real host. On the verification stand this points at the
+      # vLLM service; in development on Windows with LM Studio it is
+      # http://host.docker.internal:1234/v1, and LM Studio must have
+      # "Serve on Local Network" turned on so the container (which is not
+      # the host) can reach it.
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_TIMEOUT_S: ${LLM_TIMEOUT_S:-60}
     depends_on:
       postgres: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
