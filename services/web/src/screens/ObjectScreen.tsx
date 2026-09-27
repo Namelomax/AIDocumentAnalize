@@ -1,109 +1,141 @@
-import { useState } from 'react';
-import {
-  ChevronRight, Upload, File, Trash2, AlertTriangle,
-  CheckCircle, Clock, X,
-} from 'lucide-react';
-import type { DocStage, CompletenessStatus } from '../types';
-import { MOCK_OBJECTS, MOCK_PD_FILES, MOCK_RD_FILES, MOCK_PROTOCOL } from '../mocks/data';
+import { useEffect, useState } from 'react';
+import { ArrowLeft, FileText, UploadCloud } from 'lucide-react';
+import PageHeader from '../components/PageHeader';
 import StageBadge from '../components/StageBadge';
 import Button from '../components/Button';
-import type { NavState } from '../App';
+import EmptyState from '../components/EmptyState';
+import { SkeletonText } from '../components/Skeleton';
+import { completenessLabels, processStatusLabels } from '../labels';
+import { api, ApiError } from '../api/client';
+import { toObjectProcess, toProjectObject, type ApiObjectDetail } from '../api/adapters';
+import type { DocStage, ObjectProcess, ProjectObject } from '../types';
 
 interface Props {
   objectId: string;
-  onNavigate: (screen: NavState['screen'], objectId?: string, protocolId?: string) => void;
+  onBack: () => void;
+  onOpenUpload: (objectId: string) => void;
+  onOpenProtocol: (objectId: string, protocolId: string) => void;
 }
 
-const SECTION_COLORS: Record<string, string> = {
-  ПЗ: '#6366F1', АР: '#0891B2', КР: '#059669', ОВ: '#D97706',
-  ВК: '#7C3AED', ЭО: '#DC2626', ПБ: '#EA580C', ООС: '#16A34A',
-  ГП: '#0369A1', ТМ: '#9333EA', СМ: '#475569', ПОС: '#0F172A',
+const STAGE_LABELS: Record<DocStage, string> = {
+  PD: 'Проектная (ПД)', RD: 'Рабочая (РД)', ID: 'Исполнительная (ИД)'
 };
 
-function CompletenessIcon({ status }: { status: CompletenessStatus }) {
-  if (status === 'full') return <CheckCircle size={14} color="#027A48" />;
-  if (status === 'partial') return <Clock size={14} color="#B54708" />;
-  return <AlertTriangle size={14} color="#94A3B8" />;
-}
+type TabKey = 'docs' | 'protocols' | 'history';
 
-export default function ObjectScreen({ objectId, onNavigate }: Props) {
-  const obj = MOCK_OBJECTS.find(o => o.id === objectId) ?? MOCK_OBJECTS[0];
-  const [activeTab, setActiveTab] = useState<'docs' | 'protocols' | 'history'>('docs');
-  const [toast, setToast] = useState<{ text: string; type: 'error' | 'info' } | null>(null);
+export default function ObjectScreen({ objectId, onBack, onOpenUpload, onOpenProtocol }: Props) {
+  const [object, setObject] = useState<ProjectObject | null>(null);
+  const [processes, setProcesses] = useState<ObjectProcess[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<TabKey>('docs');
 
-  const totalSizeMb = [...MOCK_PD_FILES, ...MOCK_RD_FILES].reduce((s, f) => s + f.sizeMb, 0);
-  const maxMb = 200;
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setLoadError(null);
+    setActiveTab('docs');
+    (async () => {
+      try {
+        const detail = await api<ApiObjectDetail>(`/api/v1/objects/${objectId}`);
+        if (cancelled) return;
+        setObject(toProjectObject(detail));
+        setProcesses(detail.processes.map(toObjectProcess));
+      } catch (err) {
+        if (!cancelled) setLoadError(err instanceof ApiError ? err.message : 'Не удалось загрузить объект');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [objectId]);
 
-  const compl: Record<DocStage, { status: CompletenessStatus; label: string }> = {
-    PD: { status: obj.pdComplete, label: obj.pdComplete === 'full' ? `Загружено полностью (${obj.pdFileCount} файлов)` : obj.pdComplete === 'partial' ? `Загружено частично (${obj.pdFileCount} из ${obj.pdTotalExpected ?? '?'})` : 'Отсутствует' },
-    RD: { status: obj.rdComplete, label: obj.rdComplete === 'full' ? `Загружено полностью (${obj.rdFileCount} файлов)` : obj.rdComplete === 'partial' ? `Загружено частично (${obj.rdFileCount} из ${obj.rdTotalExpected ?? '?'})` : 'Отсутствует' },
-    ID: { status: obj.idComplete, label: obj.idComplete === 'full' ? `Загружено полностью (${obj.idFileCount} файлов)` : obj.idComplete === 'partial' ? `Загружено частично (${obj.idFileCount} из 10)` : 'Отсутствует' },
-  };
+  if (loading) {
+    return (
+      <div className="h-full flex flex-col overflow-hidden bg-[#F5F7FA]">
+        <div className="px-8 pt-6 pb-4 border-b border-[#E2E8F0] bg-white">
+          <SkeletonText lines={2} height={16} />
+        </div>
+        <div className="flex-1 overflow-auto px-8 py-5">
+          <SkeletonText lines={6} height={40} />
+        </div>
+      </div>
+    );
+  }
 
-  const checkType = obj.idComplete === 'missing'
-    ? (obj.rdComplete === 'missing' ? 'ПД' : 'ПД + РД (Частичная загрузка)')
-    : 'FULL (ПД + РД + ИД)';
+  if (loadError || !object) {
+    return (
+      <div className="h-full flex flex-col overflow-hidden bg-[#F5F7FA]">
+        <PageHeader
+          crumbs={['Объекты']}
+          title="Объект"
+          actions={
+            <Button variant="ghost" icon={<ArrowLeft size={14} />} onClick={onBack}>
+              К списку объектов
+            </Button>
+          }
+        />
+        <div className="flex-1 flex items-center justify-center">
+          <div className="bg-[#FEF3F2] border border-[#FECDCA] rounded-lg px-4 py-3 text-[13px] text-[#B42318]">
+            {loadError ?? 'Объект не найден'}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const latestProcess = processes[0] ?? null;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
-      {/* Topbar */}
-      <div
-        style={{
-          display: 'flex', alignItems: 'center', gap: 8, padding: '0 24px', height: 48,
-          backgroundColor: '#FFFFFF', borderBottom: '1px solid #E2E8F0', flexShrink: 0,
-        }}
-      >
-        <button
-          onClick={() => onNavigate('dashboard')}
-          style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#1B4E9B', fontSize: 13, fontFamily: 'inherit', padding: 0 }}
-        >
-          Объекты
-        </button>
-        <ChevronRight size={14} color="#94A3B8" />
-        <span style={{ fontSize: 13, color: '#0F172A', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {obj.name}
-        </span>
-      </div>
+    <div className="h-full flex flex-col overflow-hidden bg-[#F5F7FA]">
+      <PageHeader
+        crumbs={['Объекты', object.name]}
+        title={object.name}
+        actions={
+          <>
+            <Button variant="ghost" icon={<ArrowLeft size={14} />} onClick={onBack}>
+              К списку объектов
+            </Button>
+            <Button variant="primary" icon={<UploadCloud size={14} />} onClick={() => onOpenUpload(objectId)}>
+              Документы и загрузка
+            </Button>
+          </>
+        }
+      />
 
-      {/* Object header */}
-      <div
-        style={{
-          backgroundColor: '#FFFFFF', borderBottom: '1px solid #E2E8F0',
-          padding: '12px 24px', flexShrink: 0,
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+      <div className="px-8 pt-4 pb-0 bg-white border-b border-[#E2E8F0]">
+        <div className="grid grid-cols-4 gap-6 text-[13px] pb-4">
           <div>
-            <h1 style={{ margin: 0, fontSize: 16, fontWeight: 600, color: '#0F172A', lineHeight: '24px' }}>
-              {obj.name}. {obj.address}
-            </h1>
-            <div style={{ display: 'flex', gap: 16, marginTop: 4 }}>
-              <span style={{ fontSize: 12, color: '#475569' }}>Застройщик: <strong>{obj.developer}</strong></span>
-              <span style={{ fontSize: 12, color: '#475569' }}>Разрешение: <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 11 }}>{obj.permitNumber}</span></span>
-            </div>
+            <div className="text-[11px] text-[#94A3B8] uppercase tracking-wide">Адрес</div>
+            <div className="text-[#0F172A]">{object.address || '—'}</div>
           </div>
-          <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
-            <StageBadge stage="PD" completeness={obj.pdComplete} size="md" />
-            <StageBadge stage="RD" completeness={obj.rdComplete} size="md" />
-            <StageBadge stage="ID" completeness={obj.idComplete} size="md" />
+          <div>
+            <div className="text-[11px] text-[#94A3B8] uppercase tracking-wide">Застройщик</div>
+            <div className="text-[#0F172A]">{object.developer || '—'}</div>
+          </div>
+          <div>
+            <div className="text-[11px] text-[#94A3B8] uppercase tracking-wide">Подрядчик</div>
+            <div className="text-[#0F172A]">{object.contractor || '—'}</div>
+          </div>
+          <div>
+            <div className="text-[11px] text-[#94A3B8] uppercase tracking-wide">Разрешение на строительство</div>
+            <div className="mono text-[#0F172A]">{object.permit || '—'}</div>
           </div>
         </div>
 
-        {/* Tabs */}
-        <div style={{ display: 'flex', gap: 0, marginTop: 12, borderBottom: '2px solid #E2E8F0' }}>
-          {(['docs', 'protocols', 'history'] as const).map(tab => {
-            const labels = { docs: 'Документы', protocols: 'Протоколы', history: 'История' };
+        <div className="flex items-center gap-5">
+          {(['docs', 'protocols', 'history'] as const).map((tab) => {
+            const labels: Record<TabKey, string> = { docs: 'Документы', protocols: 'Протоколы', history: 'История' };
+            const active = activeTab === tab;
             return (
               <button
                 key={tab}
+                type="button"
                 onClick={() => setActiveTab(tab)}
-                style={{
-                  padding: '6px 16px', border: 'none', background: 'none', cursor: 'pointer',
-                  fontSize: 13, fontWeight: 500, fontFamily: 'inherit',
-                  color: activeTab === tab ? '#1B4E9B' : '#475569',
-                  borderBottom: `2px solid ${activeTab === tab ? '#1B4E9B' : 'transparent'}`,
-                  marginBottom: -2,
-                }}
+                className={[
+                  'pb-3 border-b-2 text-[13px]',
+                  active ? 'border-[#1B4E9B] text-[#1B4E9B] font-medium' : 'border-transparent text-[#475569] hover:text-[#0F172A]'
+                ].join(' ')}
               >
                 {labels[tab]}
               </button>
@@ -112,303 +144,110 @@ export default function ObjectScreen({ objectId, onNavigate }: Props) {
         </div>
       </div>
 
-      {/* Content */}
-      <div style={{ flex: 1, overflowY: 'auto', padding: '16px 24px' }}>
+      <div className="flex-1 overflow-auto px-8 py-5">
         {activeTab === 'docs' && (
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 280px', gap: 16 }}>
-            {/* PD column */}
-            <DocZoneColumn
-              stage="PD"
-              files={MOCK_PD_FILES}
-              onDropError={msg => setToast({ text: msg, type: 'error' })}
-            />
-
-            {/* RD column */}
-            <DocZoneColumn
-              stage="RD"
-              files={MOCK_RD_FILES}
-              totalExpected={obj.rdTotalExpected}
-              onDropError={msg => setToast({ text: msg, type: 'error' })}
-            />
-
-            {/* ID column */}
-            <DocZoneColumn
-              stage="ID"
-              files={[]}
-              onDropError={msg => setToast({ text: msg, type: 'error' })}
-            />
-
-            {/* Right sidebar */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              {/* Completeness panel */}
-              <div style={{ backgroundColor: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: 8, padding: 16 }}>
-                <h3 style={{ margin: '0 0 12px', fontSize: 13, fontWeight: 600, color: '#0F172A' }}>Комплектность</h3>
-                {(['PD', 'RD', 'ID'] as DocStage[]).map(stage => {
-                  const c = compl[stage];
-                  const labels: Record<DocStage, string> = { PD: 'Проектная (ПД)', RD: 'Рабочая (РД)', ID: 'Исполнительная (ИД)' };
-                  return (
-                    <div key={stage} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                      <CompletenessIcon status={c.status} />
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontSize: 12, fontWeight: 500, color: '#0F172A' }}>{labels[stage]}</div>
-                        <div style={{ fontSize: 11, color: '#94A3B8' }}>{c.label}</div>
-                      </div>
+          <div className="grid grid-cols-12 gap-6">
+            <div className="col-span-8 bg-white border border-[#E2E8F0] rounded-lg p-4">
+              <div className="text-[13px] font-medium text-[#0F172A] mb-3">Комплектность</div>
+              <div className="flex flex-col gap-3">
+                {(['PD', 'RD', 'ID'] as const).map((stage) => (
+                  <div key={stage} className="flex items-center justify-between text-[13px]">
+                    <div className="flex items-center gap-2">
+                      <StageBadge
+                        stage={stage}
+                        active={object.completeness[stage] === 'full' || object.completeness[stage] === 'partial'}
+                      />
+                      <span className="text-[#475569]">{STAGE_LABELS[stage]}</span>
                     </div>
-                  );
-                })}
-                <div
-                  style={{
-                    marginTop: 12, padding: '6px 10px',
-                    backgroundColor: '#EDF1F7', borderRadius: 6,
-                    fontSize: 12, color: '#475569',
-                  }}
-                >
-                  <span style={{ fontWeight: 600, color: '#0F172A' }}>Тип проверки: </span>
-                  {checkType}
-                  <span style={{ display: 'block', fontFamily: 'JetBrains Mono, monospace', fontSize: 10, color: '#94A3B8', marginTop: 2 }}>
-                    {obj.idComplete === 'missing' ? 'PD+RD · PARTIAL' : 'FULL'}
-                  </span>
-                </div>
+                    <span className="text-[12px]" style={{
+                      color: object.completeness[stage] === 'full' ? '#027A48'
+                        : object.completeness[stage] === 'partial' ? '#B54708' : '#94A3B8'
+                    }}>
+                      {completenessLabels[object.completeness[stage]]}
+                    </span>
+                  </div>
+                ))}
               </div>
-
-              {/* File registry */}
-              <div style={{ backgroundColor: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: 8, padding: 16 }}>
-                <h3 style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 600, color: '#0F172A' }}>Реестр файлов</h3>
-                <p style={{ margin: '0 0 8px', fontSize: 11, color: '#94A3B8' }}>
-                  CSV/XLSX/JSON — без реестра пакет принимается со статусом «Требует уточнения»
-                </p>
-                <Dropzone label="Загрузить реестр" accept="CSV, XLSX, JSON" onDrop={() => {}} compact />
-              </div>
-
-              {/* Storage indicator + launch */}
-              <div style={{ backgroundColor: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: 8, padding: 16 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                  <span style={{ fontSize: 12, color: '#475569' }}>Объём пакета</span>
-                  <span style={{ fontSize: 12, fontWeight: 600, color: '#0F172A', fontVariantNumeric: 'tabular-nums' }}>
-                    {totalSizeMb.toFixed(0)} МБ из {maxMb} МБ
-                  </span>
-                </div>
-                <div style={{ height: 6, backgroundColor: '#EDF1F7', borderRadius: 4, overflow: 'hidden' }}>
-                  <div
-                    style={{
-                      height: '100%',
-                      width: `${Math.min(100, (totalSizeMb / maxMb) * 100)}%`,
-                      backgroundColor: totalSizeMb > maxMb * 0.9 ? '#D97706' : '#1B4E9B',
-                      borderRadius: 4,
-                      transition: 'width 300ms ease',
-                    }}
-                  />
-                </div>
-                <p style={{ fontSize: 11, color: '#94A3B8', margin: '8px 0 12px' }}>
-                  Файлы можно дозагрузить до финализации протокола.
-                </p>
-                <Button
-                  variant="primary"
-                  size="lg"
-                  fullWidth
-                  onClick={() => onNavigate('protocol', objectId, MOCK_PROTOCOL.id)}
-                >
-                  Запустить проверку
+              <div className="mt-4 pt-3 border-t border-[#E2E8F0]">
+                <Button variant="secondary" icon={<UploadCloud size={14} />} onClick={() => onOpenUpload(objectId)}>
+                  Перейти к загрузке документов
                 </Button>
+              </div>
+            </div>
+
+            <div className="col-span-4 bg-white border border-[#E2E8F0] rounded-lg p-4">
+              <div className="text-[11px] text-[#94A3B8] uppercase tracking-wide mb-1">Статус процесса</div>
+              <div className="text-[13px] text-[#0F172A] font-medium">{processStatusLabels[object.processStatus]}</div>
+              <div className="mt-3 text-[12px] text-[#475569] flex flex-col gap-1">
+                <span>Кандидатов: <span className="num text-[#0F172A]">{object.candidates}</span></span>
+                <span>Подтверждено: <span className="num text-[#0F172A]">{object.confirmed}</span></span>
+                <span>Обновлён: <span className="mono text-[#0F172A]">{object.updatedAt}</span></span>
               </div>
             </div>
           </div>
         )}
 
         {activeTab === 'protocols' && (
-          <div
-            style={{
-              backgroundColor: '#FFFFFF', border: '1px solid #E2E8F0',
-              borderRadius: 8, padding: 24, textAlign: 'center',
-            }}
-          >
-            <div style={{ marginBottom: 12 }}>
-              <span
-                style={{
-                  display: 'inline-flex', alignItems: 'center', gap: 6,
-                  fontSize: 13, color: '#1B4E9B', cursor: 'pointer', fontWeight: 500,
-                }}
-                onClick={() => onNavigate('protocol', objectId, MOCK_PROTOCOL.id)}
-              >
-                Протокол № {MOCK_PROTOCOL.number} — {new Date().toLocaleDateString('ru-RU')}
-              </span>
+          processes.filter((p) => p.protocolId).length === 0 ? (
+            <div className="bg-white border border-[#E2E8F0] rounded-lg">
+              <EmptyState
+                kind="custom"
+                icon={<FileText size={22} aria-hidden />}
+                title="Протоколов пока нет"
+                description="Протокол появится после первого запуска проверки."
+              />
             </div>
-          </div>
+          ) : (
+            <div className="bg-white border border-[#E2E8F0] rounded-lg overflow-hidden">
+              <table className="w-full text-[13px] border-collapse">
+                <thead>
+                  <tr className="bg-[#EDF1F7] text-[#475569] text-[12px]">
+                    <th className="text-left font-medium px-3 h-10">Версия</th>
+                    <th className="text-left font-medium px-3 h-10">Процесс</th>
+                    <th className="text-left font-medium px-3 h-10">Статус</th>
+                    <th className="text-left font-medium px-3 h-10">Создан</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {processes.filter((p) => p.protocolId).map((p) => (
+                    <tr
+                      key={p.processId}
+                      className="h-10 border-t border-[#E2E8F0] hover:bg-[#E8F0FB] cursor-pointer"
+                      onClick={() => p.protocolId && onOpenProtocol(objectId, p.protocolId)}
+                    >
+                      <td className="px-3 num text-[#0F172A]">{p.protocolVersion ?? '—'}</td>
+                      <td className="px-3 mono text-[11px] text-[#475569]">{p.processId.slice(0, 8)}</td>
+                      <td className="px-3 text-[#475569]">{processStatusLabels[p.status]}</td>
+                      <td className="px-3 mono text-[12px] text-[#475569]">{p.createdAt}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )
         )}
 
         {activeTab === 'history' && (
-          <div style={{ backgroundColor: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: 8, padding: 24, color: '#94A3B8', textAlign: 'center', fontSize: 13 }}>
-            История изменений объекта
-          </div>
-        )}
-      </div>
-
-      {/* Toast */}
-      {toast && (
-        <div
-          style={{
-            position: 'fixed', bottom: 24, right: 24,
-            backgroundColor: toast.type === 'error' ? '#FEF3F2' : '#F0F9FF',
-            border: `1px solid ${toast.type === 'error' ? '#FECACA' : '#BAE6FD'}`,
-            color: toast.type === 'error' ? '#B42318' : '#026AA2',
-            borderRadius: 8, padding: '10px 16px',
-            display: 'flex', alignItems: 'center', gap: 8,
-            fontSize: 13, zIndex: 100,
-            boxShadow: '0 4px 12px rgba(15,23,42,0.12)',
-          }}
-        >
-          <AlertTriangle size={14} />
-          {toast.text}
-          <button
-            onClick={() => setToast(null)}
-            style={{ border: 'none', background: 'none', cursor: 'pointer', marginLeft: 8, color: 'inherit' }}
-          >
-            <X size={14} />
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function DocZoneColumn({
-  stage, files, totalExpected, onDropError,
-}: {
-  stage: DocStage;
-  files: { id: string; name: string; format: string; size: string; section: string; documentCode: string; revision: string; sheets: number; sha256: string }[];
-  totalExpected?: number;
-  onDropError: (msg: string) => void;
-}) {
-  const [dragging, setDragging] = useState(false);
-  const labels: Record<DocStage, string> = {
-    PD: 'Проектная документация (ПД)',
-    RD: 'Рабочая документация (РД)',
-    ID: 'Исполнительная документация (ИД)',
-  };
-
-  const handleDragOver = (e: React.DragEvent) => { e.preventDefault(); setDragging(true); };
-  const handleDragLeave = () => setDragging(false);
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setDragging(false);
-    const f = e.dataTransfer.files[0];
-    if (!f) return;
-    if (f.size > 50 * 1024 * 1024) {
-      onDropError('Файл превышает 50 МБ');
-      return;
-    }
-    const ext = f.name.split('.').pop()?.toUpperCase();
-    if (!['PDF', 'DOCX', 'XML'].includes(ext ?? '')) {
-      onDropError('Формат не поддерживается. Допустимы PDF, DOCX, XML');
-    }
-  };
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        <StageBadge stage={stage} size="md" />
-        <span style={{ fontSize: 13, fontWeight: 600, color: '#0F172A' }}>{labels[stage]}</span>
-        {files.length > 0 && totalExpected && (
-          <span style={{ marginLeft: 'auto', fontSize: 11, color: '#94A3B8' }}>
-            {files.length} из {totalExpected}
-          </span>
-        )}
-      </div>
-
-      <Dropzone
-        label={`Перетащите файлы ПД или нажмите`}
-        accept="PDF, DOCX, XML · макс. 50 МБ"
-        dragging={dragging}
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-        onDrop2={() => {}}
-      />
-
-      {files.length === 0 ? (
-        <div style={{ padding: '20px', textAlign: 'center', color: '#94A3B8', fontSize: 12 }}>
-          Нет загруженных файлов
-        </div>
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-          {files.map(f => (
-            <div
-              key={f.id}
-              style={{
-                display: 'flex', alignItems: 'center', gap: 6,
-                padding: '6px 8px', borderRadius: 6,
-                backgroundColor: '#F8FAFC', border: '1px solid #E2E8F0',
-                fontSize: 12,
-              }}
-            >
-              <div
-                style={{
-                  width: 28, height: 28, borderRadius: 4, flexShrink: 0,
-                  backgroundColor: '#EDF1F7', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                }}
-              >
-                <File size={14} color="#475569" />
-              </div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 12, fontWeight: 500, color: '#0F172A', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {f.section} · {f.name}
-                </div>
-                <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 1 }}>
-                  <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 10, color: '#475569' }}>{f.documentCode}</span>
-                  <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 10, color: '#94A3B8' }}>Ред. {f.revision}</span>
-                  <span style={{ fontSize: 10, color: '#94A3B8' }}>{f.sheets} л.</span>
-                </div>
-                <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 10, color: '#CBD5E1', marginTop: 1 }}>
-                  {f.sha256.slice(0, 16)}...
-                </div>
-              </div>
-              <span style={{ fontSize: 11, color: '#94A3B8', flexShrink: 0 }}>{f.size}</span>
-              <button
-                aria-label="Удалить файл"
-                style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#94A3B8', display: 'flex', flexShrink: 0 }}
-              >
-                <Trash2 size={13} />
-              </button>
+          processes.length === 0 ? (
+            <div className="bg-white border border-[#E2E8F0] rounded-lg py-16 text-center text-[13px] text-[#94A3B8]">
+              У объекта ещё не было ни одного процесса
             </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function Dropzone({
-  label, accept, dragging = false, compact = false, onDragOver, onDragLeave, onDrop, onDrop2,
-}: {
-  label?: string;
-  accept?: string;
-  dragging?: boolean;
-  compact?: boolean;
-  onDragOver?: (e: React.DragEvent) => void;
-  onDragLeave?: () => void;
-  onDrop?: (e: React.DragEvent) => void;
-  onDrop2?: () => void;
-}) {
-  return (
-    <div
-      onDragOver={onDragOver}
-      onDragLeave={onDragLeave}
-      onDrop={onDrop}
-      style={{
-        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-        gap: 4,
-        border: `1.5px dashed ${dragging ? '#1B4E9B' : '#CBD5E1'}`,
-        borderRadius: 8,
-        padding: compact ? '12px' : '20px',
-        backgroundColor: dragging ? '#E8F0FB' : '#FAFBFC',
-        cursor: 'pointer',
-        transition: 'all 100ms ease',
-        textAlign: 'center',
-      }}
-    >
-      <Upload size={compact ? 14 : 18} color={dragging ? '#1B4E9B' : '#94A3B8'} />
-      {!compact && <p style={{ margin: 0, fontSize: 12, color: '#475569', fontWeight: 500 }}>{label ?? 'Загрузить файлы'}</p>}
-      {accept && <p style={{ margin: 0, fontSize: 11, color: '#94A3B8' }}>{accept}</p>}
+          ) : (
+            <div className="bg-white border border-[#E2E8F0] rounded-lg divide-y divide-[#E2E8F0]">
+              {processes.map((p) => (
+                <div key={p.processId} className="px-4 py-3 flex items-center gap-3 text-[13px]">
+                  <span className="mono text-[11px] text-[#94A3B8] w-[90px] shrink-0">{p.createdAt}</span>
+                  <span className="text-[#0F172A]">{processStatusLabels[p.status]}</span>
+                  {p.scenario && <span className="text-[#94A3B8]">· {p.scenario}</span>}
+                  {p === latestProcess && (
+                    <span className="ml-auto text-[11px] text-[#1B4E9B]">текущий</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )
+        )}
+      </div>
     </div>
   );
 }

@@ -1,58 +1,17 @@
 import type {
-  Finding, ProjectObject, Protocol, ReasonCode, UploadedFile
+  Finding, ProjectObject, Protocol, UploadedFile
 } from '../types';
 
-/* ─────────── Словари русских подписей ─────────── */
+// latestProcessId/latestProtocolId are populated by toProjectObject (see
+// ../api/adapters.ts) from the real object endpoint; the mock objects below
+// predate those fields and have no process behind them to report.
+type MockProjectObject = Omit<ProjectObject, 'latestProcessId' | 'latestProtocolId'>;
 
-export const statusLabels: Record<string, string> = {
-  CANDIDATE:              'Кандидат',
-  CONFIRMED_VIOLATION:    'Нарушение подтверждено',
-  NEGATIVE_VERIFIED:      'Проверено, расхождений нет',
-  MISSING_EVIDENCE:       'Нет доказательства',
-  NOT_APPLICABLE:         'Неприменимо',
-  NOT_COMPARABLE:         'Нельзя сопоставить',
-  CLARIFICATION_REQUIRED: 'Требует уточнения',
-  SUSPICION:              'Гипотеза'
-};
-
-export const processStatusLabels: Record<string, string> = {
-  PENDING:   'Ожидает обработки',
-  PARSING:   'Обработка',
-  READY:     'Готов к верификации',
-  VERIFYING: 'Верификация',
-  COMPLETED: 'Завершён',
-  FINALIZED: 'Финализирован'
-};
-
-export const approvalLabels: Record<string, string> = {
-  DRAFT: 'Черновик',
-  APPROVED: 'Утверждён',
-  FOR_CONSTRUCTION: 'В производство работ',
-  SUPERSEDED: 'Заменён',
-  CANCELLED: 'Отменён'
-};
-
-export const reasonLabels: Record<ReasonCode, string> = {
-  WRONG_REVISION:   'Актуальная редакция выбрана неверно',
-  APPROVED_CHANGE:  'Есть согласованное изменение',
-  OCR_ERROR:        'Ошибка OCR',
-  BINDING_ERROR:    'Ошибка привязки',
-  NOT_APPLICABLE:   'Параметр неприменим',
-  OTHER:            'Иное'
-};
-
-export const reasonCodes: ReasonCode[] = [
-  'WRONG_REVISION', 'APPROVED_CHANGE', 'OCR_ERROR',
-  'BINDING_ERROR', 'NOT_APPLICABLE', 'OTHER'
-];
-
-export const uploadErrors = [
-  'Файл превышает 50 МБ',
-  'Превышен общий лимит пакета — 200 МБ',
-  'Неподдерживаемый формат файла. Допустимы PDF, DOCX, XML',
-  'Файл повреждён или защищён паролем',
-  'Не удалось прочитать сопроводительный реестр'
-];
+// Русские подписи (statusLabels, processStatusLabels, approvalLabels,
+// reasonLabels, reasonCodes, detectionLabels) live in ../labels — they are
+// the interface's own vocabulary, not sample data, and every real screen
+// reads them from there now (Plan 7, Task 4). `uploadErrors` is gone
+// entirely: the server's own `message` field replaced it.
 
 export const inspector = {
   name: 'Смирнов А.В.',
@@ -62,7 +21,7 @@ export const inspector = {
 
 /* ─────────── Объекты ─────────── */
 
-export const objects: ProjectObject[] = [
+const mockObjects: MockProjectObject[] = [
   { id:'obj-altuf',       name:'Торговое здание, реконструкция', address:'г. Москва, Алтуфьевское шоссе, д. 79Б, стр. 1',
     developer:'ООО «СтройИнвест-М»', permit:'РС-77-123456-2024',
     completeness:{ PD:'full', RD:'partial', ID:'missing' },
@@ -103,6 +62,10 @@ export const objects: ProjectObject[] = [
     completeness:{ PD:'full', RD:'missing', ID:'missing' },
     processStatus:'PENDING', candidates:0, confirmed:0, updatedAt:'05.11.2025 12:00', indicator:'yellow' }
 ];
+
+export const objects: ProjectObject[] = mockObjects.map((o) => ({
+  ...o, latestProcessId: null, latestProtocolId: null
+}));
 
 export const dashboardSummary = {
   objectsInWork: 12,
@@ -155,6 +118,11 @@ function sha(seed: number): string {
 /* ─────────── Evidence ─────────── */
 
 const pdEvidence = {
+  // Mock evidence predates evidence cards carrying a real page image
+  // (Plan 7, Task 4) — fileId/imageUrl are placeholders, unused by any
+  // screen that still reads mock findings.
+  fileId: 'mock-file-pd',
+  imageUrl: '',
   sha256: sha(1),
   stage: 'PD' as const,
   documentCode: 'АНО/150321/1-П-АР',
@@ -167,6 +135,8 @@ const pdEvidence = {
 };
 
 const rdEvidence = {
+  fileId: 'mock-file-rd',
+  imageUrl: '',
   sha256: sha(13),
   stage: 'RD' as const,
   documentCode: 'АНО/150321/1-РД-АР',

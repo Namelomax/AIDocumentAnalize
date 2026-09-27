@@ -1,5 +1,9 @@
 @import "tailwindcss";
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+/* Fonts are local @fontsource packages, imported in main.tsx — not this
+   Google Fonts @import, which both broke under the build (stripped for
+   coming after @import "tailwindcss" in the bundled output) and could never
+   have worked on a stand with no network access (Plan 7, Global
+   Constraints). */
 
 html, body, #root { height: 100%; margin: 0; }
 

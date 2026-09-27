@@ -7,7 +7,8 @@ import StageBadge from '../components/StageBadge';
 import Button from '../components/Button';
 import EmptyState from '../components/EmptyState';
 import { SkeletonTable } from '../components/Skeleton';
-import { protocol, processStatusLabels } from '../mocks/data';
+import { protocol } from '../mocks/data';
+import { processStatusLabels } from '../labels';
 import type { FindingStatus, ReviewPriority } from '../types';
 
 interface Props {

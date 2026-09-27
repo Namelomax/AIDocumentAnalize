@@ -16,6 +16,12 @@ export type DocStage = 'PD' | 'RD' | 'ID';
 export type ApprovalStatus =
   | 'DRAFT' | 'APPROVED' | 'FOR_CONSTRUCTION' | 'SUPERSEDED' | 'CANCELLED';
 
+// The interface's own vocabulary for a stage's upload completeness (dashboard
+// and upload screens). 'not_applicable' is new in Plan 7: the API's
+// StageCompleteness carries it for a stage a scenario does not require, which
+// the mock data never had to represent.
+export type CompletenessStatus = 'full' | 'partial' | 'missing' | 'not_applicable';
+
 export type ReviewPriority = 'HIGH' | 'MEDIUM' | 'LOW';
 
 export type ReasonCode =
@@ -27,6 +33,9 @@ export type ReasonCode =
   | 'OTHER';
 
 export interface EvidenceFragment {
+  // Which file the fragment was cut from (ТЗ requires `file_id` on the
+  // evidence card so the inspector can open the source file it came from).
+  fileId: string;
   sha256: string;
   stage: DocStage;
   documentCode: string;
@@ -36,6 +45,9 @@ export interface EvidenceFragment {
   bbox: [number, number, number, number]; // нормализованные [0..1]
   extractedValue: string;
   role: 'expected' | 'actual';
+  // The page image to render behind the bbox overlay; fetched through
+  // apiBlob() and turned into an object URL by the evidence panel.
+  imageUrl: string;
 }
 
 export interface FindingDecision {
@@ -78,18 +90,31 @@ export interface ProjectObject {
   id: string;
   name: string;
   address: string;
+  // Rendered by every screen as "Застройщик" — mapped from the API's
+  // `customer` field (see adapters.ts); `contractor` has no place in the
+  // designer's layout yet and is carried separately for the object card.
   developer: string;
+  contractor?: string;
   permit: string;
-  completeness: {
-    PD: 'full' | 'partial' | 'missing';
-    RD: 'full' | 'partial' | 'missing';
-    ID: 'full' | 'partial' | 'missing';
-  };
+  completeness: Record<DocStage, CompletenessStatus>;
   processStatus: ProcessStatus;
+  latestProcessId: string | null;
+  latestProtocolId: string | null;
   candidates: number;
   confirmed: number;
   updatedAt: string;
   indicator: 'green' | 'yellow' | 'red';
+}
+
+// One process in an object's history (GET /objects/:id → processes[]),
+// newest first — used by the object card's "Протоколы"/"История" tabs.
+export interface ObjectProcess {
+  processId: string;
+  status: ProcessStatus;
+  scenario: string | null;
+  createdAt: string;
+  protocolId: string | null;
+  protocolVersion: number | null;
 }
 
 export interface UploadedFile {

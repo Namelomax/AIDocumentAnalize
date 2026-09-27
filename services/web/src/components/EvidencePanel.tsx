@@ -1,6 +1,6 @@
 import { ZoomIn, ZoomOut, ExternalLink } from 'lucide-react';
 import StageBadge from './StageBadge';
-import { approvalLabels } from '../mocks/data';
+import { approvalLabels } from '../labels';
 import type { EvidenceFragment } from '../types';
 
 interface Props {

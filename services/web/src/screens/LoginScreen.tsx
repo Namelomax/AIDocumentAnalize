@@ -1,9 +1,10 @@
 import { useState, type FormEvent } from 'react';
 import { ShieldCheck, Fingerprint, Loader2 } from 'lucide-react';
 import Button from '../components/Button';
+import { login as apiLogin, ApiError, type Session } from '../api/client';
 
 interface Props {
-  onLogin: () => void;
+  onLogin: (session: Session) => void;
 }
 
 type LoginState = 'idle' | 'loading' | 'error';
@@ -14,7 +15,7 @@ export default function LoginScreen({ onLogin }: Props) {
   const [state, setState] = useState<LoginState>('idle');
   const [errorMsg, setErrorMsg] = useState('');
 
-  const handleSubmit = (e: FormEvent) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     if (!login.trim() || !password.trim()) {
       setState('error');
@@ -23,14 +24,13 @@ export default function LoginScreen({ onLogin }: Props) {
     }
     setState('loading');
     setErrorMsg('');
-    window.setTimeout(() => {
-      if (login.trim().length < 3 || password.trim().length < 3) {
-        setState('error');
-        setErrorMsg('Неверный логин или пароль');
-        return;
-      }
-      onLogin();
-    }, 700);
+    try {
+      const session = await apiLogin(login.trim(), password);
+      onLogin(session);
+    } catch (err) {
+      setState('error');
+      setErrorMsg(err instanceof ApiError ? err.message : 'Не удалось выполнить вход. Проверьте соединение');
+    }
   };
 
   const invalid = state === 'error';

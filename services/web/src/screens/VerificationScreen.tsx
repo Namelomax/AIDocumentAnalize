@@ -8,9 +8,8 @@ import PriorityIndicator from '../components/PriorityIndicator';
 import StatusBadge from '../components/StatusBadge';
 import StageBadge from '../components/StageBadge';
 import EvidencePanel from '../components/EvidencePanel';
-import {
-  protocol, reasonCodes, reasonLabels, inspector, approvalLabels
-} from '../mocks/data';
+import { protocol, inspector } from '../mocks/data';
+import { reasonCodes, reasonLabels, approvalLabels } from '../labels';
 import type { Finding, ReasonCode, RevisionCard } from '../types';
 
 interface Props {
@@ -173,24 +172,33 @@ export default function VerificationScreen({ protocolId, onBack, onFinish }: Pro
   const handleClarificationSave = () => {
   if (selectedRevisionIdx === null || !finding.clarificationConflict) return;
   const chosenRevision = finding.clarificationConflict.revisions[selectedRevisionIdx];
-  
-  // Логика по ТЗ: фиксируем выбранную редакцию как единственный авторитетный источник
-  toast.success(`Редакция ${chosenRevision.revision} утверждена как актуальная база сравнения`);
-  
-  // Сбрасываем статус конфликта, так как инспектор его разрешил камерально
+
+  // Логика по ТЗ: фиксируем выбранную редакцию как единственный авторитетный источник.
+  // (A `toast.success(...)` call used to sit here referencing an undefined
+  // `toast` — dead code left over from a different screen's pattern; this
+  // screen has no toast plumbing of its own, so it is dropped rather than
+  // wired up as part of a screen this task does not otherwise touch.)
+
+  // Сбрасываем статус конфликта, так как инспектор его разрешил камерально.
+  // Only the fields a chosen revision actually carries are overwritten;
+  // bbox/role/fileId/imageUrl stay as they were, since RevisionCard has no
+  // equivalents for them.
   finding.actualEvidence = {
+    ...finding.actualEvidence,
     stage: 'RD',
     documentCode: chosenRevision.documentCode,
+    revision: chosenRevision.revision,
+    approvalStatus: chosenRevision.approvalStatus,
     sheetPage: chosenRevision.sheetPage,
     sha256: chosenRevision.sha256,
     extractedValue: chosenRevision.extractedValue
   };
-  
+
   // Возвращаем интерфейс к стандартному сравнению по ТЗ Мосгосстройнадзора
   setSelectedRevisionIdx(null);
   // Пересчитываем дельту на ходу
-  finding.actual = chosenRevision.extractedValue; 
-  finding.clarificationConflict = undefined; 
+  finding.actual = chosenRevision.extractedValue;
+  finding.clarificationConflict = undefined;
 };
 
   const handleCompositeSave = () => {

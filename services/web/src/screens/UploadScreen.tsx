@@ -1,102 +1,71 @@
-import { useMemo, useState, type ChangeEvent, type DragEvent } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ChangeEvent, type DragEvent } from 'react';
 import {
-  ArrowLeft, UploadCloud, FileText, Trash2, Info, CheckCircle2,
-  AlertTriangle, Bug
+  ArrowLeft, UploadCloud, FileText, Trash2, Info, CheckCircle2, AlertTriangle
 } from 'lucide-react';
 import PageHeader from '../components/PageHeader';
 import StageBadge from '../components/StageBadge';
 import Button from '../components/Button';
+import { SkeletonBlock, SkeletonText } from '../components/Skeleton';
 import { useToast } from '../components/Toast';
-import { approvalLabels, objects, uploadedFiles } from '../mocks/data';
-import type { DocStage, UploadedFile } from '../types';
+import { approvalLabels, completenessLabels } from '../labels';
+import { api, ApiError, uploadPackage } from '../api/client';
+import {
+  toProjectObject, toUploadedFile, toUploadLimits,
+  type ApiFileItem, type ApiObjectDetail, type ApiUploadLimits, type UploadLimits
+} from '../api/adapters';
+import type { DocStage, ProjectObject, UploadedFile } from '../types';
 
 interface Props {
   objectId: string;
   onBack: () => void;
-  onRunCheck: (objectId: string) => void;
+  onRunCheck: (objectId: string, processId: string) => void;
 }
 
-const stageMeta: Record<DocStage, {
-  title: string;
-  hint: string;
-  totalExpected?: number;
-}> = {
-  PD: { title: 'Проектная документация (ПД)', hint: 'PDF, DOCX, XML. До 50 МБ на файл' },
-  RD: { title: 'Рабочая документация (РД)',   hint: 'PDF, DOCX, XML. До 50 МБ на файл', totalExpected: 15 },
-  ID: { title: 'Исполнительная документация (ИД)', hint: 'PDF, DOCX, XML. До 50 МБ на файл' }
+const stageMeta: Record<DocStage, { title: string; hint: string }> = {
+  PD: { title: 'Проектная документация (ПД)', hint: 'PDF, DOCX, XML' },
+  RD: { title: 'Рабочая документация (РД)',   hint: 'PDF, DOCX, XML' },
+  ID: { title: 'Исполнительная документация (ИД)', hint: 'PDF, DOCX, XML' }
 };
 
-const ALLOWED_EXT = ['pdf', 'docx', 'xml', 'csv', 'xlsx', 'json'];
-const MAX_FILE_MB = 50;
-const MAX_PACK_MB = 200;
-
-function completenessText(v: 'full' | 'partial' | 'missing') {
-  if (v === 'full')    return { label: 'Загружено полностью', color: '#027A48' };
-  if (v === 'partial') return { label: 'Загружено частично',  color: '#B54708' };
-  return { label: 'Отсутствует', color: '#94A3B8' };
+function megabytes(bytes: number): string {
+  return `${Math.round(bytes / 1024 / 1024)} МБ`;
 }
 
-/* ─────────── Dropzone с валидацией ─────────── */
+/* ─────────── Dropzone ─────────── */
 
 function Dropzone({
-  stage,
-  onFileAccepted,
-  onError
+  stage, hint, disabled, onFiles
 }: {
   stage: DocStage;
-  onFileAccepted: (stage: DocStage, file: File) => void;
-  onError: (kind: 'format' | 'corrupt' | 'size-file' | 'size-pack' | 'timeout', filename?: string) => void;
+  hint: string;
+  disabled: boolean;
+  onFiles: (files: File[]) => void;
 }) {
   const [hover, setHover] = useState(false);
-  const m = stageMeta[stage];
   const inputId = `file-input-${stage}`;
-
-  const validateAndAccept = (file: File) => {
-    const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
-    if (!ALLOWED_EXT.includes(ext)) {
-      onError('format', file.name);
-      return;
-    }
-    if (file.name.toLowerCase().includes('corrupt') || file.size === 0) {
-      onError('corrupt', file.name);
-      return;
-    }
-    const sizeMb = file.size / (1024 * 1024);
-    if (sizeMb > MAX_FILE_MB) {
-      onError('size-file', file.name);
-      return;
-    }
-    if (file.name.toLowerCase().includes('timeout')) {
-      onError('timeout', file.name);
-      return;
-    }
-    onFileAccepted(stage, file);
-  };
 
   const handleDrop = (e: DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     setHover(false);
     const files = Array.from(e.dataTransfer?.files ?? []);
-    if (files.length === 0) return;
-    for (const f of files) validateAndAccept(f);
+    if (files.length > 0) onFiles(files);
   };
 
   const handleInput = (e: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? []);
-    for (const f of files) validateAndAccept(f);
+    if (files.length > 0) onFiles(files);
     e.target.value = '';
   };
 
   return (
     <div
-      onDragOver={(e) => { e.preventDefault(); setHover(true); }}
+      onDragOver={(e) => { e.preventDefault(); if (!disabled) setHover(true); }}
       onDragLeave={() => setHover(false)}
-      onDrop={handleDrop}
+      onDrop={disabled ? undefined : handleDrop}
       className={[
         'rounded-lg border-2 border-dashed px-4 py-5 flex flex-col items-center gap-1.5 transition-colors',
-        hover
-          ? 'border-[#1B4E9B] bg-[#E8F0FB]'
-          : 'border-[#CBD5E1] bg-[#F8FAFC]'
+        disabled ? 'opacity-50 pointer-events-none border-[#CBD5E1] bg-[#F8FAFC]'
+          : hover ? 'border-[#1B4E9B] bg-[#E8F0FB]' : 'border-[#CBD5E1] bg-[#F8FAFC]'
       ].join(' ')}
     >
       <UploadCloud size={22} className="text-[#94A3B8]" aria-hidden />
@@ -109,13 +78,14 @@ function Dropzone({
           выберите
         </label>
       </div>
-      <div className="text-[11px] text-[#94A3B8]">{m.hint}</div>
+      <div className="text-[11px] text-[#94A3B8]">{hint}</div>
       <input
         id={inputId}
         type="file"
         multiple
-        accept=".pdf,.docx,.xml,.csv,.xlsx,.json"
+        accept=".pdf,.docx,.xml"
         className="hidden"
+        disabled={disabled}
         onChange={handleInput}
       />
     </div>
@@ -132,11 +102,11 @@ function FileRow({ file, onDelete }: { file: UploadedFile; onDelete: (id: string
           <StageBadge stage={file.stage} />
         </div>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-[#94A3B8]">
-          <span className="mono text-[#475569]">{file.code}</span>
+          <span className="mono text-[#475569]">{file.code || '—'}</span>
           <span>·</span>
           <span>{file.revision}</span>
           <span>·</span>
-          <span>{approvalLabels[file.approvalStatus]}</span>
+          <span>{approvalLabels[file.approvalStatus] ?? file.approvalStatus}</span>
           <span>·</span>
           <span>{file.sheets} л.</span>
           <span>·</span>
@@ -158,34 +128,68 @@ function FileRow({ file, onDelete }: { file: UploadedFile; onDelete: (id: string
   );
 }
 
-function newSha(): string {
-  const alphabet = 'abcdef0123456789';
-  let out = '';
-  for (let i = 0; i < 64; i++) out += alphabet[Math.floor(Math.random() * alphabet.length)];
-  return out;
-}
-
 export default function UploadScreen({ objectId, onBack, onRunCheck }: Props) {
-  const obj = useMemo(
-    () => objects.find((o) => o.id === objectId) ?? objects[0],
-    [objectId]
-  );
-
   const { push } = useToast();
-  const [files, setFiles] = useState<UploadedFile[]>(uploadedFiles);
-  const [registryLoaded, setRegistryLoaded] = useState(false);
+
+  const [object, setObject] = useState<ProjectObject | null>(null);
+  const [apiFiles, setApiFiles] = useState<ApiFileItem[]>([]);
+  const [limits, setLimits] = useState<UploadLimits | null>(null);
+  const [processId, setProcessId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [starting, setStarting] = useState(false);
+
+  const loadFiles = useCallback(async () => {
+    const response = await api<{ items: ApiFileItem[] }>(`/api/v1/objects/${objectId}/files`);
+    setApiFiles(response.items);
+  }, [objectId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setLoadError(null);
+    (async () => {
+      try {
+        const [detail, filesResponse, limitsResponse] = await Promise.all([
+          api<ApiObjectDetail>(`/api/v1/objects/${objectId}`),
+          api<{ items: ApiFileItem[] }>(`/api/v1/objects/${objectId}/files`),
+          api<ApiUploadLimits>('/api/v1/upload/limits'),
+        ]);
+        if (cancelled) return;
+        const projectObject = toProjectObject(detail);
+        setObject(projectObject);
+        setApiFiles(filesResponse.items);
+        setLimits(toUploadLimits(limitsResponse));
+        // A PENDING latest process already holds whatever was uploaded and
+        // never started — pick it up so "Запустить проверку" targets it
+        // instead of demanding a fresh upload just to get a process id.
+        if (projectObject.processStatus === 'PENDING' && projectObject.latestProcessId) {
+          setProcessId(projectObject.latestProcessId);
+        }
+      } catch (err) {
+        if (!cancelled) setLoadError(err instanceof ApiError ? err.message : 'Не удалось загрузить объект');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [objectId]);
+
+  const files = useMemo(
+    () => apiFiles.filter((f) => f.doc_stage !== null).map(toUploadedFile),
+    [apiFiles],
+  );
+  // The registry row carries doc_stage = null and is shown separately, per
+  // Task 4 spec, rather than as a fourth kind of document card.
+  const registryLoaded = useMemo(() => apiFiles.some((f) => f.doc_stage === null), [apiFiles]);
 
   const pd = files.filter((f) => f.stage === 'PD');
   const rd = files.filter((f) => f.stage === 'RD');
   const id = files.filter((f) => f.stage === 'ID');
 
-  const currentPackMb = useMemo(() => {
-    const base = 148;
-    const extra = files.length > uploadedFiles.length
-      ? (files.length - uploadedFiles.length) * 1.8
-      : 0;
-    return Math.min(MAX_PACK_MB, Math.round(base + extra));
-  }, [files.length]);
+  const totalBytes = useMemo(() => apiFiles.reduce((sum, f) => sum + f.size_bytes, 0), [apiFiles]);
+  const maxPackageBytes = limits?.maxPackageBytes ?? 1;
 
   const checkType = (() => {
     const hasPD = pd.length > 0;
@@ -199,79 +203,111 @@ export default function UploadScreen({ objectId, onBack, onRunCheck }: Props) {
     return { ru: 'Нет документов', code: 'EMPTY' };
   })();
 
-  const canRun = files.length > 0;
+  const canRun = processId !== null && !uploading && !starting;
 
-  const removeFile = (fileId: string) =>
-    setFiles((prev) => prev.filter((f) => f.id !== fileId));
-
-  /* ─────────── Пять ошибок ТЗ ─────────── */
-
-  const showError = (
-    kind: 'format' | 'corrupt' | 'size-file' | 'size-pack' | 'timeout',
-    filename?: string
-  ) => {
-    const suffix = filename ? ` · ${filename}` : '';
-    switch (kind) {
-      case 'format':
-        push({ kind: 'error', message: 'Неподдерживаемый формат файла', detail: `Допустимы PDF, DOCX, XML${suffix}` });
-        break;
-      case 'corrupt':
-        push({ kind: 'error', message: 'Файл повреждён или защищён паролем', detail: `Удалите файл и загрузите его заново${suffix}` });
-        break;
-      case 'size-file':
-        push({ kind: 'warning', message: 'Файл превышает 50 МБ', detail: `Разделите документ на части или загрузите в сжатом виде${suffix}` });
-        break;
-      case 'size-pack':
-        push({ kind: 'error', message: 'Превышен общий лимит пакета — 200 МБ', detail: 'Удалите часть файлов из пакета, чтобы продолжить загрузку' });
-        break;
-      case 'timeout':
-        push({ kind: 'warning', message: 'Таймаут обработки', detail: `Сервер не ответил вовремя. Повторите попытку${suffix}` });
-        break;
+  // Documents.ts has no field for the drop column a file landed in — the
+  // worker derives doc_stage itself once the package is parsed. All three
+  // dropzones therefore call the same upload, and the file reappears under
+  // whichever stage the server assigns it once the file list is refetched.
+  const handleUpload = async (fileList: File[]) => {
+    setUploading(true);
+    try {
+      const result = await uploadPackage(objectId, fileList);
+      setProcessId(result.process_id);
+      if (result.accepted.length > 0) {
+        push({
+          kind: 'success',
+          message: `Загружено файлов: ${result.accepted.length}`,
+          detail: result.rejected.length > 0 ? `Отклонено: ${result.rejected.length}` : undefined,
+        });
+      }
+      for (const rejection of result.rejected) {
+        push({ kind: 'error', message: rejection.file_name, detail: rejection.message });
+      }
+      await loadFiles();
+    } catch (err) {
+      push({
+        kind: 'error',
+        message: 'Не удалось загрузить пакет',
+        detail: err instanceof ApiError ? err.message : undefined,
+      });
+    } finally {
+      setUploading(false);
     }
   };
 
-  const handleFileAccepted = (stage: DocStage, file: File) => {
-    const sizeMb = file.size / (1024 * 1024);
-    if (currentPackMb + sizeMb > MAX_PACK_MB) {
-      showError('size-pack');
-      return;
-    }
-    const newFile: UploadedFile = {
-      id: `new-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      name: file.name,
-      stage,
-      mark: stage === 'PD' ? 'П' : stage === 'RD' ? 'РД' : 'ИД',
-      code: `АНО/150321/1-${stage === 'PD' ? 'П' : stage === 'RD' ? 'РД' : 'ИД'}-НОВ`,
-      revision: 'Ред. 1',
-      approvalStatus: 'DRAFT',
-      sheets: 1,
-      size: `${sizeMb.toFixed(1)} МБ`,
-      sha256: newSha()
-    };
-    setFiles((prev) => [...prev, newFile]);
-    push({
-      kind: 'success',
-      message: 'Файл загружен',
-      detail: `${file.name} · добавлен в раздел ${stage}`
-    });
+  const handleRegistryInput = (e: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? []);
+    e.target.value = '';
+    if (files.length > 0) void handleUpload(files);
   };
 
-  const demoAllErrors = () => {
-    showError('format', 'passport.jpg');
-    window.setTimeout(() => showError('corrupt', 'КР-04.pdf'), 400);
-    window.setTimeout(() => showError('size-file', 'ОВ-архив.pdf'), 800);
-    window.setTimeout(() => showError('size-pack'), 1200);
-    window.setTimeout(() => showError('timeout', 'ВК-сети.pdf'), 1600);
+  const handleRunCheck = async () => {
+    if (!processId) return;
+    setStarting(true);
+    try {
+      await api(`/api/v1/processes/${processId}/start`, { method: 'POST' });
+      onRunCheck(objectId, processId);
+    } catch (err) {
+      push({
+        kind: 'error',
+        message: 'Не удалось запустить проверку',
+        detail: err instanceof ApiError ? err.message : undefined,
+      });
+    } finally {
+      setStarting(false);
+    }
   };
+
+  // No DELETE endpoint exists yet (services/api/src/routes/documents.ts has
+  // none) — the trash icon stays, since removing it would be a layout
+  // change this task does not call for, but it is honest about not working.
+  const handleDeleteFile = () => {
+    push({ kind: 'info', message: 'Удаление загруженных файлов пока недоступно' });
+  };
+
+  if (loading) {
+    return (
+      <div className="h-full flex flex-col overflow-hidden bg-[#F5F7FA]">
+        <div className="px-8 pt-6 pb-4 border-b border-[#E2E8F0] bg-white">
+          <SkeletonBlock style={{ width: 240, height: 24 }} />
+        </div>
+        <div className="flex-1 overflow-auto px-8 py-5">
+          <SkeletonText lines={6} height={40} />
+        </div>
+      </div>
+    );
+  }
+
+  if (loadError || !object) {
+    return (
+      <div className="h-full flex flex-col overflow-hidden bg-[#F5F7FA]">
+        <PageHeader
+          crumbs={['Объекты']}
+          title="Объект"
+          actions={
+            <Button variant="ghost" icon={<ArrowLeft size={14} />} onClick={onBack}>
+              К списку объектов
+            </Button>
+          }
+        />
+        <div className="flex-1 flex items-center justify-center">
+          <div className="bg-[#FEF3F2] border border-[#FECDCA] rounded-lg px-4 py-3 text-[13px] text-[#B42318]">
+            {loadError ?? 'Объект не найден'}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="h-full flex flex-col overflow-hidden bg-[#F5F7FA]">
       <PageHeader
-        crumbs={['Объекты', obj.name]}
-        title={obj.name}
+        crumbs={['Объекты', object.name]}
+        title={object.name}
         actions={
           <Button variant="ghost" icon={<ArrowLeft size={14} />} onClick={onBack}>
-            К списку объектов
+            К объекту
           </Button>
         }
       />
@@ -281,27 +317,16 @@ export default function UploadScreen({ objectId, onBack, onRunCheck }: Props) {
         <div className="grid grid-cols-3 gap-6 text-[13px]">
           <div>
             <div className="text-[11px] text-[#94A3B8] uppercase tracking-wide">Адрес</div>
-            <div className="text-[#0F172A]">{obj.address}</div>
+            <div className="text-[#0F172A]">{object.address || '—'}</div>
           </div>
           <div>
             <div className="text-[11px] text-[#94A3B8] uppercase tracking-wide">Застройщик</div>
-            <div className="text-[#0F172A]">{obj.developer}</div>
+            <div className="text-[#0F172A]">{object.developer || '—'}</div>
           </div>
           <div>
             <div className="text-[11px] text-[#94A3B8] uppercase tracking-wide">Разрешение на строительство</div>
-            <div className="mono text-[#0F172A]">{obj.permit}</div>
+            <div className="mono text-[#0F172A]">{object.permit || '—'}</div>
           </div>
-        </div>
-        <div className="mt-4 flex items-center gap-5 border-b border-[#E2E8F0] -mb-4">
-          <button className="pb-3 border-b-2 border-[#1B4E9B] text-[#1B4E9B] text-[13px] font-medium">
-            Документы
-          </button>
-          <button className="pb-3 border-b-2 border-transparent text-[#475569] hover:text-[#0F172A] text-[13px]">
-            Протоколы
-          </button>
-          <button className="pb-3 border-b-2 border-transparent text-[#475569] hover:text-[#0F172A] text-[13px]">
-            История
-          </button>
         </div>
       </div>
 
@@ -312,7 +337,6 @@ export default function UploadScreen({ objectId, onBack, onRunCheck }: Props) {
             {(['PD', 'RD', 'ID'] as const).map((stage) => {
               const meta = stageMeta[stage];
               const list = stage === 'PD' ? pd : stage === 'RD' ? rd : id;
-              const total = stage === 'RD' ? 15 : undefined;
               return (
                 <div key={stage} className="bg-white border border-[#E2E8F0] rounded-lg overflow-hidden flex flex-col">
                   <div className="px-4 py-3 border-b border-[#E2E8F0] flex items-center justify-between">
@@ -320,16 +344,14 @@ export default function UploadScreen({ objectId, onBack, onRunCheck }: Props) {
                       <StageBadge stage={stage} />
                       <span className="text-[13px] font-medium text-[#0F172A]">{meta.title}</span>
                     </div>
-                    <span className="text-[11px] text-[#94A3B8] num">
-                      {list.length}
-                      {total ? ` из ${total}` : ''}
-                    </span>
+                    <span className="text-[11px] text-[#94A3B8] num">{list.length}</span>
                   </div>
                   <div className="p-3">
                     <Dropzone
                       stage={stage}
-                      onFileAccepted={handleFileAccepted}
-                      onError={showError}
+                      hint={limits ? `${meta.hint}. До ${megabytes(limits.maxFileBytes)} на файл` : meta.hint}
+                      disabled={uploading}
+                      onFiles={(f) => void handleUpload(f)}
                     />
                   </div>
                   <div className="flex-1 overflow-y-auto">
@@ -339,7 +361,7 @@ export default function UploadScreen({ objectId, onBack, onRunCheck }: Props) {
                       </div>
                     )}
                     {list.map((f) => (
-                      <FileRow key={f.id} file={f} onDelete={removeFile} />
+                      <FileRow key={f.id} file={f} onDelete={handleDeleteFile} />
                     ))}
                   </div>
                 </div>
@@ -352,22 +374,22 @@ export default function UploadScreen({ objectId, onBack, onRunCheck }: Props) {
             <div className="bg-white border border-[#E2E8F0] rounded-lg p-4">
               <div className="text-[13px] font-medium text-[#0F172A] mb-3">Комплектность</div>
               <div className="flex flex-col gap-3">
-                {(['PD', 'RD', 'ID'] as const).map((stage) => {
-                  const c = completenessText(obj.completeness[stage]);
-                  return (
-                    <div key={stage} className="flex items-center justify-between text-[13px]">
-                      <div className="flex items-center gap-2">
-                        <StageBadge stage={stage} />
-                        <span className="text-[#475569]">
-                          {stage === 'PD' ? `${pd.length} файлов`
-                            : stage === 'RD' ? `${rd.length} из 15`
-                            : 'не загружено'}
-                        </span>
-                      </div>
-                      <span className="text-[12px]" style={{ color: c.color }}>{c.label}</span>
+                {(['PD', 'RD', 'ID'] as const).map((stage) => (
+                  <div key={stage} className="flex items-center justify-between text-[13px]">
+                    <div className="flex items-center gap-2">
+                      <StageBadge stage={stage} />
+                      <span className="text-[#475569]">
+                        {stage === 'PD' ? `${pd.length} файлов` : stage === 'RD' ? `${rd.length} файлов` : `${id.length} файлов`}
+                      </span>
                     </div>
-                  );
-                })}
+                    <span className="text-[12px]" style={{
+                      color: object.completeness[stage] === 'full' ? '#027A48'
+                        : object.completeness[stage] === 'partial' ? '#B54708' : '#94A3B8'
+                    }}>
+                      {completenessLabels[object.completeness[stage]]}
+                    </span>
+                  </div>
+                ))}
               </div>
             </div>
 
@@ -385,25 +407,26 @@ export default function UploadScreen({ objectId, onBack, onRunCheck }: Props) {
               {registryLoaded ? (
                 <div className="flex items-center gap-2 text-[12px] text-[#027A48]">
                   <CheckCircle2 size={14} /> Реестр загружен
-                  <button
-                    type="button"
-                    className="ml-auto text-[#1B4E9B] hover:underline text-[12px]"
-                    onClick={() => setRegistryLoaded(false)}
-                  >
-                    Заменить
-                  </button>
                 </div>
               ) : (
-                <Button
-                  variant="secondary"
-                  icon={<UploadCloud size={14} />}
-                  onClick={() => {
-                    setRegistryLoaded(true);
-                    push({ kind: 'success', message: 'Реестр файлов загружен', detail: 'Пакет принят с полным комплектом' });
-                  }}
-                >
-                  Загрузить реестр
-                </Button>
+                <>
+                  <Button
+                    variant="secondary"
+                    icon={<UploadCloud size={14} />}
+                    disabled={uploading}
+                    onClick={() => document.getElementById('registry-input')?.click()}
+                  >
+                    Загрузить реестр
+                  </Button>
+                  <input
+                    id="registry-input"
+                    type="file"
+                    accept=".csv,.xlsx,.json"
+                    className="hidden"
+                    disabled={uploading}
+                    onChange={handleRegistryInput}
+                  />
+                </>
               )}
             </div>
 
@@ -413,71 +436,14 @@ export default function UploadScreen({ objectId, onBack, onRunCheck }: Props) {
                   <Info size={12} aria-hidden /> Объём пакета
                 </span>
                 <span className="num text-[#0F172A]">
-                  {currentPackMb} МБ из {MAX_PACK_MB} МБ
+                  {megabytes(totalBytes)} из {limits ? megabytes(limits.maxPackageBytes) : '—'}
                 </span>
               </div>
               <div className="h-1.5 w-full bg-[#EDF1F7] rounded-full overflow-hidden">
                 <div
                   className="h-full bg-[#1B4E9B]"
-                  style={{ width: `${Math.min(100, (currentPackMb / MAX_PACK_MB) * 100)}%` }}
+                  style={{ width: `${Math.min(100, (totalBytes / maxPackageBytes) * 100)}%` }}
                 />
-              </div>
-            </div>
-
-            {/* Демонстрация ошибок загрузки (ТЗ 7.3) */}
-            <div className="bg-white border border-[#E2E8F0] rounded-lg p-4">
-              <div className="flex items-center gap-2 mb-2">
-                <Bug size={14} className="text-[#5925DC]" aria-hidden />
-                <div className="text-[13px] font-medium text-[#0F172A]">
-                  Проверка ошибок загрузки
-                </div>
-              </div>
-              <div className="text-[11px] text-[#94A3B8] mb-3">
-                Пять сценариев из ТЗ. Нажмите, чтобы протестировать уведомления.
-              </div>
-              <div className="grid grid-cols-1 gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => showError('format', 'смета.jpg')}
-                  className="text-left text-[12px] px-2.5 py-1.5 rounded-md border border-[#E2E8F0] hover:bg-[#F5F7FA] text-[#0F172A]"
-                >
-                  Формат не поддерживается
-                </button>
-                <button
-                  type="button"
-                  onClick={() => showError('corrupt', 'КР-04.pdf')}
-                  className="text-left text-[12px] px-2.5 py-1.5 rounded-md border border-[#E2E8F0] hover:bg-[#F5F7FA] text-[#0F172A]"
-                >
-                  Файл повреждён
-                </button>
-                <button
-                  type="button"
-                  onClick={() => showError('size-file', 'ОВ-архив.pdf')}
-                  className="text-left text-[12px] px-2.5 py-1.5 rounded-md border border-[#E2E8F0] hover:bg-[#F5F7FA] text-[#0F172A]"
-                >
-                  Превышен размер файла 50 МБ
-                </button>
-                <button
-                  type="button"
-                  onClick={() => showError('size-pack')}
-                  className="text-left text-[12px] px-2.5 py-1.5 rounded-md border border-[#E2E8F0] hover:bg-[#F5F7FA] text-[#0F172A]"
-                >
-                  Превышен лимит пакета 200 МБ
-                </button>
-                <button
-                  type="button"
-                  onClick={() => showError('timeout', 'ВК-сети.pdf')}
-                  className="text-left text-[12px] px-2.5 py-1.5 rounded-md border border-[#E2E8F0] hover:bg-[#F5F7FA] text-[#0F172A]"
-                >
-                  Таймаут обработки
-                </button>
-                <button
-                  type="button"
-                  onClick={demoAllErrors}
-                  className="mt-1 text-left text-[12px] px-2.5 py-1.5 rounded-md border border-[#B2CCF5] bg-[#E8F0FB] text-[#1B4E9B] hover:bg-[#DCE8FA]"
-                >
-                  Показать все пять ошибок
-                </button>
               </div>
             </div>
 
@@ -490,9 +456,9 @@ export default function UploadScreen({ objectId, onBack, onRunCheck }: Props) {
                 variant="primary"
                 size="lg"
                 disabled={!canRun}
-                onClick={() => onRunCheck(objectId)}
+                onClick={() => void handleRunCheck()}
               >
-                Запустить проверку
+                {starting ? 'Запуск…' : 'Запустить проверку'}
               </Button>
             </div>
           </div>

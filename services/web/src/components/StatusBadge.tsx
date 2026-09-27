@@ -1,5 +1,5 @@
 import type { FindingStatus } from '../types';
-import { statusLabels } from '../mocks/data';
+import { statusLabels } from '../labels';
 
 const styles: Record<FindingStatus, { text: string; bg: string; dot: string; dashed?: boolean }> = {
   CANDIDATE:              { text:'#B54708', bg:'#FFFAEB', dot:'#B54708' },
