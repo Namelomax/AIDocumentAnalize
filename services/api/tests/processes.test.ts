@@ -86,6 +86,24 @@ describe('process routes', () => {
     await app.close();
   });
 
+  it('refuses to start a process whose protocol is already finalized', async () => {
+    // Plan 6, Task 5, rule 5: once a protocol is finalized, no further upload
+    // reaches this process. Every upload opens a new process, so it is
+    // enough that /start itself refuses a FINALIZED one - which the existing
+    // "not PENDING" guard already does.
+    const app = await buildServer();
+    const process = await makeProcess(1);
+    await prisma.process.update({ where: { id: process.id }, data: { status: 'FINALIZED' } });
+
+    const res = await app.inject({
+      method: 'POST', url: `/api/v1/processes/${process.id}/start`, headers: await authHeaders(),
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ error: 'ALREADY_STARTED', status: 'FINALIZED' });
+    await app.close();
+  });
+
   it('starts a process and publishes one task', async () => {
     await drainQueue();
     const app = await buildServer();

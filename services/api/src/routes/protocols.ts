@@ -31,20 +31,22 @@ const findingsQuerySchema = z.object({ status: z.enum(FINDING_STATUSES).optional
 
 // Both the parameter lookup and the inspector lookup are shared across every
 // check of a protocol, so they are built once here instead of per row.
-async function paramsByCode(checks: Check[]): Promise<Map<string, ParamForView>> {
+// Exported so routes/verdicts.ts assembles its responses through the same
+// functions instead of re-querying params and inspectors on its own.
+export async function paramsByCode(checks: Check[]): Promise<Map<string, ParamForView>> {
   const codes = [...new Set(checks.map((check) => check.paramCode))];
   const params = await prisma.param.findMany({ where: { code: { in: codes } } });
   return new Map(params.map((param) => [param.code, param]));
 }
 
-async function inspectorsById(checks: Check[]): Promise<Map<string, InspectorForView>> {
+export async function inspectorsById(checks: Check[]): Promise<Map<string, InspectorForView>> {
   const ids = [...new Set(checks.map((check) => check.verifiedBy).filter((id): id is string => Boolean(id)))];
   if (ids.length === 0) return new Map();
   const users = await prisma.user.findMany({ where: { id: { in: ids } } });
   return new Map(users.map((user) => [user.id, user]));
 }
 
-async function loadProtocolResponse(protocol: Protocol) {
+export async function loadProtocolResponse(protocol: Protocol) {
   const checks = (await prisma.check.findMany({
     where: { processId: protocol.processId },
     include: { fragments: true },

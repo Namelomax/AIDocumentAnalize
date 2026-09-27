@@ -12,6 +12,7 @@ import { paramRoutes } from './routes/params.js';
 import { authRoutes } from './routes/auth.js';
 import { protocolRoutes } from './routes/protocols.js';
 import { pageRoutes } from './routes/pages.js';
+import { verdictRoutes } from './routes/verdicts.js';
 import { ensureBucket } from './storage.js';
 import { seedDemoUsers } from './auth/seed.js';
 import { authPlugin } from './auth/plugin.js';
@@ -61,6 +62,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
   await app.register(authRoutes);
   await app.register(protocolRoutes);
   await app.register(pageRoutes);
+  await app.register(verdictRoutes);
   return app;
 }
 
