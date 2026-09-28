@@ -161,6 +161,22 @@ export async function apiBlob(path: string): Promise<Blob> {
   return response.blob();
 }
 
+// The one place a blob fetched over the wire (apiBlob above) becomes a file
+// on disk: a temporary <a download> link the browser never actually
+// navigates to, clicked and removed in the same tick. The object URL is
+// revoked right after — nothing here holds onto the blob's memory once the
+// download has started.
+export function saveBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 export interface UploadResult {
   process_id: string;
   accepted: Array<{ file_id: string; file_name: string; sha256: string }>;

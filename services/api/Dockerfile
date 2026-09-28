@@ -24,5 +24,9 @@ RUN npm ci --omit=dev
 COPY --from=build /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=build /app/dist ./dist
 COPY prisma ./prisma
+# The pdf export's Cyrillic font (src/export/pdf.ts resolves it two levels up
+# from dist/export/, i.e. here) - tsc only compiles .ts, it never copies this
+# asset into dist on its own.
+COPY assets ./assets
 EXPOSE 3000
 CMD ["sh", "-c", "npx prisma migrate deploy && node dist/server.js"]

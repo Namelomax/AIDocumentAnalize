@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, Download, CheckCircle2, Clock } from 'lucide-react';
+import { ArrowLeft, FileText, FileType, FileCode, CheckCircle2, Clock } from 'lucide-react';
 import PageHeader from '../components/PageHeader';
 import StatusBadge from '../components/StatusBadge';
 import PriorityIndicator from '../components/PriorityIndicator';
@@ -7,7 +7,8 @@ import StageBadge from '../components/StageBadge';
 import Button from '../components/Button';
 import EmptyState from '../components/EmptyState';
 import { SkeletonTable } from '../components/Skeleton';
-import { api, ApiError } from '../api/client';
+import { useToast } from '../components/Toast';
+import { api, apiBlob, saveBlob, ApiError } from '../api/client';
 import { toProtocol, type ApiProtocol } from '../api/adapters';
 import { processStatusLabels } from '../labels';
 import type { DocStage, FindingStatus, Protocol, ReviewPriority } from '../types';
@@ -47,15 +48,42 @@ const STATUS_DOT: Record<Protocol['status'], string> = {
   PROTOCOL_FINALIZED: '#027A48',
 };
 
+// Extension of the task's own "pdf" | "docx" | "xml" export formats
+// (routes/export.ts), kept local to the two screens that offer a download.
+type ExportFormat = 'pdf' | 'docx' | 'xml';
+
 export default function ProtocolScreen({
   protocolId, onBack, onOpenVerification, onOpenHypotheses
 }: Props) {
+  const { push } = useToast();
   const [protocol, setProtocol] = useState<Protocol | null>(null);
   const [objectName, setObjectName] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabKey>('candidates');
   const [priorityFilter, setPriorityFilter] = useState<'ALL' | ReviewPriority>('ALL');
+  const [exportingFormat, setExportingFormat] = useState<ExportFormat | null>(null);
+
+  // GET /api/v1/protocols/:id/export?format=… (task spec) - the filename
+  // matches the same "protocol-<number>-v<версия>" the inspector already
+  // sees in the page title, built from the same fields the API's own
+  // export/model.ts names the file with.
+  const handleExport = async (format: ExportFormat) => {
+    if (!protocol) return;
+    setExportingFormat(format);
+    try {
+      const blob = await apiBlob(`/api/v1/protocols/${protocolId}/export?format=${format}`);
+      saveBlob(blob, `protocol-${protocol.number}-v${protocol.version}.${format}`);
+    } catch (err) {
+      push({
+        kind: 'error',
+        message: 'Не удалось выгрузить протокол',
+        detail: err instanceof ApiError ? err.message : undefined,
+      });
+    } finally {
+      setExportingFormat(null);
+    }
+  };
 
   useEffect(() => {
     if (!protocolId) {
@@ -178,11 +206,30 @@ export default function ProtocolScreen({
             </Button>
             <Button
               variant="secondary"
-              icon={<Download size={14} />}
-              disabled
-              title="Экспорт протокола появится в следующем обновлении"
+              icon={<FileText size={14} />}
+              disabled={exportingFormat !== null}
+              title="Выгрузить протокол в PDF"
+              onClick={() => void handleExport('pdf')}
             >
-              Экспорт
+              {exportingFormat === 'pdf' ? 'Экспорт…' : 'PDF'}
+            </Button>
+            <Button
+              variant="secondary"
+              icon={<FileType size={14} />}
+              disabled={exportingFormat !== null}
+              title="Выгрузить протокол в DOCX"
+              onClick={() => void handleExport('docx')}
+            >
+              {exportingFormat === 'docx' ? 'Экспорт…' : 'DOCX'}
+            </Button>
+            <Button
+              variant="secondary"
+              icon={<FileCode size={14} />}
+              disabled={exportingFormat !== null}
+              title="Выгрузить протокол в XML"
+              onClick={() => void handleExport('xml')}
+            >
+              {exportingFormat === 'xml' ? 'Экспорт…' : 'XML'}
             </Button>
             <Button
               variant="primary"

@@ -3,7 +3,7 @@ import { ArrowLeft, FileText, FileType, FileCode, AlertCircle, Undo2 } from 'luc
 import PageHeader from '../components/PageHeader';
 import Button from '../components/Button';
 import { useToast } from '../components/Toast';
-import { api, ApiError, getSession } from '../api/client';
+import { api, apiBlob, saveBlob, ApiError, getSession } from '../api/client';
 import { toProtocol, type ApiProtocol } from '../api/adapters';
 import type { Protocol } from '../types';
 
@@ -37,6 +37,9 @@ function StatTile({ label, value, total, accent }: {
   );
 }
 
+// The task's own "pdf" | "docx" | "xml" export formats (routes/export.ts).
+type ExportFormat = 'pdf' | 'docx' | 'xml';
+
 export default function FinalizationScreen({ protocolId, onBack }: Props) {
   const { push } = useToast();
   const session = getSession();
@@ -44,6 +47,7 @@ export default function FinalizationScreen({ protocolId, onBack }: Props) {
   const [protocol, setProtocol] = useState<Protocol | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [exportingFormat, setExportingFormat] = useState<ExportFormat | null>(null);
 
   const [showFinalizeModal, setShowFinalizeModal] = useState(false);
   const [finalizing, setFinalizing] = useState(false);
@@ -108,6 +112,26 @@ export default function FinalizationScreen({ protocolId, onBack }: Props) {
       }
     } finally {
       setFinalizing(false);
+    }
+  };
+
+  // GET /api/v1/protocols/:id/export?format=… (task spec) - filename mirrors
+  // the same "protocol-<number>-v<версия>" the API's own export/model.ts
+  // names the file with.
+  const handleExport = async (format: ExportFormat) => {
+    if (!protocol) return;
+    setExportingFormat(format);
+    try {
+      const blob = await apiBlob(`/api/v1/protocols/${protocolId}/export?format=${format}`);
+      saveBlob(blob, `protocol-${protocol.number}-v${protocol.version}.${format}`);
+    } catch (err) {
+      push({
+        kind: 'error',
+        message: 'Не удалось выгрузить протокол',
+        detail: err instanceof ApiError ? err.message : undefined,
+      });
+    } finally {
+      setExportingFormat(null);
     }
   };
 
@@ -237,9 +261,30 @@ export default function FinalizationScreen({ protocolId, onBack }: Props) {
         <div className="bg-white border border-[#E2E8F0] rounded-lg p-4 mb-5">
           <div className="text-[13px] font-medium text-[#0F172A] mb-3">Выгрузка протокола</div>
           <div className="flex gap-3">
-            <Button variant="secondary" icon={<FileText size={14} />} disabled title="Появится в следующем обновлении">PDF</Button>
-            <Button variant="secondary" icon={<FileType size={14} />} disabled title="Появится в следующем обновлении">DOCX</Button>
-            <Button variant="secondary" icon={<FileCode size={14} />} disabled title="Появится в следующем обновлении">XML</Button>
+            <Button
+              variant="secondary"
+              icon={<FileText size={14} />}
+              disabled={exportingFormat !== null}
+              onClick={() => void handleExport('pdf')}
+            >
+              {exportingFormat === 'pdf' ? 'Экспорт…' : 'PDF'}
+            </Button>
+            <Button
+              variant="secondary"
+              icon={<FileType size={14} />}
+              disabled={exportingFormat !== null}
+              onClick={() => void handleExport('docx')}
+            >
+              {exportingFormat === 'docx' ? 'Экспорт…' : 'DOCX'}
+            </Button>
+            <Button
+              variant="secondary"
+              icon={<FileCode size={14} />}
+              disabled={exportingFormat !== null}
+              onClick={() => void handleExport('xml')}
+            >
+              {exportingFormat === 'xml' ? 'Экспорт…' : 'XML'}
+            </Button>
           </div>
         </div>
 
