@@ -7,6 +7,7 @@ import StageBadge from '../components/StageBadge';
 import Button from '../components/Button';
 import EmptyState from '../components/EmptyState';
 import IncrementalUploadButton from '../components/IncrementalUploadButton';
+import SyncStatusChip from '../components/SyncStatusChip';
 import { SkeletonTable } from '../components/Skeleton';
 import { useToast } from '../components/Toast';
 import { api, apiBlob, saveBlob, ApiError } from '../api/client';
@@ -307,6 +308,11 @@ export default function ProtocolScreen({
                   Финализирован: <span className="mono text-[#0F172A]">{protocol.finalizedAt}</span>
                 </span>
               )}
+              <SyncStatusChip
+                protocolId={protocolId}
+                syncStatus={protocol.syncStatus}
+                onRequeued={() => void loadProtocol(false)}
+              />
             </div>
           </div>
           <div className="col-span-4 bg-white border border-[#E2E8F0] rounded-lg px-4 py-3">

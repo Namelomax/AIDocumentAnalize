@@ -19,11 +19,13 @@ import { verdictRoutes } from './routes/verdicts.js';
 import { suspicionRoutes } from './routes/suspicions.js';
 import { exportRoutes } from './routes/export.js';
 import { notificationRoutes } from './routes/notifications.js';
+import { integrationRinRoutes } from './routes/integrationRin.js';
 import { ensureBucket } from './storage.js';
 import { seedDemoUsers } from './auth/seed.js';
 import { authPlugin } from './auth/plugin.js';
 import { enterRequestContext, setCurrentUser } from './auth/context.js';
 import { httpRequestDuration } from './metrics.js';
+import { startRinScheduler } from './integration/transfers.js';
 
 export interface BuildServerOptions {
   logStream?: NodeJS.WritableStream;
@@ -94,6 +96,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
   await app.register(suspicionRoutes);
   await app.register(exportRoutes);
   await app.register(notificationRoutes);
+  await app.register(integrationRinRoutes);
   return app;
 }
 
@@ -107,5 +110,9 @@ if (isEntry) {
   app.log.info({ bucket: config.minio.bucket }, 'object storage ready');
   const seeded = await seedDemoUsers();
   app.log.info({ seeded }, 'demo accounts checked');
+  // Section 9.6: picks up any transfer to ИАИС «РиН» whose next_attempt_at
+  // is due. Started here, not in buildServer(), so the test suite (which
+  // calls buildServer() many times) never accumulates intervals.
+  startRinScheduler();
   await app.listen({ port: config.port, host: '0.0.0.0' });
 }

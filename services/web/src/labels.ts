@@ -60,6 +60,23 @@ export function protocolStatusColor(status: string): string {
   }
 }
 
+// Section 9.6: the transfer-to-ИАИС-«РиН» chip on the protocol/finalization
+// screens. `null` (never attempted) is handled by the caller, not here - a
+// protocol that was never finalized has nothing to label.
+export const syncStatusLabels: Record<string, string> = {
+  PENDING_SYNC: 'Ожидает передачи',
+  SYNCED: 'Передано в ИАИС «РиН»',
+  FAILED: 'Ошибка передачи'
+};
+
+export function syncStatusColor(status: string): string {
+  switch (status) {
+    case 'SYNCED': return '#027A48';
+    case 'FAILED': return '#B42318';
+    default: return '#B54708'; // PENDING_SYNC
+  }
+}
+
 // Shown at the top of an archived (SUPERSEDED) protocol version - the
 // screen renders it read-only regardless (no decision route ever accepts an
 // action against one, services/api's routes/verdicts.ts), this only tells

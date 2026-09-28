@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { ArrowLeft, FileText, FileType, FileCode, AlertCircle, Undo2 } from 'lucide-react';
 import PageHeader from '../components/PageHeader';
 import Button from '../components/Button';
+import SyncStatusChip from '../components/SyncStatusChip';
 import { useToast } from '../components/Toast';
 import { api, apiBlob, saveBlob, ApiError, getSession } from '../api/client';
 import { toProtocol, type ApiProtocol } from '../api/adapters';
@@ -73,6 +74,19 @@ export default function FinalizationScreen({ protocolId, onBack }: Props) {
     })();
     return () => { cancelled = true; };
   }, [protocolId]);
+
+  // SyncStatusChip's own "Повторить" already reports success/failure via a
+  // toast - this only needs to bring the chip's status (PENDING_SYNC, not
+  // FAILED any more) back in sync with what the server now has.
+  const handleSyncRequeued = async () => {
+    try {
+      const data = await api<ApiProtocol>(`/api/v1/protocols/${protocolId}`);
+      setProtocol(toProtocol(data));
+    } catch {
+      // Best-effort refresh - the chip already told the inspector the
+      // requeue itself succeeded.
+    }
+  };
 
   const isFinalized = protocol?.status === 'PROTOCOL_FINALIZED';
   const canFinalize = !!protocol && !isFinalized && !finalizing;
@@ -293,16 +307,20 @@ export default function FinalizationScreen({ protocolId, onBack }: Props) {
           <div className="flex items-start gap-3">
             <AlertCircle size={18} className="text-[#94A3B8] shrink-0 mt-0.5" aria-hidden />
             <div className="flex-1">
-              <div className="text-[13px] font-medium text-[#0F172A]">
+              <div className="text-[13px] font-medium text-[#0F172A] mb-1.5">
                 Передача в ИАИС «Разрешения и нарушения»
               </div>
-              <div className="text-[12px] text-[#475569] mt-1">
-                {protocol.syncStatus === 'SYNCED'
-                  ? 'Протокол передан.'
-                  : protocol.syncStatus === 'PENDING_SYNC'
-                    ? 'Передача поставлена в очередь.'
-                    : 'Автоматическая передача пока не подключена — решение инспектора уже зафиксировано в протоколе независимо от неё.'}
-              </div>
+              {protocol.syncStatus ? (
+                <SyncStatusChip
+                  protocolId={protocolId}
+                  syncStatus={protocol.syncStatus}
+                  onRequeued={() => void handleSyncRequeued()}
+                />
+              ) : (
+                <div className="text-[12px] text-[#475569]">
+                  Передача начнётся автоматически после финализации протокола.
+                </div>
+              )}
             </div>
           </div>
         </div>

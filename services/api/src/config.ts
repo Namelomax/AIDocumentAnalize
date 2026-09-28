@@ -25,6 +25,33 @@ const schema = z.object({
   DEMO_SUPERVISOR_PASSWORD: z.string().default('supervisor123'),
   DEMO_ML_PASSWORD: z.string().default('ml123'),
   JWT_TTL: z.string().default('12h'),
+  // Section 9.6: transfer of a finalized protocol to ИАИС «РиН». The mock
+  // (deploy/rin-mock) is plain HTTP by default, since the verification stand
+  // is offline and carries no real УКЭП certificate chain - RIN_BASE_URL
+  // only turns HTTPS + mTLS on when it is actually pointed at an https:// URL
+  // with RIN_CLIENT_CERT/KEY set (integration/client.ts).
+  RIN_BASE_URL: z.string().default('http://rin-mock:8090'),
+  RIN_CLIENT_CERT: z.string().optional(),
+  RIN_CLIENT_KEY: z.string().optional(),
+  RIN_CA: z.string().optional(),
+  // "экспоненциальной задержкой (1, 5, 15 минут)" - comma-separated seconds,
+  // one entry per retry (up to 3, "до 3 повторных попыток").
+  RIN_RETRY_DELAYS_S: z.string().default('60,300,900'),
+  // Shared secret ИАИС «РиН» sends back on an automatic дозагрузка
+  // (POST /api/v1/integration/rin/documents, header X-RIN-Token) - a stand-in
+  // for the mTLS client certificate section 12.10 asks the outbound call to
+  // use, since the inbound direction has no equivalent in this codebase yet.
+  RIN_INBOUND_TOKEN: z.string().default('change-me-rin-token'),
+  // How often the api process looks for a transfer whose next_attempt_at is
+  // due (integration/transfers.ts's scheduler, guarded by a Postgres
+  // advisory lock so two api replicas never double-send).
+  RIN_SCHEDULER_INTERVAL_MS: z.coerce.number().default(15_000),
+  RIN_REQUEST_TIMEOUT_MS: z.coerce.number().default(10_000),
+  // Upper bound for the interactive transaction a scheduler tick runs in
+  // (advisory lock + every due transfer's HTTP call): generous enough that a
+  // slow/offline ИАИС «РиН» cannot make Prisma abort the transaction before
+  // this module's own request timeout even has a chance to fire.
+  RIN_TRANSACTION_TIMEOUT_MS: z.coerce.number().default(20_000),
 });
 
 const parsed = schema.parse(process.env);
@@ -52,4 +79,18 @@ export const config = {
     ml: parsed.DEMO_ML_PASSWORD,
   },
   jwtTtl: parsed.JWT_TTL,
+  rin: {
+    baseUrl: parsed.RIN_BASE_URL,
+    clientCert: parsed.RIN_CLIENT_CERT,
+    clientKey: parsed.RIN_CLIENT_KEY,
+    ca: parsed.RIN_CA,
+    retryDelaysS: parsed.RIN_RETRY_DELAYS_S
+      .split(',')
+      .map((s) => Number(s.trim()))
+      .filter((n) => Number.isFinite(n) && n > 0),
+    inboundToken: parsed.RIN_INBOUND_TOKEN,
+    schedulerIntervalMs: parsed.RIN_SCHEDULER_INTERVAL_MS,
+    requestTimeoutMs: parsed.RIN_REQUEST_TIMEOUT_MS,
+    transactionTimeoutMs: parsed.RIN_TRANSACTION_TIMEOUT_MS,
+  },
 };

@@ -8,6 +8,7 @@ import { compositeSplitsTotal, finalizationsTotal, verdictsTotal } from '../metr
 import { visibleCheckWhere } from '../checks/visibility.js';
 import { buildFinding, type CheckWithFragments } from '../protocol/view.js';
 import { paramsByCode, inspectorsById, atomsByParent, loadProtocolResponse } from './protocols.js';
+import { enqueueTransfer, cancelPendingTransfer } from '../integration/transfers.js';
 
 const checkParamsSchema = z.object({ check_id: z.string().uuid() });
 const protocolParamsSchema = z.object({ protocol_id: z.string().uuid() });
@@ -326,9 +327,16 @@ export async function verdictRoutes(app: FastifyInstance) {
       await prisma.$transaction(async (tx) => {
         await tx.protocol.update({
           where: { id: protocol.id },
-          data: { status: 'PROTOCOL_FINALIZED', finalizedAt: new Date(), finalizedBy: request.user.id },
+          data: {
+            status: 'PROTOCOL_FINALIZED', finalizedAt: new Date(), finalizedBy: request.user.id,
+            // Section 9.6: finalization is what makes a transfer to ИАИС
+            // «РиН» possible - null (never attempted) becomes PENDING_SYNC
+            // the moment one is actually queued below.
+            syncStatus: 'PENDING_SYNC',
+          },
         });
         await tx.process.update({ where: { id: protocol.processId }, data: { status: 'FINALIZED' } });
+        await enqueueTransfer(protocol.id, tx);
       });
 
       finalizationsTotal.inc();
@@ -371,6 +379,10 @@ export async function verdictRoutes(app: FastifyInstance) {
           data: { status: 'VERIFICATION_COMPLETED', finalizedAt: null, finalizedBy: null },
         });
         await tx.process.update({ where: { id: protocol.processId }, data: { status: 'COMPLETED' } });
+        // Section 9.6: "Unfinalize while PENDING cancels the pending
+        // transfer" - a transfer already SENT/FAILED is untouched, it is
+        // history rather than something this action can undo.
+        await cancelPendingTransfer(protocol.id, tx);
       });
 
       await audit(request, 'PROTOCOL_UNFINALIZED', protocol.objectId, {

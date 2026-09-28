@@ -35,9 +35,12 @@ export type ReviewPriority = 'HIGH' | 'MEDIUM' | 'LOW';
 export type ProtocolStatus =
   | 'READY' | 'VERIFYING' | 'VERIFICATION_COMPLETED' | 'PROTOCOL_FINALIZED' | 'SUPERSEDED';
 
-// Transfer to ИАИС «РиН» (section 9.6) is a stub on the server — this only
-// reflects what protocols.sync_status already reports, never invented here.
-export type SyncStatus = 'PENDING_SYNC' | 'SYNCED';
+// Transfer to ИАИС «РиН» (section 9.6): PENDING_SYNC while a finalized
+// protocol's transfer is queued or retrying, SYNCED once ИАИС «РиН»
+// acknowledged it, FAILED once the retry budget (RIN_RETRY_DELAYS_S) is
+// exhausted - only a supervisor/administrator's manual resync
+// (POST /protocols/:id/sync) can move it out of FAILED again.
+export type SyncStatus = 'PENDING_SYNC' | 'SYNCED' | 'FAILED';
 
 // The subset of FindingStatus a completeness/comparability row can carry —
 // a check without a finding_status was never compared, so it can never be a

@@ -235,8 +235,11 @@ model Protocol {
   // истории"). A SUPERSEDED protocol is read-only: no verdict, split or
   // finalize action is accepted against it (services/api's routes/verdicts.ts).
   status            String    @db.VarChar(30)
-  // PENDING_SYNC / SYNCED for the transfer to ИАИС «РиН» (section 9.6); null
-  // until a transfer is attempted.
+  // PENDING_SYNC / SYNCED / FAILED for the transfer to ИАИС «РиН» (section
+  // 9.6); null until finalization first enqueues a transfer
+  // (integration/transfers.ts's enqueueTransfer). FAILED is set only once
+  // every retry has been exhausted (see IntegrationTransfer below) - a
+  // transfer still retrying keeps PENDING_SYNC.
   syncStatus        String?   @map("sync_status") @db.VarChar(20)
   createdAt         DateTime  @default(now()) @map("created_at")
   finalizedAt       DateTime? @map("finalized_at")
@@ -249,11 +252,49 @@ model Protocol {
   // deleted.
   snapshot          Json?
 
-  process Process @relation(fields: [processId], references: [id], onDelete: Cascade)
+  process   Process               @relation(fields: [processId], references: [id], onDelete: Cascade)
+  transfers IntegrationTransfer[]
 
   @@unique([objectId, version])
   @@index([processId])
   @@map("protocols")
+}
+
+// One attempt (or scheduled retry) to hand a finalized protocol's results to
+// ИАИС «РиН» (section 9.6's POST /api/v1/inspection/{process_id}). A
+// finalization creates exactly one PENDING row (integration/transfers.ts's
+// enqueueTransfer); the api process's own scheduler (server.ts) picks up due
+// rows and drives them through PENDING -> SENT, or PENDING -> ... -> FAILED
+// once the retry budget (RIN_RETRY_DELAYS_S, default 1/5/15 minutes) is
+// exhausted. CANCELLED is reached only by an unfinalize while still PENDING
+// (customer's ТЗ names only PENDING/SENT/FAILED explicitly; CANCELLED is
+// this schema's own addition so an operator cancellation is never confused
+// with a genuine delivery failure in the transfer's own history).
+model IntegrationTransfer {
+  id            String    @id @default(uuid())
+  protocolId    String    @map("protocol_id")
+  // How many attempts have been made so far (the send that just ran counts
+  // as one) - compared against RIN_RETRY_DELAYS_S's length to decide between
+  // scheduling the next retry and giving up.
+  attempt       Int       @default(0)
+  status        String    @db.VarChar(20)
+  // When the scheduler should try this row again; null once the row reaches
+  // a terminal state (SENT/FAILED/CANCELLED).
+  nextAttemptAt DateTime? @map("next_attempt_at")
+  lastError     String?   @map("last_error")
+  responseCode  Int?      @map("response_code")
+  // SHA-256 of the exact JSON body sent (or about to be sent) - lets an
+  // operator confirm the mock/ИАИС «РиН» received the payload this row
+  // claims it did, without storing the payload itself.
+  payloadHash   String?   @map("payload_hash") @db.Char(64)
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  protocol Protocol @relation(fields: [protocolId], references: [id], onDelete: Cascade)
+
+  @@index([status, nextAttemptAt])
+  @@index([protocolId])
+  @@map("integration_transfers")
 }
 
 // Section 10, table Rejection_Log: every candidate an inspector rejected,

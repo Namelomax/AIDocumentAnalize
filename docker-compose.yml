@@ -83,6 +83,21 @@ services:
       DEMO_SUPERVISOR_PASSWORD: ${DEMO_SUPERVISOR_PASSWORD:-supervisor123}
       DEMO_ML_PASSWORD: ${DEMO_ML_PASSWORD:-ml123}
       JWT_TTL: ${JWT_TTL:-12h}
+      # Section 9.6: transfer of a finalized protocol to ИАИС «РиН». Points
+      # at the local mock (deploy/rin-mock) by default - plain HTTP, since
+      # the stand is offline and carries no real УКЭП certificate chain.
+      # Setting RIN_CLIENT_CERT/RIN_CLIENT_KEY (and pointing RIN_BASE_URL at
+      # an https:// host) is what turns on the real mTLS client the ТЗ asks
+      # for; both are blank here on purpose - see services/api/README or
+      # config.ts for the demo-vs-production distinction.
+      RIN_BASE_URL: ${RIN_BASE_URL:-http://rin-mock:8090}
+      RIN_CLIENT_CERT: ${RIN_CLIENT_CERT:-}
+      RIN_CLIENT_KEY: ${RIN_CLIENT_KEY:-}
+      RIN_CA: ${RIN_CA:-}
+      RIN_RETRY_DELAYS_S: ${RIN_RETRY_DELAYS_S:-60,300,900}
+      RIN_INBOUND_TOKEN: ${RIN_INBOUND_TOKEN:-change-me-rin-token}
+      RIN_SCHEDULER_INTERVAL_MS: ${RIN_SCHEDULER_INTERVAL_MS:-15000}
+      RIN_REQUEST_TIMEOUT_MS: ${RIN_REQUEST_TIMEOUT_MS:-10000}
     ports:
       - "3000:3000"
     depends_on:
@@ -90,8 +105,29 @@ services:
       redis: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
       minio: { condition: service_healthy }
+      rin-mock: { condition: service_healthy }
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://localhost:3000/api/v1/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # Section 9.6: local stand-in for ИАИС «РиН» (deploy/rin-mock) - the real
+  # system is unreachable from the offline stand. Stores every payload it
+  # receives under ./data/rin-mock and can be told to fail the next N calls
+  # (POST /admin/config) to demonstrate the api's own retry ladder.
+  rin-mock:
+    image: inspector-rin-mock:1.0.0
+    build: ./deploy/rin-mock
+    environment:
+      RIN_MOCK_FAIL_FIRST: ${RIN_MOCK_FAIL_FIRST:-0}
+    volumes:
+      - ./data/rin-mock:/data
+    ports:
+      - "8090:8090"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:8090/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -126,6 +162,12 @@ services:
       LLM_BASE_URL: ${LLM_BASE_URL:-}
       LLM_MODEL: ${LLM_MODEL:-}
       LLM_TIMEOUT_S: ${LLM_TIMEOUT_S:-60}
+      # Section 9.5's free-search hypotheses (SEM-ROOM-FN) are asked about in
+      # batches of this many room-name pairs per model call, each batch under
+      # LLM_TIMEOUT_S - the reference school package's 23 pairs in one
+      # request routinely outran it entirely (services/worker/app/pipeline.py
+      # module docstring).
+      LLM_BATCH_SIZE: ${LLM_BATCH_SIZE:-5}
       # Customer's ТЗ p.17, "Обработка ошибок при загрузке": a file whose
       # processing hangs past this timeout is retried, and a whole
       # process.start task is retried the same number of times before the

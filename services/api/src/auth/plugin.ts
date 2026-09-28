@@ -13,7 +13,13 @@ declare module '@fastify/jwt' {
 // GET /metrics: prom-client's own registry, scraped by Prometheus directly
 // (not through the web container's nginx, which only forwards /api/ -
 // see services/web/nginx.conf). Prometheus has no JWT of its own to send.
-const PUBLIC = new Set(['GET /api/v1/health', 'POST /api/v1/auth/login', 'GET /metrics']);
+// POST /integration/rin/documents (section 9.6's inbound direction) is
+// another system calling in, not an inspector - it carries its own service
+// token (X-RIN-Token, checked in routes/integrationRin.ts) instead of a JWT.
+const PUBLIC = new Set([
+  'GET /api/v1/health', 'POST /api/v1/auth/login', 'GET /metrics',
+  'POST /api/v1/integration/rin/documents',
+]);
 
 export const authPlugin = fp(async (app) => {
   app.addHook('onRequest', async (request, reply) => {

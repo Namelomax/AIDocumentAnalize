@@ -30,9 +30,12 @@ OWN_IMAGES=(
   "inspector-api:1.0.0"
   "inspector-worker:1.0.0"
   "inspector-web:1.0.0"
+  # Section 9.6: local stand-in for ИАИС «РиН» (deploy/rin-mock) - the
+  # offline stand has no route to the real system.
+  "inspector-rin-mock:1.0.0"
 )
 
-echo "Building api, worker and web images..."
+echo "Building api, worker, web and rin-mock images..."
 docker compose build
 
 echo "Pulling third-party images..."
@@ -42,7 +45,7 @@ mkdir -p dist
 
 BUNDLE_PATH="dist/inspector-images.tar"
 
-echo "Saving all ten images to ${BUNDLE_PATH}..."
+echo "Saving all eleven images to ${BUNDLE_PATH}..."
 docker save -o "${BUNDLE_PATH}" "${THIRD_PARTY_IMAGES[@]}" "${OWN_IMAGES[@]}"
 
 BUNDLE_SIZE=$(du -h "${BUNDLE_PATH}" | cut -f1)

@@ -104,6 +104,47 @@ export interface ValidatedPackage {
   packageBytes: number;
 }
 
+export interface FileInput {
+  fileName: string;
+  body: Buffer;
+  mimeType: string;
+}
+
+// The one place format/size/corruption rules are applied to a single file,
+// shared by validatePackage below (a multipart part) and validateFileList
+// (services/api's inbound ИАИС «РиН» route, whose files arrive as base64 in
+// a JSON body instead of multipart) - so the two entry points can never
+// drift on what counts as an acceptable file. `manifestSeen` is a one-element
+// box rather than a module/closure variable: each caller owns its own
+// package's worth of state, and two packages validated concurrently (a fresh
+// upload and an inbound дозагрузка, say) must never share it.
+function validateOne(
+  input: FileInput,
+  manifestSeen: { value: boolean },
+): { pending: PendingFile } | { rejected: Rejection } {
+  const isManifest = MANIFEST_TYPES.has(input.mimeType);
+  const extension = isManifest ? MANIFEST_TYPES.get(input.mimeType) : ALLOWED.get(input.mimeType);
+  if (!extension) {
+    return { rejected: rejection(input.fileName, 'UNSUPPORTED_FORMAT') };
+  }
+  // Two registries contradict each other and nothing here can pick the
+  // right one, so only the first in order is even considered - later
+  // ones are rejected outright, without spending a validity check on them.
+  if (isManifest) {
+    if (manifestSeen.value) {
+      return { rejected: rejection(input.fileName, 'MULTIPLE_MANIFESTS') };
+    }
+    manifestSeen.value = true;
+  }
+  if (input.body.length > config.maxFileBytes) {
+    return { rejected: rejection(input.fileName, 'FILE_TOO_LARGE') };
+  }
+  if (looksCorrupted(extension, input.body)) {
+    return { rejected: rejection(input.fileName, 'CORRUPTED_FILE') };
+  }
+  return { pending: { fileName: input.fileName, body: input.body, mimeType: input.mimeType, isManifest } };
+}
+
 // Phase 1: read and validate every part of the multipart body without
 // storing anything. EVERY part counts towards the package total, rejected
 // ones included - otherwise the limit is walked past with files of an
@@ -115,7 +156,7 @@ export async function validatePackage(request: FastifyRequest): Promise<Validate
   const pending: PendingFile[] = [];
   const rejected: Rejection[] = [];
   let packageBytes = 0;
-  let manifestSeen = false;
+  const manifestSeen = { value: false };
 
   for await (const part of request.parts()) {
     if (part.type !== 'file') continue;
@@ -123,31 +164,28 @@ export async function validatePackage(request: FastifyRequest): Promise<Validate
     const body = await part.toBuffer();
     packageBytes += body.length;
 
-    const isManifest = MANIFEST_TYPES.has(part.mimetype);
-    const extension = isManifest ? MANIFEST_TYPES.get(part.mimetype) : ALLOWED.get(part.mimetype);
-    if (!extension) {
-      rejected.push(rejection(part.filename, 'UNSUPPORTED_FORMAT'));
-      continue;
-    }
-    // Two registries contradict each other and nothing here can pick the
-    // right one, so only the first in order is even considered - later
-    // ones are rejected outright, without spending a validity check on them.
-    if (isManifest) {
-      if (manifestSeen) {
-        rejected.push(rejection(part.filename, 'MULTIPLE_MANIFESTS'));
-        continue;
-      }
-      manifestSeen = true;
-    }
-    if (body.length > config.maxFileBytes) {
-      rejected.push(rejection(part.filename, 'FILE_TOO_LARGE'));
-      continue;
-    }
-    if (looksCorrupted(extension, body)) {
-      rejected.push(rejection(part.filename, 'CORRUPTED_FILE'));
-      continue;
-    }
-    pending.push({ fileName: part.filename, body, mimeType: part.mimetype, isManifest });
+    const result = validateOne({ fileName: part.filename, body, mimeType: part.mimetype }, manifestSeen);
+    if ('rejected' in result) rejected.push(result.rejected);
+    else pending.push(result.pending);
+  }
+
+  return { pending, rejected, packageBytes };
+}
+
+// Same rules as validatePackage, for a package whose files are already fully
+// in memory (the inbound ИАИС «РиН» route decodes base64 into these before
+// calling this) rather than read from a live multipart stream.
+export function validateFileList(files: FileInput[]): ValidatedPackage {
+  const pending: PendingFile[] = [];
+  const rejected: Rejection[] = [];
+  let packageBytes = 0;
+  const manifestSeen = { value: false };
+
+  for (const file of files) {
+    packageBytes += file.body.length;
+    const result = validateOne(file, manifestSeen);
+    if ('rejected' in result) rejected.push(result.rejected);
+    else pending.push(result.pending);
   }
 
   return { pending, rejected, packageBytes };

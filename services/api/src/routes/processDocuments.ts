@@ -6,14 +6,13 @@
 // process.update task instead of process.start.
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { Prisma } from '@prisma/client';
 import { config } from '../config.js';
 import { prisma } from '../db.js';
-import { sha256, storageKeyFor, putObject } from '../storage.js';
 import { audit } from '../audit.js';
 import { publishTask } from '../queue.js';
 import { requireRole } from '../auth/plugin.js';
-import { megabytes, rejection, validatePackage, type PendingFile } from '../documents/validate.js';
+import { megabytes, validatePackage, type PendingFile } from '../documents/validate.js';
+import { ingestFiles } from '../documents/ingest.js';
 
 const paramsSchema = z.object({ process_id: z.string().uuid() });
 
@@ -62,55 +61,17 @@ export async function processDocumentRoutes(app: FastifyInstance) {
         });
       }
 
-      const accepted: Array<{ file_id: string; file_name: string; sha256: string }> = [];
-
-      for (const file of pending as PendingFile[]) {
-        const hash = sha256(file.body);
-        const key = storageKeyFor(hash);
-        try {
-          await putObject(key, file.body, file.mimeType);
-          const record = await prisma.fileRecord.create({
-            data: {
-              objectId: process.objectId,
-              processId: process.id,
-              fileName: file.fileName,
-              fileHash: hash,
-              storageKey: key,
-              sizeBytes: file.body.length,
-              mimeType: file.mimeType,
-            },
-          });
-          if (file.isManifest) {
-            try {
-              await prisma.process.update({
-                where: { id: process.id },
-                data: { manifestUploaded: true, inputManifestHash: hash },
-              });
-            } catch (error) {
-              request.log.error({ file_name: file.fileName, err: error }, 'failed to flag manifest on process');
-            }
-          }
-          accepted.push({ file_id: record.id, file_name: record.fileName, sha256: hash });
-        } catch (error) {
-          // Same unique key as a fresh upload (objectId, fileHash): a file
-          // already stored anywhere for this object - in this process or an
-          // earlier one - is a duplicate, not new evidence to add.
-          if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
-            rejected.push(rejection(file.fileName, 'DUPLICATE'));
-            continue;
-          }
-          request.log.error({ file_name: file.fileName, err: error }, 'failed to store file');
-          rejected.push(rejection(file.fileName, 'INTERNAL_ERROR'));
-        }
-      }
+      const { accepted, rejected: rejectedAll } = await ingestFiles(
+        process, pending as PendingFile[], rejected, request.log,
+      );
 
       if (accepted.length === 0) {
         await audit(request, 'DOCUMENTS_APPEND_REJECTED', process.objectId, {
           process_id: process.id,
-          rejected: rejected.length,
-          reasons: [...new Set(rejected.map((r) => r.reason))],
+          rejected: rejectedAll.length,
+          reasons: [...new Set(rejectedAll.map((r) => r.reason))],
         });
-        return reply.code(422).send({ accepted: [], rejected });
+        return reply.code(422).send({ accepted: [], rejected: rejectedAll });
       }
 
       // A process that never started still has nothing to react to a
@@ -135,10 +96,10 @@ export async function processDocumentRoutes(app: FastifyInstance) {
       await audit(request, 'DOCUMENTS_APPENDED', process.objectId, {
         process_id: process.id,
         accepted: accepted.length,
-        rejected: rejected.length,
+        rejected: rejectedAll.length,
       });
 
-      return reply.code(202).send({ process_id: process.id, accepted, rejected });
+      return reply.code(202).send({ process_id: process.id, accepted, rejected: rejectedAll });
     },
   );
 }

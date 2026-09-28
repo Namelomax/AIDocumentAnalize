@@ -203,15 +203,44 @@ RESPONSE3=$(curl -fsS -X POST "$API/documents/upload?object_id=$OBJECT3" \
 echo "$RESPONSE3" | grep -q '"process_id"'
 PROCESS3=$(echo "$RESPONSE3" | python -c 'import sys,json; print(json.load(sys.stdin)["process_id"])')
 
+START3=$(date +%s)
 curl -fsS -X POST "$API/processes/$PROCESS3/start" "${AUTH[@]}" > /dev/null
 
 echo "13. the reference package reaches READY"
+# Customer's ТЗ has no explicit budget for a fresh process.start, but this is
+# exactly the package (23 room-name pairs) that used to make READY wait on
+# the model for ~61s before section 9.5's hypotheses moved off this path
+# (services/worker/app/pipeline.py's own module docstring) - timed here to
+# show it no longer does.
 for _ in $(seq 1 60); do
   STATUS=$(curl -fsS "$API/processes/$PROCESS3" "${AUTH[@]}" | python -c 'import sys,json; print(json.load(sys.stdin)["status"])')
   [ "$STATUS" = "READY" ] && break
   sleep 1
 done
+END3_READY=$(date +%s)
+READY3_DURATION=$((END3_READY - START3))
 [ "$STATUS" = "READY" ] || { echo "FAIL: reference process stayed in $STATUS" >&2; exit 1; }
+echo "    reference package reached READY in ${READY3_DURATION}s"
+
+echo "13a. process.hypotheses follow-up: SEM-ROOM-FN rows show up for the reference package"
+# The matrix protocol above does not wait on this at all (this is the whole
+# point of moving section 9.5's hypotheses off process.start's own critical
+# path - services/worker/app/pipeline.py's own module docstring): polled
+# separately, up to 3 minutes, since LLM_BATCH_SIZE batches of the school
+# package's own room-name pairs each still cost a real local-model call.
+HYP_COUNT=0
+for _ in $(seq 1 180); do
+  HYP_COUNT=$(docker compose exec -T postgres psql -U inspector -d inspector -tA \
+    -c "SELECT count(*) FROM checks WHERE process_id = '$PROCESS3' AND param_code = 'SEM-ROOM-FN';" \
+    | tr -d '[:space:]')
+  [ "${HYP_COUNT:-0}" -ge 1 ] 2>/dev/null && break
+  sleep 1
+done
+END3_HYP=$(date +%s)
+HYP3_DURATION=$((END3_HYP - START3))
+[ "${HYP_COUNT:-0}" -ge 1 ] 2>/dev/null \
+  || { echo "FAIL: no SEM-ROOM-FN rows appeared for process $PROCESS3 within 180s" >&2; exit 1; }
+echo "    hypotheses ready ${HYP3_DURATION}s after process.start (rows: $HYP_COUNT)"
 
 echo "14. the school pair yields the added room as a candidate"
 assert_at_least "CANDIDATE for room 1.109 with actual area 18.20" \
@@ -388,5 +417,101 @@ FINALIZED_RESPONSE=$(curl -sS -X POST "$API/processes/$PROCESS4/documents" \
   "${AUTH[@]}" \
   -F 'files=@.e2e-tmp/upload.pdf;type=application/pdf')
 echo "$FINALIZED_RESPONSE" | grep -q '"error":"PROTOCOL_FINALIZED"'
+
+echo "---- timings ----"
+echo "reference package (process.start, 23 room-name pairs) reached READY in ${READY3_DURATION}s"
+echo "reference package's own hypotheses (process.hypotheses follow-up) were ready ${HYP3_DURATION}s after process.start"
+echo "incremental upload (process.update, дозагрузка) reached a resolved status in ${INCREMENTAL_DURATION}s"
+
+
+echo "28. section 9.6: seed a finalizable protocol with one confirmed violation"
+# Driving a realistic package all the way to a fully-decided protocol (no
+# CANDIDATE left) just to reach POST /finalize would make this stage as long
+# and as flaky as steps 12-19 - the pipeline itself is not what this stage
+# tests. Seeded directly instead (same spirit as step 27's own raw UPDATE),
+# leaving the one thing POST /finalize itself must still do for real: enqueue
+# a transfer (services/api's routes/verdicts.ts + integration/transfers.ts).
+printf '%s' '{"name":"РиН: передача финализированного протокола"}' > .e2e-tmp/rin-object.json
+OBJECT5=$(curl -fsS -X POST "$API/objects" \
+  "${AUTH[@]}" \
+  -H 'Content-Type: application/json; charset=utf-8' \
+  --data-binary @.e2e-tmp/rin-object.json \
+  | python -c 'import sys,json; print(json.load(sys.stdin)["id"])')
+INSPECTOR_ID=$(docker compose exec -T postgres psql -U inspector -d inspector -tA \
+  -c "SELECT id FROM users WHERE login='inspector';" | tr -d '[:space:]')
+
+PROCESS5=$(python -c 'import uuid; print(uuid.uuid4())')
+PROTOCOL5=$(python -c 'import uuid; print(uuid.uuid4())')
+CHECK5=$(python -c 'import uuid; print(uuid.uuid4())')
+FILE5=$(python -c 'import uuid; print(uuid.uuid4())')
+FRAGMENT5=$(python -c 'import uuid; print(uuid.uuid4())')
+HASH5=$(python -c "import hashlib; print(hashlib.sha256(b'rin-e2e-akt').hexdigest())")
+
+docker compose exec -T postgres psql -U inspector -d inspector -v ON_ERROR_STOP=1 <<SQL
+INSERT INTO processes (id, object_id, status, created_at, updated_at)
+VALUES ('$PROCESS5', '$OBJECT5', 'COMPLETED', now(), now());
+INSERT INTO files (id, object_id, process_id, file_name, file_hash, storage_key, size_bytes, mime_type, doc_stage, document_code, revision, approval_status, uploaded_at)
+VALUES ('$FILE5', '$OBJECT5', '$PROCESS5', 'akt.pdf', '$HASH5', 'documents/e2e/$HASH5', 100, 'application/pdf', 'ID', 'AR-01', '1', 'APPROVED', now());
+INSERT INTO protocols (id, object_id, process_id, version, matrix_version, dataset_version, model_version, input_manifest_hash, status, created_at)
+VALUES ('$PROTOCOL5', '$OBJECT5', '$PROCESS5', 1, '1.1', 'none', 'rules-2026.09', '$HASH5', 'VERIFICATION_COMPLETED', now());
+INSERT INTO checks (id, process_id, object_id, param_code, evidence_group_id, subject, completeness_status, finding_status, engine_status, review_priority, matrix_version, expected_value, actual_value, rationale, verified_by, verified_at, verdict_comment, created_at)
+VALUES ('$CHECK5', '$PROCESS5', '$OBJECT5', 'PZ-01', '$PROCESS5:room1', 'room 1', 'COMPLETE', 'CONFIRMED_VIOLATION', 'CANDIDATE', 'HIGH', '1.1', '10', '12', 'расхождение площади', '$INSPECTOR_ID', now(), 'подтверждено', now());
+INSERT INTO evidence_fragments (id, check_id, evidence_group_id, file_id, file_sha256, stage, document_code, revision, approval_status, sheet_page, x0, y0, x1, y1, extracted_value, role)
+VALUES ('$FRAGMENT5', '$CHECK5', '$PROCESS5:room1', '$FILE5', '$HASH5', 'ID', 'AR-01', '1', 'APPROVED', 1, 0.1, 0.1, 0.5, 0.5, '12', 'actual');
+SQL
+
+echo "29. finalizing queues a transfer to ИАИС «РиН»"
+curl -fsS -X POST "$API/protocols/$PROTOCOL5/finalize" "${AUTH[@]}" | grep -q '"sync_status":"PENDING_SYNC"'
+
+echo "30. the api's own scheduler sends it and the protocol reaches SYNCED"
+SYNC_STATUS=""
+for _ in $(seq 1 30); do
+  SYNC_STATUS=$(curl -fsS "$API/protocols/$PROTOCOL5/sync" "${AUTH[@]}" | python -c 'import sys,json; print(json.load(sys.stdin)["sync_status"])')
+  [ "$SYNC_STATUS" = "SYNCED" ] && break
+  sleep 3
+done
+[ "$SYNC_STATUS" = "SYNCED" ] || { echo "FAIL: transfer stayed $SYNC_STATUS instead of reaching SYNCED" >&2; exit 1; }
+
+echo "31. the mock received exactly the one confirmed finding, nothing else"
+curl -fsS "http://localhost:8090/admin/received?process_id=$PROCESS5" | python -c "
+import sys, json
+body = json.loads(sys.stdin.buffer.read().decode('utf-8'))
+assert body['items'], 'rin-mock stored nothing for process $PROCESS5'
+payload = body['items'][0]
+assert payload['protocol_id'] == '$PROTOCOL5', payload['protocol_id']
+findings = payload['findings']
+assert len(findings) == 1, f'expected exactly 1 finding, got {len(findings)}'
+assert findings[0]['finding_id'] == '$CHECK5', findings[0]['finding_id']
+assert findings[0]['expected_value'] == '10' and findings[0]['actual_value'] == '12', findings[0]
+assert len(payload['input_files']) == 1 and payload['input_files'][0]['sha256'] == '$HASH5', payload['input_files']
+print('ok')
+"
+
+echo "32. an automatic дозагрузка from ИАИС «РиН» on a finalized protocol only notifies, never stores"
+FILES_BEFORE=$(docker compose exec -T postgres psql -U inspector -d inspector -tA \
+  -c "SELECT count(*) FROM files WHERE process_id = '$PROCESS5';" | tr -d '[:space:]')
+INBOUND_BODY_FILE=.e2e-tmp/rin-inbound.json
+python -c "
+import json
+print(json.dumps({
+    'process_id': '$PROCESS5',
+    'files': [{'file_name': 'new-doc.pdf', 'mime_type': 'application/pdf', 'content_base64': 'JVBERi0xLjcgcmluLWUyZQ=='}],
+}))
+" > "$INBOUND_BODY_FILE"
+INBOUND_RESPONSE=$(curl -fsS -X POST "$API/integration/rin/documents" \
+  -H 'X-RIN-Token: change-me-rin-token' \
+  -H 'Content-Type: application/json' \
+  --data-binary @"$INBOUND_BODY_FILE")
+echo "$INBOUND_RESPONSE" | grep -q '"status":"NOTIFIED_ONLY"'
+
+FILES_AFTER=$(docker compose exec -T postgres psql -U inspector -d inspector -tA \
+  -c "SELECT count(*) FROM files WHERE process_id = '$PROCESS5';" | tr -d '[:space:]')
+[ "$FILES_AFTER" = "$FILES_BEFORE" ] || { echo "FAIL: inbound дозагрузка stored a file despite the protocol being finalized" >&2; exit 1; }
+
+echo "33. the inspector who owns the process has a notification about it"
+assert_at_least "RIN_NEW_DOCUMENTS notification for process $PROCESS5" \
+  "SELECT count(*) FROM notifications WHERE process_id = '$PROCESS5' AND kind = 'RIN_NEW_DOCUMENTS';" \
+  1
+
 
 echo "PASS"
