@@ -12,6 +12,15 @@ import pymupdf
 
 from app.pdf.geometry import NormalizedBox, normalize_box
 
+# Bumped whenever the *shape* extract_pages hands back changes in a way that
+# would make an old Redis cache entry (app.pdf.cache, customer's ТЗ p.16, п.5
+# "Кеширование") unsafe to hand to a newer parser - a new field callers now
+# rely on, a changed box convention, or a fix that changes char_count/
+# needs_ocr for inputs already cached under the old version. The cache key
+# embeds this number so such a change can never serve a stale shape to code
+# that no longer expects it; the entry is just treated as a miss instead.
+PARSER_VERSION = 1
+
 
 @dataclass(frozen=True)
 class ExtractedLine:

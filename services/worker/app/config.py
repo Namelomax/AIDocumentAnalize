@@ -40,6 +40,19 @@ class Config:
     # than sharing one with anything else. Defaulted here too, same reason as
     # the two fields above.
     metrics_port: int = 9100
+    # Customer's ТЗ p.16, п.5 "Кеширование": PDF parse results are cached in
+    # Redis by file hash. Empty turns the cache off outright (app.pdf.cache
+    # treats it the same as an unreachable Redis, minus the warning - there
+    # is nothing to be unreachable) - a stand without the redis service, or a
+    # test's Config that never names this field, must keep working exactly
+    # as before this feature existed. Defaulted here too, same reason as the
+    # fields above.
+    redis_url: str = ""
+    # 30 days: long enough that a re-check against the same package days
+    # later still hits, short enough that a stand's Redis does not accumulate
+    # entries for files nobody will ever re-upload. Defaulted here too, same
+    # reason as the fields above.
+    parse_cache_ttl_s: float = 30 * 24 * 3600.0
 
 
 def load_config() -> Config:
@@ -59,4 +72,6 @@ def load_config() -> Config:
         file_processing_timeout_s=float(os.environ.get("FILE_PROCESSING_TIMEOUT_S", "300")),
         processing_retries=int(os.environ.get("PROCESSING_RETRIES", "2")),
         metrics_port=int(os.environ.get("METRICS_PORT", "9100")),
+        redis_url=os.environ.get("REDIS_URL", "redis://redis:6379/0"),
+        parse_cache_ttl_s=float(os.environ.get("PARSE_CACHE_TTL_S", str(30 * 24 * 3600))),
     )

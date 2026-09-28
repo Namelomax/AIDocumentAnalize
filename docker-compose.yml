@@ -132,9 +132,25 @@ services:
       # process is moved to FAILED (services/worker/app/pipeline.py).
       FILE_PROCESSING_TIMEOUT_S: ${FILE_PROCESSING_TIMEOUT_S:-300}
       PROCESSING_RETRIES: ${PROCESSING_RETRIES:-2}
+      # Customer's ТЗ p.16, п.5 "Кеширование": PDF parse results are cached
+      # in Redis by file hash. Blank turns the cache off outright - see
+      # app.config.Config's own comment - which no default here may do by
+      # naming anything but the compose network's own redis service.
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      PARSE_CACHE_TTL_S: ${PARSE_CACHE_TTL_S:-2592000}
     depends_on:
       postgres: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    healthcheck:
+      # No curl or wget in python:3.11-slim (services/worker/Dockerfile does
+      # not apt-get either), so the probe is a Python one-liner against the
+      # worker's own /metrics (app.main, customer's ТЗ p.31) instead - a
+      # failed connection or non-2xx status both raise and exit non-zero.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9100/metrics', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
     restart: unless-stopped
 
   web:

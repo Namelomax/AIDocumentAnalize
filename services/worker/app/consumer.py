@@ -42,12 +42,12 @@ def handle_task(payload: dict):
     return handler
 
 
-async def _process_message(message, db, storage, config) -> None:
+async def _process_message(message, db, storage, config, *, cache=None) -> None:
     """Parse and route one message, ack'ing or rejecting it via message.process()."""
     async with message.process():
         payload = json.loads(message.body.decode())
         handler = handle_task(payload)
-        await handler(payload["process_id"], db, storage, config)
+        await handler(payload["process_id"], db, storage, config, cache=cache)
 
 
 def _extract_process_id(message) -> str | None:
@@ -64,7 +64,7 @@ def _extract_process_id(message) -> str | None:
     return payload.get("process_id") if isinstance(payload, dict) else None
 
 
-async def _consume_messages(messages, db, storage, config) -> None:
+async def _consume_messages(messages, db, storage, config, *, cache=None) -> None:
     """Drive the message loop, isolating each message's failure from the rest.
 
     message.process() rejects (without requeue) the message that raised and
@@ -76,7 +76,7 @@ async def _consume_messages(messages, db, storage, config) -> None:
     """
     async for message in messages:
         try:
-            await _process_message(message, db, storage, config)
+            await _process_message(message, db, storage, config, cache=cache)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -84,7 +84,7 @@ async def _consume_messages(messages, db, storage, config) -> None:
                          extra={"process_id": _extract_process_id(message)})
 
 
-async def consume(connection_url: str, db, storage, config) -> None:
+async def consume(connection_url: str, db, storage, config, *, cache=None) -> None:
     import aio_pika
 
     connection = await aio_pika.connect_robust(connection_url)
@@ -92,4 +92,4 @@ async def consume(connection_url: str, db, storage, config) -> None:
     queue = await channel.declare_queue(TASK_QUEUE, durable=True)
 
     async with queue.iterator() as messages:
-        await _consume_messages(messages, db, storage, config)
+        await _consume_messages(messages, db, storage, config, cache=cache)

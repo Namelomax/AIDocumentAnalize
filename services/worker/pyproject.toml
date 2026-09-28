@@ -9,6 +9,8 @@ dependencies = [
   "openpyxl>=3.1.5",
   "pymupdf>=1.24.0",
   "pyyaml>=6.0",
+  # Customer's ТЗ p.16, п.5 "Кеширование": the parse cache (app.pdf.cache).
+  "redis>=5.0.0,<6",
   "python-json-logger>=2.0.7",
   # Pinned exactly (not >=): the /metrics exporter's client library, whose
   # wire format Prometheus itself depends on staying stable across the stand.

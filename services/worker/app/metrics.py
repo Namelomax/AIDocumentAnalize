@@ -70,3 +70,14 @@ llm_request_duration_seconds = Histogram(
     "inspector_llm_request_duration_seconds",
     "Language model call latency",
 )
+
+# Redis lookups of a PDF's cached parse result, by app.pdf.cache.ParseCache
+# (customer's ТЗ p.16, п.5 "Кеширование"). "miss" is a key that simply is not
+# there yet; "error" covers both an unreachable Redis and a corrupt entry -
+# either way the caller falls back to parsing the file from scratch, so a
+# cache is never able to fail a run that would otherwise have succeeded.
+parse_cache_total = Counter(
+    "inspector_parse_cache_total",
+    "PDF parse cache lookups, by outcome",
+    ["result"],
+)

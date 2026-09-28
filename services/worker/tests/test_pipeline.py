@@ -12,6 +12,7 @@ import time
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pymupdf
 import pytest
@@ -19,6 +20,8 @@ import pytest
 from app import pipeline as pipeline_module
 from app.config import Config
 from app.db import FileRow, ProcessRow
+from app.pdf.cache import ParseCache
+from app.pdf.extract import PARSER_VERSION
 from app.pipeline import input_manifest_hash, process_start
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -302,6 +305,38 @@ class FakeStorage:
 
     async def put_object(self, storage_key: str, data: bytes, content_type: str) -> None:
         self._objects[storage_key] = data
+
+    async def copy_object(self, source_key: str, dest_key: str) -> None:
+        # Mirrors app.storage.ManifestStorage.copy_object closely enough for
+        # the parse cache's own tests: raises (like minio's own S3Error)
+        # when the source object is gone, rather than inventing bytes.
+        self._objects[dest_key] = self._objects[source_key]
+
+
+class FakeRedis:
+    """Stands in for redis.asyncio.Redis's own get/set - the two methods
+    app.pdf.cache.ParseCache calls - so the parse cache's tests never touch a
+    real Redis (customer's ТЗ p.16, п.5 "Кеширование")."""
+
+    def __init__(self, data: dict[str, bytes] | None = None):
+        self.data: dict[str, bytes] = dict(data or {})
+
+    async def get(self, key):
+        return self.data.get(key)
+
+    async def set(self, key, value, ex=None):
+        self.data[key] = value.encode() if isinstance(value, str) else value
+
+
+class RaisingRedis:
+    """A Redis that is simply unreachable - every call raises, the way a
+    dropped connection or a timeout would."""
+
+    async def get(self, key):
+        raise ConnectionError("redis unreachable")
+
+    async def set(self, key, value, ex=None):
+        raise ConnectionError("redis unreachable")
 
 
 @pytest.mark.asyncio
@@ -964,3 +999,148 @@ async def test_ready_notifies_the_process_owner():
     assert notification["kind"] == "PROCESS_READY"
     assert notification["started_by"] == "user-42"
     assert notification["title"] == "Протокол готов к проверке"
+
+
+# ─────────── Parse cache (customer's ТЗ p.16, п.5 "Кеширование") ───────────
+
+def _cache_key(file_hash: str) -> str:
+    return f"parse:v{PARSER_VERSION}:{file_hash}"
+
+
+@pytest.mark.asyncio
+async def test_parse_cache_miss_parses_and_writes_entry():
+    """Nothing cached yet: the file is parsed normally, and the result is
+    written under a key derived from its content hash for next time."""
+    process = mk_process(manifest_uploaded=False)
+    doc = mk_file(id="f-doc", file_name="a.pdf", storage_key="key-doc",
+                  mime_type="application/pdf", file_hash="hash-shared")
+    db = FakeDb(process, [doc])
+    storage = FakeStorage({"key-doc": _one_page_pdf("текст")})
+    redis = FakeRedis()
+    cache = ParseCache(redis, ttl_s=1000.0)
+
+    await process_start("p1", db, storage, CONFIG, cache=cache)
+
+    assert db.saved["status"] == "READY"
+    assert "f-doc" in db.saved_pages
+    key = _cache_key("hash-shared")
+    assert key in redis.data
+    entry = json.loads(redis.data[key])
+    assert entry["source_file_id"] == "f-doc"
+    assert entry["pages"][0]["page_no"] == 1
+    assert entry["pages"][0]["blocks"]
+    assert entry["pages"][0]["image_key"] == "pages/f-doc/1.png"
+
+
+@pytest.mark.asyncio
+async def test_parse_cache_hit_skips_extraction_and_copies_images(monkeypatch):
+    """A second file with the same content hash as an already-parsed one
+    reuses that run's pages and images entirely - extract_pages is never
+    called for it, and db.save_pages still runs for the new file id."""
+    process = mk_process(manifest_uploaded=False)
+    first = mk_file(id="f-first", file_name="a.pdf", storage_key="key-a",
+                     mime_type="application/pdf", file_hash="hash-shared")
+    db = FakeDb(process, [first])
+    # One object store shared across both runs, the way one MinIO bucket is
+    # shared across every process the worker ever handles - a second file's
+    # cache hit copies an image out of the same bucket the first file's own
+    # run put it in.
+    storage = FakeStorage({"key-a": _one_page_pdf("текст")})
+    redis = FakeRedis()
+    cache = ParseCache(redis, ttl_s=1000.0)
+    await process_start("p1", db, storage, CONFIG, cache=cache)
+    first_pages = db.saved_pages["f-first"]
+
+    second = mk_file(id="f-second", file_name="b.pdf", storage_key="key-b",
+                      mime_type="application/pdf", file_hash="hash-shared")
+    db2 = FakeDb(mk_process(id="p2"), [second])
+
+    extract_mock = MagicMock()
+    monkeypatch.setattr(pipeline_module, "extract_pages", extract_mock)
+
+    await process_start("p2", db2, storage, CONFIG, cache=cache)
+
+    extract_mock.assert_not_called()
+    assert db2.saved["status"] == "READY"
+    second_pages = db2.saved_pages["f-second"]
+    assert [p["blocks"] for p in second_pages] == [p["blocks"] for p in first_pages]
+    assert second_pages[0]["image_key"] == "pages/f-second/1.png"
+    assert storage._objects["pages/f-second/1.png"] == storage._objects["pages/f-first/1.png"]
+
+
+@pytest.mark.asyncio
+async def test_parse_cache_hit_rerenders_missing_source_image():
+    """The cached image is gone from object storage (evicted, or the source
+    file was since deleted) - not corruption, so the hit still stands: just
+    that one page is re-rendered from the new file's own bytes, identical to
+    the source's PDF bytes since the cache key is the file's content hash."""
+    process = mk_process(manifest_uploaded=False)
+    first = mk_file(id="f-first", file_name="a.pdf", storage_key="key-a",
+                     mime_type="application/pdf", file_hash="hash-shared")
+    db = FakeDb(process, [first])
+    storage = FakeStorage({"key-a": _one_page_pdf("текст")})
+    redis = FakeRedis()
+    cache = ParseCache(redis, ttl_s=1000.0)
+    await process_start("p1", db, storage, CONFIG, cache=cache)
+
+    del storage._objects["pages/f-first/1.png"]
+
+    second = mk_file(id="f-second", file_name="b.pdf", storage_key="key-b",
+                      mime_type="application/pdf", file_hash="hash-shared")
+    db2 = FakeDb(mk_process(id="p2"), [second])
+    storage._objects["key-b"] = _one_page_pdf("текст")
+
+    await process_start("p2", db2, storage, CONFIG, cache=cache)
+
+    assert db2.saved["status"] == "READY"
+    second_pages = db2.saved_pages["f-second"]
+    assert second_pages[0]["image_key"] == "pages/f-second/1.png"
+    assert storage._objects["pages/f-second/1.png"].startswith(b"\x89PNG")
+
+
+@pytest.mark.asyncio
+async def test_parse_cache_corrupt_entry_falls_back_to_parsing(caplog):
+    process = mk_process(manifest_uploaded=False)
+    doc = mk_file(id="f-doc", file_name="a.pdf", storage_key="key-doc",
+                  mime_type="application/pdf", file_hash="hash-x")
+    db = FakeDb(process, [doc])
+    storage = FakeStorage({"key-doc": _one_page_pdf("текст")})
+    redis = FakeRedis({_cache_key("hash-x"): b"not json at all"})
+    cache = ParseCache(redis, ttl_s=1000.0)
+
+    with caplog.at_level(logging.WARNING, logger="app.pdf.cache"):
+        await process_start("p1", db, storage, CONFIG, cache=cache)
+
+    assert db.saved["status"] == "READY"
+    assert "f-doc" in db.saved_pages
+    assert db.saved_pages["f-doc"][0]["blocks"]
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert any(r.msg == "parse cache entry corrupt" for r in warnings)
+
+
+@pytest.mark.asyncio
+async def test_parse_cache_redis_error_falls_back_to_parsing(caplog):
+    """Redis being down must never fail processing - a lookup or write that
+    raises is logged and the file is parsed as if there were no cache at all."""
+    process = mk_process(manifest_uploaded=False)
+    doc = mk_file(id="f-doc", file_name="a.pdf", storage_key="key-doc",
+                  mime_type="application/pdf", file_hash="hash-x")
+    db = FakeDb(process, [doc])
+    storage = FakeStorage({"key-doc": _one_page_pdf("текст")})
+    cache = ParseCache(RaisingRedis(), ttl_s=1000.0)
+
+    with caplog.at_level(logging.WARNING, logger="app.pdf.cache"):
+        await process_start("p1", db, storage, CONFIG, cache=cache)
+
+    assert db.saved["status"] == "READY"
+    assert "f-doc" in db.saved_pages
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert any(r.msg == "parse cache lookup failed" for r in warnings)
+    assert any(r.msg == "parse cache write failed" for r in warnings)
+
+
+def test_parse_cache_key_includes_parser_version():
+    from app.pdf.cache import cache_key
+
+    assert cache_key(PARSER_VERSION, "abc123") == f"parse:v{PARSER_VERSION}:abc123"
+    assert cache_key(1, "abc123") != cache_key(2, "abc123")

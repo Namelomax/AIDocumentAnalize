@@ -8,6 +8,7 @@ from app.consumer import consume
 from app.db import Database
 from app.logging_setup import setup_logging
 from app.params.specs import load_specs
+from app.pdf.cache import ParseCache
 from app.storage import ManifestStorage
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,13 @@ async def _run() -> None:
     start_http_server(config.metrics_port)
     logger.info("metrics server listening", extra={"port": config.metrics_port})
     db = await Database.connect(config.database_url)
+    # Customer's ТЗ p.16, п.5 "Кеширование": built once here, the same way db
+    # and storage are, so app.pipeline can be driven by a fake in tests
+    # without a real Redis. config.redis_url empty (no `redis` service on a
+    # stand, or a deliberate opt-out) makes this a no-op cache - every method
+    # on it degenerates to a miss/no-op, so nothing downstream has to branch
+    # on whether caching is actually configured.
+    cache = ParseCache.from_config(config)
     try:
         # Loaded before consuming so a broken spec stops the worker at start,
         # visibly, instead of failing the first package it is given.
@@ -35,8 +43,9 @@ async def _run() -> None:
             "inserted": inserted,
         })
         storage = ManifestStorage(config)
-        await consume(config.rabbitmq_url, db, storage, config)
+        await consume(config.rabbitmq_url, db, storage, config, cache=cache)
     finally:
+        await cache.close()
         await db.close()
 
 

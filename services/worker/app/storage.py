@@ -9,6 +9,7 @@ import asyncio
 import io
 
 from minio import Minio
+from minio.commonconfig import CopySource
 
 from app.config import Config
 
@@ -47,3 +48,15 @@ class ManifestStorage:
             length=len(data),
             content_type=content_type,
         )
+
+    async def copy_object(self, source_key: str, dest_key: str) -> None:
+        # Used by the parse cache (app.pdf.cache): a page image rendered for
+        # an earlier file with the same hash is reused by copying it inside
+        # MinIO rather than round-tripping the bytes through the worker.
+        # Raises (notably S3Error for a source key that no longer exists) -
+        # the caller decides whether that means falling back to a re-render,
+        # the same way this module leaves every other failure to its caller.
+        await asyncio.to_thread(self._copy_object_sync, source_key, dest_key)
+
+    def _copy_object_sync(self, source_key: str, dest_key: str) -> None:
+        self._client.copy_object(self._bucket, dest_key, CopySource(self._bucket, source_key))

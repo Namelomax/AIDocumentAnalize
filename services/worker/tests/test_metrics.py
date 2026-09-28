@@ -16,10 +16,12 @@ import pytest
 from prometheus_client import REGISTRY
 
 from app import metrics
+from app.pdf.cache import ParseCache
 from app.pipeline import process_start
 from tests.test_pipeline import (
-    CONFIG, FakeDb, FakeStorage, _FakeLlmServer, _llm_config, _one_page_pdf,
-    _openai_response, _requested_name_pairs, _room_function_package, mk_file, mk_process,
+    CONFIG, FakeDb, FakeRedis, FakeStorage, RaisingRedis, _FakeLlmServer, _llm_config,
+    _one_page_pdf, _openai_response, _requested_name_pairs, _room_function_package,
+    mk_file, mk_process,
 )
 
 
@@ -161,3 +163,46 @@ async def test_llm_call_that_fails_increments_error_counter():
 
     assert db.saved["status"] == "READY"
     assert _sample("inspector_llm_requests_total", {"result": "error"}) == before_error + 1
+
+
+@pytest.mark.asyncio
+async def test_parse_cache_miss_then_hit_increment_their_own_counters():
+    process = mk_process(manifest_uploaded=False)
+    first = mk_file(id="f-first", file_name="a.pdf", storage_key="key-a",
+                     mime_type="application/pdf", file_hash="hash-shared")
+    db = FakeDb(process, [first])
+    storage = FakeStorage({"key-a": _one_page_pdf("текст")})
+    cache = ParseCache(FakeRedis(), ttl_s=1000.0)
+
+    before_miss = _sample("inspector_parse_cache_total", {"result": "miss"})
+    before_hit = _sample("inspector_parse_cache_total", {"result": "hit"})
+
+    await process_start("p1", db, storage, CONFIG, cache=cache)
+
+    assert _sample("inspector_parse_cache_total", {"result": "miss"}) == before_miss + 1
+
+    second = mk_file(id="f-second", file_name="b.pdf", storage_key="key-b",
+                      mime_type="application/pdf", file_hash="hash-shared")
+    db2 = FakeDb(mk_process(id="p2"), [second])
+
+    await process_start("p2", db2, storage, CONFIG, cache=cache)
+
+    assert db2.saved["status"] == "READY"
+    assert _sample("inspector_parse_cache_total", {"result": "hit"}) == before_hit + 1
+
+
+@pytest.mark.asyncio
+async def test_parse_cache_error_increments_its_own_counter():
+    process = mk_process(manifest_uploaded=False)
+    doc = mk_file(id="f-doc", file_name="a.pdf", storage_key="key-doc",
+                  mime_type="application/pdf", file_hash="hash-x")
+    db = FakeDb(process, [doc])
+    storage = FakeStorage({"key-doc": _one_page_pdf("текст")})
+    cache = ParseCache(RaisingRedis(), ttl_s=1000.0)
+
+    before_error = _sample("inspector_parse_cache_total", {"result": "error"})
+
+    await process_start("p1", db, storage, CONFIG, cache=cache)
+
+    assert db.saved["status"] == "READY"
+    assert _sample("inspector_parse_cache_total", {"result": "error"}) == before_error + 1

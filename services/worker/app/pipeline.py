@@ -35,7 +35,7 @@ from app.metrics import (
 )
 from app.params.engine import evaluate_all
 from app.params.specs import ParamSpec, load_specs
-from app.pdf.extract import ExtractedBlock, ExtractedLine, ExtractedPage, extract_pages
+from app.pdf.extract import ExtractedBlock, ExtractedLine, ExtractedPage, PARSER_VERSION, extract_pages
 from app.pdf.geometry import NormalizedBox
 from app.pdf.render import render_page_png
 
@@ -77,12 +77,100 @@ def _extract_and_render_sync(raw: bytes) -> list[tuple[ExtractedPage, bytes]]:
     return [(page, render_page_png(raw, page.page_no)) for page in pages]
 
 
-async def _extract_one_file(record, db, storage, timeout_s: float) -> list[dict]:
+def _validated_cached_page(page: dict) -> dict:
+    """Pull one page's fields out of a cache entry, raising KeyError/TypeError
+    on anything that does not hold what a real entry always does - the
+    caller (_pages_from_cache_entry) treats that the same as a miss.
+    """
+    blocks = page["blocks"]
+    for b in blocks:
+        # Accessed, not just presence-checked: a block dict missing a field
+        # would otherwise only fail later, inside db.save_pages, by which
+        # point some page images have already been copied under the new
+        # file id - see _pages_from_cache_entry's own docstring.
+        _ = (b["block_no"], b["line_no"], b["text"], b["x0"], b["y0"], b["x1"], b["y1"])
+    return {
+        "page_no": page["page_no"],
+        "width_pt": page["width_pt"],
+        "height_pt": page["height_pt"],
+        "rotation": page["rotation"],
+        "char_count": page["char_count"],
+        "needs_ocr": page["needs_ocr"],
+        "blocks": blocks,
+    }
+
+
+async def _pages_from_cache_entry(entry: dict, record, storage, process_id: str) -> list[dict] | None:
+    """Rebuild `stored` (the shape db.save_pages and _extract_one_file's own
+    miss path both produce) from a cache hit.
+
+    Each page's rendered image is copied to this file's own object key
+    rather than downloading and re-uploading it through the worker - except
+    when the source image is simply gone from MinIO (evicted, or the source
+    file itself was since deleted), which is not corruption: that one page is
+    re-rendered from this file's own bytes instead, identical to the
+    source's PDF bytes since the cache key is the file's content hash.
+
+    Returns None - handled by the caller exactly like a cache miss - if the
+    entry's shape does not hold what a real one always does.
+    """
+    try:
+        pages = entry["pages"]
+        if not isinstance(pages, list):
+            raise TypeError("entry['pages'] is not a list")
+
+        stored: list[dict] = []
+        raw: bytes | None = None
+        for page in pages:
+            validated = _validated_cached_page(page)
+            page_no = validated["page_no"]
+            source_image_key = page["image_key"]
+            dest_key = f"pages/{record.id}/{page_no}.png"
+            try:
+                await storage.copy_object(source_image_key, dest_key)
+            except Exception as exc:  # noqa: BLE001 - the source image may simply be gone
+                logger.warning("cached page image missing, re-rendering", extra={
+                    "process_id": process_id, "file_id": record.id,
+                    "page_no": page_no, "error": str(exc),
+                })
+                if raw is None:
+                    raw = await storage.get_object(record.storage_key)
+                png = await asyncio.to_thread(render_page_png, raw, page_no)
+                await storage.put_object(dest_key, png, "image/png")
+            stored.append({**validated, "image_key": dest_key})
+    except (KeyError, TypeError) as exc:
+        logger.warning("parse cache entry corrupt", extra={
+            "process_id": process_id, "file_id": record.id, "error": str(exc),
+        })
+        return None
+
+    return stored
+
+
+async def _extract_one_file(record, db, storage, timeout_s: float, *,
+                             process_id: str, cache=None) -> list[dict]:
     """One attempt at reading a single PDF's text layer and rendering its
     pages. Raises (TimeoutError on a timeout, whatever extract_pages/
     render_page_png raise otherwise) rather than catching anything itself -
     the retry loop in _extract_document_pages owns deciding when to give up.
+
+    Customer's ТЗ p.16, п.5 "Кеширование": a cache hit on record.file_hash
+    (app.pdf.cache) skips extract_pages/render_page_png entirely and copies
+    the earlier run's page images instead - but still goes through
+    db.save_pages below just like a fresh parse, since every file id needs
+    its own pages/text_blocks rows regardless of whether its bytes were ever
+    seen before.
     """
+    if cache is not None:
+        entry = await cache.get(
+            PARSER_VERSION, record.file_hash, process_id=process_id, file_id=record.id,
+        )
+        if entry is not None:
+            stored = await _pages_from_cache_entry(entry, record, storage, process_id)
+            if stored is not None:
+                await db.save_pages(record.id, stored)
+                return stored
+
     raw = await storage.get_object(record.storage_key)
     pairs = await asyncio.wait_for(asyncio.to_thread(_extract_and_render_sync, raw), timeout=timeout_s)
     stored = []
@@ -106,10 +194,15 @@ async def _extract_one_file(record, db, storage, timeout_s: float) -> list[dict]
             ],
         })
     await db.save_pages(record.id, stored)
+    if cache is not None:
+        await cache.set(
+            PARSER_VERSION, record.file_hash, {"source_file_id": record.id, "pages": stored},
+            process_id=process_id, file_id=record.id,
+        )
     return stored
 
 
-async def _extract_document_pages(process_id: str, files, db, storage, config) -> None:
+async def _extract_document_pages(process_id: str, files, db, storage, config, *, cache=None) -> None:
     """Read the text layer of every PDF in the package.
 
     One unreadable file must not cost the package its other documents: a
@@ -127,7 +220,10 @@ async def _extract_document_pages(process_id: str, files, db, storage, config) -
         for attempt in range(1, attempts_allowed + 1):
             file_attempts_total.inc()
             try:
-                stored = await _extract_one_file(record, db, storage, config.file_processing_timeout_s)
+                stored = await _extract_one_file(
+                    record, db, storage, config.file_processing_timeout_s,
+                    process_id=process_id, cache=cache,
+                )
                 logger.info("pages extracted", extra={
                     "process_id": process_id,
                     "file_id": record.id,
@@ -625,7 +721,7 @@ def input_manifest_hash(process, files) -> str:
     return hashlib.sha256(joined.encode("utf-8")).hexdigest()
 
 
-async def _process_start_once(process_id: str, db, storage, config) -> None:
+async def _process_start_once(process_id: str, db, storage, config, *, cache=None) -> None:
     process = await db.get_process(process_id)
     if process is None:
         # A race with the API (task published before the row is visible, or
@@ -715,7 +811,7 @@ async def _process_start_once(process_id: str, db, storage, config) -> None:
 
     # The registry row was already excluded from document_files above; it has
     # no text layer of its own and is not a document of the package.
-    await _extract_document_pages(process_id, document_files, db, storage, config)
+    await _extract_document_pages(process_id, document_files, db, storage, config, cache=cache)
 
     final_files = list(updated.values())
     metas = [
@@ -862,7 +958,7 @@ async def _process_start_once(process_id: str, db, storage, config) -> None:
         })
 
 
-async def process_start(process_id: str, db, storage, config) -> None:
+async def process_start(process_id: str, db, storage, config, *, cache=None) -> None:
     """Entry point routed from the queue (app.consumer.HANDLERS).
 
     Retries the whole task in-process up to config.processing_retries
@@ -875,13 +971,18 @@ async def process_start(process_id: str, db, storage, config) -> None:
     stuck in PARSING with nothing to drive it out, and never raised back
     into the consumer loop (app.consumer._consume_messages), which must keep
     running whatever any one message does.
+
+    `cache` (app.pdf.cache.ParseCache) is keyword-only with a default of None
+    so every call site that predates the parse cache - every test fixture
+    among them - keeps working unchanged; None behaves exactly like a cache
+    that is configured off.
     """
     attempts_allowed = 1 + max(config.processing_retries, 0)
     last_exc: BaseException | None = None
     started = time.monotonic()
     for attempt in range(1, attempts_allowed + 1):
         try:
-            await _process_start_once(process_id, db, storage, config)
+            await _process_start_once(process_id, db, storage, config, cache=cache)
             process_duration_seconds.observe(time.monotonic() - started)
             processes_total.labels(result="ready").inc()
             return
