@@ -7,6 +7,7 @@ import { closeQueue, TASK_QUEUE } from '../src/queue.js';
 import * as queue from '../src/queue.js';
 import { config } from '../src/config.js';
 import { authHeaders } from './helpers/auth.js';
+import { cleanupScenario } from './helpers/cleanup.js';
 
 let objectId: string;
 
@@ -15,7 +16,14 @@ beforeAll(async () => {
   objectId = object.id;
 });
 
-afterAll(async () => { await closeQueue(); });
+afterAll(async () => {
+  // Every it() below calls makeProcess(), each inserting FileRecord rows
+  // with a storageKey nothing was ever put under - left alone, integrity.ts's
+  // daily sweep (customer's ТЗ p.31) would report every one of them MISSING
+  // on a shared dev stand this suite also runs against.
+  await cleanupScenario(objectId);
+  await closeQueue();
+});
 
 function hash64() {
   return (randomUUID() + randomUUID()).replace(/-/g, '');

@@ -9,6 +9,7 @@ import { buildServer } from '../src/server.js';
 import { prisma } from '../src/db.js';
 import { config } from '../src/config.js';
 import { authHeaders } from './helpers/auth.js';
+import { cleanupScenario } from './helpers/cleanup.js';
 
 vi.mock('../src/integration/client.js', () => ({ postInspectionResult: vi.fn() }));
 // eslint-disable-next-line import/first
@@ -92,16 +93,6 @@ async function makeFinalizableScenario() {
     },
   });
   return { object, process, protocol, file, confirmed, negative, inspector };
-}
-
-async function cleanupScenario(objectId: string) {
-  // Cascades: process -> checks/protocols; protocol -> integration_transfers.
-  // files.process_id is ON DELETE SET NULL (not cascade), so a file survives
-  // its process's deletion and must be cleared explicitly before the object
-  // itself (files.object_id is ON DELETE RESTRICT) can go.
-  await prisma.process.deleteMany({ where: { objectId } });
-  await prisma.fileRecord.deleteMany({ where: { objectId } });
-  await prisma.constructionObject.delete({ where: { id: objectId } });
 }
 
 async function finalize(protocolId: string) {
@@ -314,6 +305,12 @@ describe('scheduler: retry ladder', () => {
       // above; presence is what matters here.
       expect(notified).not.toBeNull();
     } finally {
+      // Restored before cleanup, not after (the file's own afterEach would
+      // be too late): cleanupScenario's removeObject call signs a real
+      // request to MinIO, and a clock still frozen at 2026-01-01 skews that
+      // signature far enough past the server's own clock for it to refuse
+      // the request as a possible replay.
+      vi.useRealTimers();
       await cleanupScenario(object.id);
     }
   });

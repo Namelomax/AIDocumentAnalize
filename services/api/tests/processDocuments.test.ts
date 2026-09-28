@@ -8,6 +8,7 @@ import { closeQueue, TASK_QUEUE } from '../src/queue.js';
 import * as queue from '../src/queue.js';
 import { config } from '../src/config.js';
 import { authHeaders } from './helpers/auth.js';
+import { cleanupScenario } from './helpers/cleanup.js';
 
 let objectId: string;
 
@@ -17,7 +18,14 @@ beforeAll(async () => {
   objectId = object.id;
 });
 
-afterAll(async () => { await closeQueue(); });
+afterAll(async () => {
+  // makeProcess() below inserts a FileRecord with a storageKey nothing was
+  // ever put under - left behind, integrity.ts's daily sweep (customer's ТЗ
+  // p.31) would report it MISSING on a shared dev stand this suite also
+  // runs against.
+  await cleanupScenario(objectId);
+  await closeQueue();
+});
 
 function hash64() {
   return (randomUUID() + randomUUID()).replace(/-/g, '');
@@ -124,36 +132,44 @@ describe('POST /api/v1/processes/:process_id/documents (дозагрузка)', 
 
   it('refuses once the latest protocol is finalized', async () => {
     const object = await prisma.constructionObject.create({ data: { name: 'Дозагрузка finalized test' } });
-    const process = await prisma.process.create({ data: { objectId: object.id, status: 'FINALIZED' } });
-    await prisma.protocol.create({
-      data: {
-        objectId: object.id, processId: process.id, version: 1, matrixVersion: '1.1',
-        modelVersion: 'rules-2026.09', datasetVersion: 'none', inputManifestHash: hash64(),
-        status: 'PROTOCOL_FINALIZED',
-      },
-    });
-    const res = await upload(process.id, [
-      { name: 'extra.pdf', body: Buffer.from('%PDF-1.7 extra'), type: 'application/pdf' },
-    ]);
-    expect(res.statusCode).toBe(409);
-    expect(res.json()).toMatchObject({ error: 'PROTOCOL_FINALIZED' });
-    expect(res.json().message).toMatch(/дозагрузка невозможна/i);
+    try {
+      const process = await prisma.process.create({ data: { objectId: object.id, status: 'FINALIZED' } });
+      await prisma.protocol.create({
+        data: {
+          objectId: object.id, processId: process.id, version: 1, matrixVersion: '1.1',
+          modelVersion: 'rules-2026.09', datasetVersion: 'none', inputManifestHash: hash64(),
+          status: 'PROTOCOL_FINALIZED',
+        },
+      });
+      const res = await upload(process.id, [
+        { name: 'extra.pdf', body: Buffer.from('%PDF-1.7 extra'), type: 'application/pdf' },
+      ]);
+      expect(res.statusCode).toBe(409);
+      expect(res.json()).toMatchObject({ error: 'PROTOCOL_FINALIZED' });
+      expect(res.json().message).toMatch(/дозагрузка невозможна/i);
+    } finally {
+      await cleanupScenario(object.id);
+    }
   });
 
   it('allows дозагрузка again once the protocol is unfinalized', async () => {
     const object = await prisma.constructionObject.create({ data: { name: 'Дозагрузка unfinalized test' } });
-    const process = await prisma.process.create({ data: { objectId: object.id, status: 'COMPLETED' } });
-    await prisma.protocol.create({
-      data: {
-        objectId: object.id, processId: process.id, version: 1, matrixVersion: '1.1',
-        modelVersion: 'rules-2026.09', datasetVersion: 'none', inputManifestHash: hash64(),
-        status: 'VERIFICATION_COMPLETED',
-      },
-    });
-    const res = await upload(process.id, [
-      { name: 'extra.pdf', body: Buffer.from('%PDF-1.7 extra'), type: 'application/pdf' },
-    ]);
-    expect(res.statusCode).toBe(202);
+    try {
+      const process = await prisma.process.create({ data: { objectId: object.id, status: 'COMPLETED' } });
+      await prisma.protocol.create({
+        data: {
+          objectId: object.id, processId: process.id, version: 1, matrixVersion: '1.1',
+          modelVersion: 'rules-2026.09', datasetVersion: 'none', inputManifestHash: hash64(),
+          status: 'VERIFICATION_COMPLETED',
+        },
+      });
+      const res = await upload(process.id, [
+        { name: 'extra.pdf', body: Buffer.from('%PDF-1.7 extra'), type: 'application/pdf' },
+      ]);
+      expect(res.statusCode).toBe(202);
+    } finally {
+      await cleanupScenario(object.id);
+    }
   });
 
   it('reuses the shared validation - an unsupported format is rejected with the same reason', async () => {

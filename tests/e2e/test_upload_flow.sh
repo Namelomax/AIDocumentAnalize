@@ -458,7 +458,16 @@ curl -fsS -X POST "$API/processes/$PROCESS4/documents" \
   -F 'files=@.e2e-tmp/reference/pol17-rd.pdf;type=application/pdf' \
   -F 'files=@.e2e-tmp/incremental-reestr-pol17.csv;type=text/csv' > /dev/null
 
-for _ in $(seq 1 60); do
+# Pre-existing timing note, unrelated to this script's own storage/integrity
+# changes: process.update itself resolves in well under a second once the
+# worker picks it up (routes/processDocuments.ts only flips the status to
+# PARSING and publishes one task), but it shares a single queue/consumer
+# with the reference package's own process.hypotheses job (step 13a) - on a
+# machine where the local model answers in the tens of seconds rather than
+# the target H100 stand's, that earlier job can still be draining LLM_BATCH_
+# SIZE batches when this task is published, so this waits as long as step
+# 13a's own hypotheses budget rather than assuming the queue is idle by now.
+for _ in $(seq 1 240); do
   STATUS=$(curl -fsS "$API/processes/$PROCESS4" "${AUTH[@]}" | python -c 'import sys,json; print(json.load(sys.stdin)["status"])')
   [ "$STATUS" != "PARSING" ] && break
   sleep 1
@@ -535,6 +544,16 @@ INSERT INTO evidence_fragments (id, check_id, evidence_group_id, file_id, file_s
 VALUES ('$FRAGMENT5', '$CHECK5', '$PROCESS5:room1', '$FILE5', '$HASH5', 'ID', 'AR-01', '1', 'APPROVED', 1, 0.1, 0.1, 0.5, 0.5, '12', 'actual');
 SQL
 
+# files.storage_key above is only a DB row - unlike every other file this
+# script creates, nothing has put actual bytes under it yet. Left that way,
+# integrity.ts's daily sweep (customer's ТЗ p.31) would report it MISSING
+# forever on any stand this e2e ran on. Piped in the same way step 8c
+# tampers an object, with the exact bytes HASH5 was computed from above, so
+# the row is real rather than merely inserted.
+printf 'rin-e2e-akt' | docker compose exec -T minio sh -c \
+  'mc alias set e2e http://localhost:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null \
+   && mc pipe e2e/documents/documents/e2e/'"$HASH5"'' > /dev/null
+
 echo "29. finalizing queues a transfer to ИАИС «РиН»"
 curl -fsS -X POST "$API/protocols/$PROTOCOL5/finalize" "${AUTH[@]}" | grep -q '"sync_status":"PENDING_SYNC"'
 
@@ -588,5 +607,32 @@ assert_at_least "RIN_NEW_DOCUMENTS notification for process $PROCESS5" \
   "SELECT count(*) FROM notifications WHERE process_id = '$PROCESS5' AND kind = 'RIN_NEW_DOCUMENTS';" \
   1
 
+echo "34. customer's ТЗ p.31: a clean run reports OK once this script is the only thing that has touched the stand"
+# Every file this script uploaded went through the real ingest path (a real
+# MinIO object under its own storage_key), and step 28's own raw-SQL row was
+# given real bytes right after it was inserted - so on a stand where only
+# this e2e has ever run, nothing here should ever come back MISSING or
+# mismatched. Runs twice in a row in CI to prove this holds, not just once.
+#
+# Retried rather than a single call: admin.ts answers 409
+# INTEGRITY_CHECK_ALREADY_RUNNING whenever another run (the daily scheduler,
+# or an admin elsewhere on a shared stand) already holds integrity.ts's own
+# advisory lock - the correct reaction to that, same as a real admin would
+# do from the UI, is to wait for it to finish and ask again, not to treat a
+# concurrent run as a failure of this check itself.
+FINAL_RUN=""
+for _ in $(seq 1 20); do
+  FINAL_RUN=$(curl -sS -X POST "$API/admin/integrity-check" "${ADMIN_AUTH[@]}")
+  echo "$FINAL_RUN" | grep -q '"error":"INTEGRITY_CHECK_ALREADY_RUNNING"' || break
+  sleep 3
+done
+echo "$FINAL_RUN" | python -c "
+import sys, json
+body = json.loads(sys.stdin.buffer.read().decode('utf-8'))
+assert body['status'] == 'OK', f\"expected OK, got {body['status']}: {body['failures']}\"
+assert body['missing'] == 0, body['missing']
+assert body['mismatches'] == 0, body['mismatches']
+print('ok')
+"
 
 echo "PASS"

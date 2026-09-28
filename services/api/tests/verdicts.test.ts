@@ -4,6 +4,7 @@ import type { ProcessStatus } from '@prisma/client';
 import { buildServer } from '../src/server.js';
 import { prisma } from '../src/db.js';
 import { authHeaders } from './helpers/auth.js';
+import { cleanupScenario } from './helpers/cleanup.js';
 
 function hash64() {
   return (randomUUID() + randomUUID()).replace(/-/g, '');
@@ -71,13 +72,6 @@ async function makeScenario(
     );
   }
   return { object, process, protocol, checks };
-}
-
-async function cleanupScenario(objectId: string) {
-  // Deleting the process cascades its checks, protocols, evidence fragments
-  // and rejection_log rows (schema.prisma onDelete: Cascade).
-  await prisma.process.deleteMany({ where: { objectId } });
-  await prisma.constructionObject.delete({ where: { id: objectId } });
 }
 
 describe('POST /api/v1/findings/:check_id/verdict', () => {

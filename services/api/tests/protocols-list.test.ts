@@ -3,6 +3,7 @@ import { describe, it, expect } from 'vitest';
 import { buildServer } from '../src/server.js';
 import { prisma } from '../src/db.js';
 import { authHeaders } from './helpers/auth.js';
+import { cleanupScenario } from './helpers/cleanup.js';
 
 // GET /api/v1/protocols - the "Протоколы" sidebar screen's own list, across
 // every object at once (task spec). Kept in its own file rather than folded
@@ -32,11 +33,6 @@ async function inspectorId(): Promise<string> {
   if (existing) return existing.id;
   await authHeaders('INSPECTOR');
   return (await prisma.user.findUniqueOrThrow({ where: { login: 'test-inspector' } })).id;
-}
-
-async function cleanupScenario(objectId: string) {
-  await prisma.process.deleteMany({ where: { objectId } });
-  await prisma.constructionObject.delete({ where: { id: objectId } });
 }
 
 // One object/process/protocol carrying one check of each finding_status the

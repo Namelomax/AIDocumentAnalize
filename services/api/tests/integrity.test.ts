@@ -4,12 +4,13 @@
 // here is shared with every other test file, so this only ever asserts
 // about the one fixture file it created and tampered with itself, never
 // about the sweep's totals).
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { buildServer } from '../src/server.js';
 import { prisma } from '../src/db.js';
 import { ensureBucket, putObject, removeObject, storageKeyFor, sha256 } from '../src/storage.js';
 import { runIntegrityCheck } from '../src/integrity.js';
 import { authHeaders } from './helpers/auth.js';
+import { cleanupScenario } from './helpers/cleanup.js';
 
 let objectId: string;
 let fileId: string;
@@ -37,6 +38,14 @@ beforeAll(async () => {
     },
   });
   fileId = file.id;
+});
+
+afterAll(async () => {
+  // This file's own fixture always carries a real object under storageKey
+  // (put back to originalBody by every test below before it ends) -
+  // cleanupScenario's own removeObject call just clears that real object
+  // along with the row, rather than a no-op.
+  await cleanupScenario(objectId);
 });
 
 describe('integrity check (customer ТЗ p.31)', () => {

@@ -4,6 +4,7 @@ import type { FastifyInstance } from 'fastify';
 import { buildServer } from '../src/server.js';
 import { prisma } from '../src/db.js';
 import { authHeaders } from './helpers/auth.js';
+import { cleanupScenario } from './helpers/cleanup.js';
 
 function hash64() {
   return (randomUUID() + randomUUID()).replace(/-/g, '');
@@ -29,13 +30,6 @@ async function getSummary(app: FastifyInstance) {
   const res = await app.inject({ method: 'GET', url: '/api/v1/dashboard/summary', headers: await authHeaders() });
   expect(res.statusCode).toBe(200);
   return res.json();
-}
-
-async function cleanupScenario(objectId: string) {
-  // Deleting the process cascades its checks and protocols (schema.prisma
-  // onDelete: Cascade).
-  await prisma.process.deleteMany({ where: { objectId } });
-  await prisma.constructionObject.delete({ where: { id: objectId } });
 }
 
 describe('GET /api/v1/dashboard/summary', () => {

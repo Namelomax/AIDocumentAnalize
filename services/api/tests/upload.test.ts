@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto';
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { buildServer } from '../src/server.js';
 import { prisma } from '../src/db.js';
 import { ensureBucket } from '../src/storage.js';
 import { config } from '../src/config.js';
 import { megabytes } from '../src/routes/documents.js';
 import { authHeaders } from './helpers/auth.js';
+import { cleanupScenario } from './helpers/cleanup.js';
 
 // The EICAR test string (https://www.eicar.org/) - not a real virus, every
 // antivirus engine (including ClamAV) is built to flag it on purpose. Sent
@@ -20,6 +21,13 @@ beforeAll(async () => {
   await ensureBucket();
   const object = await prisma.constructionObject.create({ data: { name: 'Upload test' } });
   objectId = object.id;
+});
+
+afterAll(async () => {
+  // Every accepted upload below went through the real ingest path, so each
+  // FileRecord row does have a matching MinIO object - but left in the
+  // shared dev database, they would just keep accumulating across runs.
+  await cleanupScenario(objectId);
 });
 
 function form(files: Array<{ name: string; body: Buffer; type: string }>) {

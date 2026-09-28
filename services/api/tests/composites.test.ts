@@ -4,6 +4,7 @@ import type { ProcessStatus } from '@prisma/client';
 import { buildServer } from '../src/server.js';
 import { prisma } from '../src/db.js';
 import { authHeaders } from './helpers/auth.js';
+import { cleanupScenario } from './helpers/cleanup.js';
 
 // Composite candidates (worker's app.explication.compare module docstring):
 // a run of >= 2 consecutive changed rooms in one explication table is
@@ -78,11 +79,6 @@ async function makeCompositeScenario(
   });
 
   return { object, process, protocol, composite, atoms: [atom1, atom2] };
-}
-
-async function cleanupScenario(objectId: string) {
-  await prisma.process.deleteMany({ where: { objectId } });
-  await prisma.constructionObject.delete({ where: { id: objectId } });
 }
 
 describe('POST /api/v1/findings/:check_id/split', () => {
