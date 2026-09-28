@@ -82,6 +82,18 @@ incremental_update_duration_seconds = Histogram(
     "Time to process one process.update (дозагрузка) task, success or failure",
 )
 
+# Section 9.5's free-search hypotheses (SEM-ROOM-FN), moved off process.start/
+# process.update's own critical path into their own follow-up task
+# (app.pipeline.process_hypotheses) so a slow local model never costs the
+# matrix protocol's own budget. Counted separately from the two histograms
+# above for the same reason incremental_update_duration_seconds is its own
+# histogram: this task's budget (none - it runs after the protocol is already
+# READY) is not comparable to either of theirs.
+hypotheses_duration_seconds = Histogram(
+    "inspector_hypotheses_duration_seconds",
+    "Time to process one process.hypotheses task, success or failure",
+)
+
 # Redis lookups of a PDF's cached parse result, by app.pdf.cache.ParseCache
 # (customer's ТЗ p.16, п.5 "Кеширование"). "miss" is a key that simply is not
 # there yet; "error" covers both an unreachable Redis and a corrupt entry -

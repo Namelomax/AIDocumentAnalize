@@ -8,14 +8,14 @@ by tests/test_incremental.py instead of being repeated here.
 """
 
 import logging
+import uuid
 
 import pytest
 
 from app.config import Config
 from app.pipeline import process_start, process_update
 from tests.test_pipeline import (
-    CONFIG, FakeDb, FakeStorage, _FakeLlmServer, _llm_config, _named_room_sheet_pdf,
-    _openai_response, _requested_name_pairs, _room_sheet_pdf, mk_file, mk_process,
+    CONFIG, FakeDb, FakePublisher, FakeStorage, RaisingPublisher, _room_sheet_pdf, mk_file, mk_process,
 )
 
 
@@ -134,89 +134,75 @@ async def test_a_superseding_revision_removes_the_old_group_and_keeps_a_decision
 
 
 @pytest.mark.asyncio
-async def test_llm_is_not_called_again_for_a_pair_the_дозагрузка_did_not_touch():
-    pd = mk_file(id="f-pd", file_name="pd.pdf", storage_key="key-pd",
-                 mime_type="application/pdf", doc_stage="PD", document_code="AR-01",
-                 approval_status="APPROVED")
-    rd = mk_file(id="f-rd", file_name="rd.pdf", storage_key="key-rd",
-                 mime_type="application/pdf", doc_stage="RD", document_code="AR-01",
-                 approval_status="FOR_CONSTRUCTION")
-    process = mk_process(manifest_uploaded=False)
-    db = FakeDb(process, [pd, rd])
-    storage = FakeStorage({
-        "key-pd": _named_room_sheet_pdf("1.1", "10,00", "Техническое помещение"),
-        "key-rd": _named_room_sheet_pdf("1.1", "10,00", "Склад ГСМ"),
-    })
+async def test_process_update_never_calls_the_model_and_leaves_old_hypotheses_alone():
+    """This module's own docstring: SEM-ROOM-FN is entirely outside
+    process_update's own merge - an existing hypothesis (written earlier by
+    process_hypotheses, simulated here straight into the fake `checks`
+    table) survives a дозагрузка untouched, and no SEM-ROOM-FN row is
+    produced by the merge itself. Coverage for process.hypotheses's own
+    file_ids scoping lives in tests/test_hypotheses.py.
+    """
+    db, storage, pd, rd = _one_pair_scenario()
+    await process_start("p1", db, storage, CONFIG)
 
-    calls = {"count": 0}
+    sem_id = str(uuid.uuid4())
+    db._checks[sem_id] = {
+        "id": sem_id, "parent_check_id": None, "param_code": "SEM-ROOM-FN",
+        "evidence_group_id": "o1:SEM-ROOM-FN:existing", "subject": "function 1.1",
+        "expected_value": "Техническое помещение", "actual_value": "Склад ГСМ", "delta": None,
+        "completeness_status": "COMPLETE", "finding_status": "SUSPICION", "engine_status": "SUSPICION",
+        "review_priority": "MEDIUM", "rationale": "уже посчитано process.hypotheses",
+        "matrix_version": "1.1", "detection_method": "SEMANTIC", "confidence": 0.9,
+        "verified_by": None, "verified_at": None, "verdict_reason_code": None, "verdict_comment": None,
+        "authoritative_file_id": None, "split_by": None, "split_at": None, "fragments": [],
+    }
 
-    def handler(body: bytes):
-        calls["count"] += 1
-        pairs = _requested_name_pairs(body)
-        answer = [
-            {"key": p["key"], "same_function": False, "confidence": 0.9, "reason": "изменилось назначение"}
-            for p in pairs
-        ]
-        return 200, _openai_response(__import__("json").dumps(answer, ensure_ascii=False))
+    extra = mk_file(id="f-extra", file_name="extra.pdf", storage_key="key-extra",
+                     mime_type="application/pdf", doc_stage="ID")
+    db._files.append(extra)
+    storage._objects["key-extra"] = _room_sheet_pdf("9.9", "1,00")
 
-    server = _FakeLlmServer(handler)
-    try:
-        config = _llm_config(server.base_url)
-        await process_start("p1", db, storage, config)
-        assert calls["count"] == 1
-        sem_before = [r for r in db._checks.values() if r["param_code"] == "SEM-ROOM-FN"]
-        assert len(sem_before) == 1
+    await process_update("p1", db, storage, CONFIG, file_ids=["f-extra"])
 
-        # A дозагрузка that touches nothing about the AR-01 pair.
-        extra = mk_file(id="f-extra", file_name="extra.pdf", storage_key="key-extra",
-                         mime_type="application/pdf", doc_stage="ID")
-        db._files.append(extra)
-        storage._objects["key-extra"] = _room_sheet_pdf("9.9", "1,00")
-
-        await process_update("p1", db, storage, config, file_ids=["f-extra"])
-
-        assert calls["count"] == 1  # unchanged - the model was not asked again
-        sem_after = [r for r in db._checks.values() if r["param_code"] == "SEM-ROOM-FN"]
-        assert len(sem_after) == 1
-        assert sem_after[0]["evidence_group_id"] == sem_before[0]["evidence_group_id"]
-    finally:
-        server.close()
+    assert db.saved["status"] in ("READY", "VERIFYING")
+    assert sem_id in db._checks  # untouched by the merge, never deleted
+    assert db._checks[sem_id]["rationale"] == "уже посчитано process.hypotheses"
 
 
 @pytest.mark.asyncio
-async def test_llm_is_called_again_for_a_pair_the_дозагрузка_does_touch():
-    db, storage, pd, rd_v1 = _one_pair_scenario()
-    # Give both sheets a room name too, so SEM-ROOM-FN has something to ask
-    # about once a new revision of RD arrives with a different name.
-    storage._objects["key-pd"] = _named_room_sheet_pdf("1.1", "10,00", "Техническое помещение")
-    storage._objects["key-rd"] = _named_room_sheet_pdf("1.1", "10,00", "Техническое помещение")
+async def test_process_update_publishes_a_hypotheses_follow_up_task_scoped_to_new_files():
+    db, storage, pd, rd = _one_pair_scenario()
+    await process_start("p1", db, storage, CONFIG)
 
-    calls = {"count": 0}
+    extra = mk_file(id="f-extra", file_name="extra.pdf", storage_key="key-extra",
+                     mime_type="application/pdf", doc_stage="ID")
+    db._files.append(extra)
+    storage._objects["key-extra"] = _room_sheet_pdf("9.9", "1,00")
+    publisher = FakePublisher()
 
-    def handler(body: bytes):
-        calls["count"] += 1
-        pairs = _requested_name_pairs(body)
-        answer = [{"key": p["key"], "same_function": True, "confidence": 0.5, "reason": "не изменилось"}
-                  for p in pairs]
-        return 200, _openai_response(__import__("json").dumps(answer, ensure_ascii=False))
+    await process_update("p1", db, storage, CONFIG, publisher=publisher, file_ids=["f-extra"])
 
-    server = _FakeLlmServer(handler)
-    try:
-        config = _llm_config(server.base_url)
-        await process_start("p1", db, storage, config)
-        assert calls["count"] == 0  # same_function after normalize_room_name: no disagreement, no call
+    assert publisher.published == [{
+        "type": "process.hypotheses", "process_id": "p1", "object_id": "o1", "file_ids": ["f-extra"],
+    }]
 
-        rd_v2 = mk_file(id="f-rd2", file_name="rd-v2.pdf", storage_key="key-rd2",
-                         mime_type="application/pdf", doc_stage="RD", document_code="AR-01",
-                         approval_status="FOR_CONSTRUCTION", revision="2", predecessor_id="f-rd")
-        db._files.append(rd_v2)
-        storage._objects["key-rd2"] = _named_room_sheet_pdf("1.1", "10,00", "Склад ГСМ")
 
-        await process_update("p1", db, storage, config, file_ids=["f-rd2"])
+@pytest.mark.asyncio
+async def test_process_update_publish_failure_is_logged_not_fatal(caplog):
+    db, storage, pd, rd = _one_pair_scenario()
+    await process_start("p1", db, storage, CONFIG)
 
-        assert calls["count"] == 1  # the new pair disagrees after normalization - one fresh call
-    finally:
-        server.close()
+    extra = mk_file(id="f-extra", file_name="extra.pdf", storage_key="key-extra",
+                     mime_type="application/pdf", doc_stage="ID")
+    db._files.append(extra)
+    storage._objects["key-extra"] = _room_sheet_pdf("9.9", "1,00")
+
+    with caplog.at_level(logging.ERROR, logger="app.pipeline"):
+        await process_update("p1", db, storage, CONFIG, publisher=RaisingPublisher(), file_ids=["f-extra"])
+
+    assert db.saved["status"] in ("READY", "VERIFYING")
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert any(r.msg == "publishing process.hypotheses task failed" for r in errors)
 
 
 @pytest.mark.asyncio

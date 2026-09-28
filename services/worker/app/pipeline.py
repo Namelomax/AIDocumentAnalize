@@ -9,6 +9,19 @@ or a dangling predecessor reference must not stop the run. Every code path
 ends with the process moved to READY, because nothing else drives it out of
 PARSING on a stand no one is watching.
 
+Section 9.5's free-search hypotheses (SEM-ROOM-FN) are NOT computed here.
+Asking a local model about every PD/RD room-name pair of a real package (the
+reference school package has 23) in one request routinely outran
+LLM_TIMEOUT_S's default 60s, which broke customer's ТЗ's own "Инкрементальное
+обновление протокола (при дозагрузке) — не более 1 минуты" - the matrix
+protocol was only reaching READY once the model call finished. process_start
+and process_update now finish their own matrix work, save it, issue/update the
+protocol and notify the owner without ever calling the model, then publish a
+"process.hypotheses" follow-up task onto the same queue (app.consumer's own
+Publisher) for process_hypotheses below to pick up once the protocol is
+already usable. A failure to publish that follow-up is logged, not fatal -
+the matrix protocol has already reached a resolved status without it.
+
 db and storage are passed in rather than constructed here so the pipeline can
 be driven by fakes in tests without a real PostgreSQL or MinIO.
 """
@@ -32,7 +45,8 @@ from app.incremental import build_merge_plan
 from app.llm.provider import LlmUnavailable, provider_from_config
 from app.metrics import (
     file_attempts_total, files_processed_total, findings_total,
-    incremental_update_duration_seconds, process_duration_seconds, processes_total,
+    hypotheses_duration_seconds, incremental_update_duration_seconds, process_duration_seconds,
+    processes_total,
 )
 from app.params.engine import evaluate_all
 from app.params.specs import ParamSpec, load_specs
@@ -568,13 +582,13 @@ def _room_function_check(object_id: str, matrix_version: str,
     }
 
 
-async def _room_function_checks(process_id: str, object_id: str, matrix_version: str,
-                                 pairs: list[tuple[SheetRooms, SheetRooms]],
-                                 file_by_id: dict, provider) -> list[dict]:
-    """Section 9.5 semantic dissonance: every room that kept its number on
-    both sheets but reads differently after normalize_room_name, across
-    every PD/RD pair of the package, asked about in one model call total
-    (Global Constraint: one call per package, not one per sheet pair).
+def _sem_room_fn_name_pairs(
+    pairs: list[tuple[SheetRooms, SheetRooms]],
+) -> tuple[list[NamePair], dict[str, tuple[SheetRooms, SheetRooms, str, Room, Room]]]:
+    """Every room that kept its number on both sheets of a PD/RD pair but
+    reads differently after normalize_room_name, across every pair handed
+    in - the model-ready input _room_function_checks batches into calls, and
+    the lookup back to the sheets/rooms each pair key came from.
     """
     name_pairs: list[NamePair] = []
     lookup: dict[str, tuple[SheetRooms, SheetRooms, str, Room, Room]] = {}
@@ -588,7 +602,28 @@ async def _room_function_checks(process_id: str, object_id: str, matrix_version:
             pair_key = f"p{len(name_pairs) + 1}"
             name_pairs.append(NamePair(key=pair_key, pd_name=pd_room.name, rd_name=rd_room.name))
             lookup[pair_key] = (pd_sheet, rd_sheet, key, pd_room, rd_room)
+    return name_pairs, lookup
 
+
+async def _room_function_checks(process_id: str, object_id: str, matrix_version: str,
+                                 pairs: list[tuple[SheetRooms, SheetRooms]],
+                                 file_by_id: dict, provider, batch_size: int) -> list[dict]:
+    """Section 9.5 semantic dissonance: every room that kept its number on
+    both sheets but reads differently after normalize_room_name, across
+    every PD/RD pair of the package, asked about in batches of `batch_size`
+    pairs per model call (LLM_BATCH_SIZE) rather than the whole package in
+    one request - see this module's own docstring for why: the reference
+    package's 23 pairs in one call routinely outran LLM_TIMEOUT_S entirely.
+
+    Called only from process_hypotheses, never from process_start/
+    process_update's own critical path - see this module's own docstring.
+    One batch that times out or errors writes a single NOT_COMPARABLE row
+    covering that batch's own pairs (reusing _sem_room_fn_not_comparable, the
+    same helper a package with no provider at all gets) and the remaining
+    batches still go on - a slow or unreachable model must never cost every
+    other pair its hypothesis.
+    """
+    name_pairs, lookup = _sem_room_fn_name_pairs(pairs)
     if not name_pairs:
         # Nothing disagrees after normalization: there is no hypothesis to
         # raise and nothing a model call could have told us, so no
@@ -605,87 +640,79 @@ async def _room_function_checks(process_id: str, object_id: str, matrix_version:
             "Языковая модель не подключена: сравнение назначений помещений не выполнялось",
         )]
 
-    started = time.monotonic()
-    try:
-        verdicts = await compare_room_functions(name_pairs, provider)
-    except LlmUnavailable as exc:
-        logger.info("room functions compared", extra={
-            "process_id": process_id, "pairs": len(name_pairs),
-            "elapsed_s": round(time.monotonic() - started, 3), "configured": True, "error": str(exc),
+    batch_size = max(batch_size, 1)
+    checks: list[dict] = []
+    different = 0
+    total_started = time.monotonic()
+    for batch_no, start in enumerate(range(0, len(name_pairs), batch_size)):
+        batch = name_pairs[start:start + batch_size]
+        started = time.monotonic()
+        try:
+            verdicts = await compare_room_functions(batch, provider)
+        except LlmUnavailable as exc:
+            logger.info("room functions batch compared", extra={
+                "process_id": process_id, "batch": batch_no, "pairs": len(batch),
+                "elapsed_s": round(time.monotonic() - started, 3), "configured": True, "error": str(exc),
+            })
+            checks.append(_sem_room_fn_not_comparable(
+                object_id, matrix_version, f"unavailable:{batch_no}", str(exc),
+            ))
+            continue
+
+        logger.info("room functions batch compared", extra={
+            "process_id": process_id, "batch": batch_no, "pairs": len(batch),
+            "elapsed_s": round(time.monotonic() - started, 3), "configured": True,
+            "different": sum(1 for v in verdicts if not v.same_function),
         })
-        return [_sem_room_fn_not_comparable(object_id, matrix_version, "unavailable", str(exc))]
+        for verdict in verdicts:
+            if verdict.same_function:
+                continue  # Global Constraint: same_function never produces a row.
+            pd_sheet, rd_sheet, key, pd_room, rd_room = lookup[verdict.key]
+            checks.append(_room_function_check(
+                object_id, matrix_version, pd_sheet, rd_sheet, key, pd_room, rd_room, verdict, file_by_id,
+            ))
+            different += 1
 
     logger.info("room functions compared", extra={
         "process_id": process_id, "pairs": len(name_pairs),
-        "elapsed_s": round(time.monotonic() - started, 3), "configured": True,
-        "different": sum(1 for v in verdicts if not v.same_function),
+        "batches": (len(name_pairs) + batch_size - 1) // batch_size,
+        "elapsed_s": round(time.monotonic() - total_started, 3), "configured": True, "different": different,
     })
-
-    checks = []
-    for verdict in verdicts:
-        if verdict.same_function:
-            continue  # Global Constraint: same_function never produces a row.
-        pd_sheet, rd_sheet, key, pd_room, rd_room = lookup[verdict.key]
-        checks.append(_room_function_check(
-            object_id, matrix_version, pd_sheet, rd_sheet, key, pd_room, rd_room, verdict, file_by_id,
-        ))
     return checks
 
 
-def _sem_room_fn_pair_id(evidence_group_id: str, prefix: str) -> str | None:
-    """The sheet-pair id a SEM-ROOM-FN group belongs to, or None for a
-    package-wide informational row (no-provider/unavailable/error - see
-    _sem_room_fn_not_comparable) that no single pair produced. A pair id
-    always carries "~" (app.pipeline's own pair_id scheme, "file#page~
-    file#page"); an informational label never does.
+async def _pd_rd_sheet_pairs(process_id: str, files, db) -> tuple[list[tuple[SheetRooms, SheetRooms]], dict]:
+    """The same current-PD/current-RD sheet pairs M-003's own comparison
+    uses (_explication_checks), recomputed independently for
+    process_hypotheses - cheap, since it only rereads stored text
+    (app.db.Database.get_page_lines), never the PDF bytes or the pages/
+    text_blocks tables' own write path. Returns ([], {}) when no PD/RD
+    source could be selected or no sheet could be paired - process_hypotheses
+    then has nothing to ask the model about, exactly as M-003 itself has
+    nothing to compare in that case.
     """
-    if not evidence_group_id.startswith(prefix):
-        return None
-    rest = evidence_group_id[len(prefix):]
-    return rest.split(":", 1)[0] if "~" in rest else None
+    pdf_files = [f for f in files if f.mime_type == "application/pdf"]
+    winners_by_stage: dict[str, list] = {}
+    for stage in _COMPARABLE_STAGES:
+        winners, _problems = _select_stage_files(pdf_files, stage, process_id)
+        winners_by_stage[stage] = winners
+    if not winners_by_stage["PD"] or not winners_by_stage["RD"]:
+        return [], {}
 
+    file_by_id = {f.id: f for f in pdf_files}
+    pd_sheets: list[SheetRooms] = []
+    for f in winners_by_stage["PD"]:
+        pd_sheets.extend(await _sheet_rooms_for_file(db, f))
+    rd_sheets: list[SheetRooms] = []
+    for f in winners_by_stage["RD"]:
+        rd_sheets.extend(await _sheet_rooms_for_file(db, f))
 
-async def _room_function_checks_incremental(
-    process_id: str, object_id: str, matrix_version: str,
-    pairs: list[tuple[SheetRooms, SheetRooms]], file_by_id: dict, provider,
-    new_file_ids: set[str], old_sem_checks_by_group: dict[str, dict],
-) -> list[dict]:
-    """_room_function_checks, but the model is only ever asked about sheet
-    pairs a new file is part of - customer's ТЗ's 1-minute budget for an
-    incremental update. Every pair that involves only files already in the
-    process before this дозагрузка keeps whatever SEM-ROOM-FN already said
-    about it: its input has not changed, so calling the model again could
-    only spend the budget without changing the answer.
-    """
-    touched, untouched = [], []
-    for pd_sheet, rd_sheet in pairs:
-        (touched if pd_sheet.file_id in new_file_ids or rd_sheet.file_id in new_file_ids
-         else untouched).append((pd_sheet, rd_sheet))
-
-    checks = await _room_function_checks(process_id, object_id, matrix_version, touched, file_by_id, provider)
-
-    untouched_pair_ids = {
-        f"{pd_sheet.file_id}#{pd_sheet.page_no}~{rd_sheet.file_id}#{rd_sheet.page_no}"
-        for pd_sheet, rd_sheet in untouched
-    }
-    prefix = f"{object_id}:{_SEM_ROOM_FN_CODE}:"
-    for group_id, old_check in old_sem_checks_by_group.items():
-        pair_id = _sem_room_fn_pair_id(group_id, prefix)
-        if pair_id is not None:
-            if pair_id in untouched_pair_ids:
-                checks.append(old_check)
-        elif not touched:
-            # A package-wide informational row: nothing SEM-ROOM-FN-relevant
-            # was touched at all, so nothing about it could have changed.
-            checks.append(old_check)
-    return checks
+    return pair_sheets(pd_sheets, rd_sheets), file_by_id
 
 
 async def _explication_checks(process_id: str, object_id: str, files, db,
-                               m003: ParamSpec, matrix_version: str, provider,
-                               area_relative_threshold: float, *,
-                               new_file_ids: set[str] | None = None,
-                               old_sem_checks_by_group: dict[str, dict] | None = None) -> list[dict]:
+                               m003: ParamSpec, matrix_version: str,
+                               area_relative_threshold: float) -> list[dict]:
     """M-003: compare room explications between the current PD and RD sources.
 
     Every group that could not contribute a comparable file records its own
@@ -693,9 +720,9 @@ async def _explication_checks(process_id: str, object_id: str, files, db,
     that could not be compared still says why, instead of just having fewer
     checks than expected.
 
-    new_file_ids/old_sem_checks_by_group (both None for a fresh run) scope
-    SEM-ROOM-FN's own model call to sheet pairs a new file is part of - see
-    _room_function_checks_incremental.
+    Section 9.5's SEM-ROOM-FN hypotheses are not computed here any more -
+    see this module's own docstring; process_hypotheses recomputes its own
+    PD/RD pairing independently (_pd_rd_sheet_pairs), on its own schedule.
     """
     pdf_files = [f for f in files if f.mime_type == "application/pdf"]
 
@@ -738,16 +765,6 @@ async def _explication_checks(process_id: str, object_id: str, files, db,
                 object_id, m003, matrix_version, pd_sheet, rd_sheet, finding, file_by_id,
             ))
 
-    if new_file_ids is not None:
-        checks.extend(await _room_function_checks_incremental(
-            process_id, object_id, matrix_version, pairs, file_by_id, provider,
-            new_file_ids, old_sem_checks_by_group or {},
-        ))
-    else:
-        checks.extend(await _room_function_checks(
-            process_id, object_id, matrix_version, pairs, file_by_id, provider,
-        ))
-
     return checks
 
 
@@ -783,23 +800,18 @@ def input_manifest_hash(process, files) -> str:
     return hashlib.sha256(joined.encode("utf-8")).hexdigest()
 
 
-async def _compute_checks(
-    process_id: str, object_id: str, final_files, db, config, *,
-    new_file_ids: set[str] | None = None,
-    old_sem_checks_by_group: dict[str, dict] | None = None,
-):
+async def _compute_checks(process_id: str, object_id: str, final_files, db, config):
     """The full candidate set for a package: M-003's explication comparison
-    (composites and SEM-ROOM-FN hypotheses included) plus a completeness
-    statement for every other matrix parameter.
+    (composites included) plus a completeness statement for every other
+    matrix parameter.
 
     Shared between a fresh run (_process_start_once) and a дозагрузка's
-    incremental update (_process_update_once) - the latter passes
-    new_file_ids/old_sem_checks_by_group so SEM-ROOM-FN's own LLM call only
-    ever covers sheet pairs a new file is part of (customer's ТЗ's 1-minute
-    budget for an incremental update, "Инкрементальное обновление протокола
-    (при дозагрузке) — не более 1 минуты"); every other comparison here reads
-    stored text and is cheap enough to simply recompute in full either way,
-    exactly as "recompute the full candidate set in memory" asks.
+    incremental update (_process_update_once) - both simply recompute this
+    in full, reading only stored text, which is cheap enough either way
+    ("recompute the full candidate set in memory"). Section 9.5's SEM-ROOM-FN
+    hypotheses are not part of this set any more - see this module's own
+    docstring; process_hypotheses computes and writes them on its own
+    schedule, entirely off process_start/process_update's own critical path.
 
     Returns (checks, specs) - specs.version is also what the caller's own
     protocol records as matrix_version.
@@ -820,16 +832,9 @@ async def _compute_checks(
         else DEFAULT_AREA_RELATIVE_THRESHOLD
     )
 
-    # None when LLM_BASE_URL is unset (see app.config's own docstring): every
-    # call downstream already treats that the same as LlmUnavailable, so no
-    # branch is needed here beyond building it once for the whole package.
-    provider = provider_from_config(config)
-
     try:
         checks = await _explication_checks(
-            process_id, object_id, final_files, db, m003, specs.version, provider,
-            area_relative_threshold, new_file_ids=new_file_ids,
-            old_sem_checks_by_group=old_sem_checks_by_group,
+            process_id, object_id, final_files, db, m003, specs.version, area_relative_threshold,
         )
     except Exception as exc:  # noqa: BLE001 - a failed comparison is one finding, not a lost package
         logger.error("explication comparison failed", extra={
@@ -951,7 +956,7 @@ async def _apply_manifest(process_id: str, process, files, db, storage):
     return document_files, list(updated.values()), entries
 
 
-async def _process_start_once(process_id: str, db, storage, config, *, cache=None) -> None:
+async def _process_start_once(process_id: str, db, storage, config, *, cache=None, publisher=None) -> None:
     process = await db.get_process(process_id)
     if process is None:
         # A race with the API (task published before the row is visible, or
@@ -1066,51 +1071,44 @@ async def _process_start_once(process_id: str, db, storage, config, *, cache=Non
             "process_id": process_id, "error": str(exc),
         })
 
+    # Section 9.5's hypotheses are computed off this critical path entirely -
+    # see this module's own docstring. file_ids=None means "every PD/RD
+    # pair"; process_hypotheses recomputes the pairing itself.
+    await _publish_hypotheses_task(publisher, process_id, process.object_id, file_ids=None)
 
-def _old_row_to_check_dict(row: dict) -> dict:
-    """An OLD checks row (app.db.Database.get_checks_for_merge's own
-    snake_case shape) reduced to the "new check dict" shape
-    app.pipeline._compute_checks builds and app.db.Database.save_checks/
-    apply_merge_plan insert - so a reused SEM-ROOM-FN row (an untouched
-    pair's hypothesis, _room_function_checks_incremental) can sit in the
-    "new" candidate set exactly as if it had just been recomputed.
 
-    finding_status is the row's own engine_status when a verdict has since
-    overwritten finding_status, falling back to finding_status otherwise -
-    the engine's own original output, matching what a real recomputation
-    would have produced and what app.incremental._content_key expects on
-    the "new" side of a comparison.
+def _matrix_rows_for_merge(old_rows: list[dict]) -> list[dict]:
+    """old_rows (app.db.Database.get_checks_for_merge) with every SEM-ROOM-FN
+    row dropped, before app.incremental.build_merge_plan ever sees them.
+
+    build_merge_plan deletes an old row whose group has no counterpart in the
+    freshly computed "new" set (unless an inspector decided it - see its own
+    docstring); _compute_checks no longer produces any SEM-ROOM-FN checks at
+    all (this module's own docstring), so passing SEM-ROOM-FN's own old rows
+    through unfiltered would make every hypothesis process_hypotheses had
+    already written look abandoned and delete it on the very next дозагрузка.
+    They are left in the `checks` table untouched instead - apply_merge_plan
+    (app.db.Database) only ever touches rows the plan actually names.
     """
-    return {
-        "param_code": row["param_code"], "evidence_group_id": row["evidence_group_id"],
-        "subject": row["subject"], "expected_value": row["expected_value"],
-        "actual_value": row["actual_value"], "delta": row["delta"],
-        "completeness_status": row["completeness_status"],
-        "finding_status": row["engine_status"] or row["finding_status"],
-        "detection_method": row["detection_method"], "confidence": row["confidence"],
-        "review_priority": row["review_priority"], "rationale": row["rationale"],
-        "matrix_version": row["matrix_version"],
-        "fragments": [
-            {
-                "file_id": f["file_id"], "file_sha256": f["file_sha256"], "stage": f["stage"],
-                "document_code": f["document_code"], "revision": f["revision"],
-                "approval_status": f["approval_status"], "sheet_page": f["sheet_page"],
-                "x0": f["x0"], "y0": f["y0"], "x1": f["x1"], "y1": f["y1"],
-                "extracted_value": f["extracted_value"], "role": f["role"],
-            }
-            for f in row.get("fragments") or []
-        ],
-    }
+    return [row for row in old_rows if row["param_code"] != _SEM_ROOM_FN_CODE]
 
 
-async def _process_update_once(process_id: str, new_file_ids: set[str], db, storage, config, *, cache=None) -> None:
+async def _process_update_once(process_id: str, new_file_ids: set[str], db, storage, config, *,
+                                cache=None, publisher=None) -> None:
     """A дозагрузка's incremental update (customer's ТЗ "Инкрементальное
     обновление при дозагрузке"): recompute the full candidate set exactly as
     _process_start_once would, but merge it into the process's existing
     checks by evidence_group_id (app.incremental.build_merge_plan) instead of
-    replacing them outright - "без сброса верификации". SEM-ROOM-FN's own
-    model call is scoped to sheet pairs new_file_ids actually touches
-    (_room_function_checks_incremental) for the ТЗ's 1-minute budget.
+    replacing them outright - "без сброса верификации".
+
+    Section 9.5's SEM-ROOM-FN hypotheses (see this module's own docstring)
+    are entirely outside this merge: _compute_checks no longer produces them
+    at all, and old_rows's own SEM-ROOM-FN rows are filtered out before
+    build_merge_plan ever sees them - see _matrix_rows_for_merge's own
+    docstring for why leaving them in would silently delete every hypothesis
+    process_hypotheses has written so far. A follow-up "process.hypotheses"
+    task (published at the end of this function, file_ids=new_file_ids) is
+    what keeps them current instead.
 
     Mirrors _process_start_once's own error handling throughout: every step
     that can fail on its own is caught and logged rather than raised, so one
@@ -1123,7 +1121,8 @@ async def _process_update_once(process_id: str, new_file_ids: set[str], db, stor
         return
 
     files = await db.get_files(process_id)
-    old_rows = await db.get_checks_for_merge(process_id)
+    all_old_rows = await db.get_checks_for_merge(process_id)
+    old_rows = _matrix_rows_for_merge(all_old_rows)
 
     document_files, final_files, entries = await _apply_manifest(process_id, process, files, db, storage)
 
@@ -1152,14 +1151,7 @@ async def _process_update_once(process_id: str, new_file_ids: set[str], db, stor
     except ValueError:
         scenario = None
 
-    old_sem_checks_by_group = {
-        row["evidence_group_id"]: _old_row_to_check_dict(row)
-        for row in old_rows if row["param_code"] == _SEM_ROOM_FN_CODE
-    }
-    checks, specs = await _compute_checks(
-        process_id, process.object_id, final_files, db, config,
-        new_file_ids=new_file_ids, old_sem_checks_by_group=old_sem_checks_by_group,
-    )
+    checks, specs = await _compute_checks(process_id, process.object_id, final_files, db, config)
     _record_findings_metrics(checks)
 
     user_ids = [row["verified_by"] for row in old_rows if row.get("verified_by")]
@@ -1233,8 +1225,12 @@ async def _process_update_once(process_id: str, new_file_ids: set[str], db, stor
             "process_id": process_id, "error": str(exc),
         })
 
+    # Only the дозагрузка's own new files can have changed anything
+    # SEM-ROOM-FN-relevant - see this module's own docstring.
+    await _publish_hypotheses_task(publisher, process_id, process.object_id, file_ids=sorted(new_file_ids))
 
-async def process_update(process_id: str, db, storage, config, *, cache=None, file_ids=None) -> None:
+
+async def process_update(process_id: str, db, storage, config, *, cache=None, publisher=None, file_ids=None) -> None:
     """Entry point routed from the queue (app.consumer.HANDLERS) for
     "process.update" - a дозагрузка's incremental update. Retries the whole
     task in-process the same number of times, and on the same terms, as
@@ -1249,7 +1245,7 @@ async def process_update(process_id: str, db, storage, config, *, cache=None, fi
     started = time.monotonic()
     for attempt in range(1, attempts_allowed + 1):
         try:
-            await _process_update_once(process_id, new_file_ids, db, storage, config, cache=cache)
+            await _process_update_once(process_id, new_file_ids, db, storage, config, cache=cache, publisher=publisher)
             elapsed = time.monotonic() - started
             incremental_update_duration_seconds.observe(elapsed)
             # Customer's ТЗ: "Инкрементальное обновление протокола (при
@@ -1293,7 +1289,7 @@ async def process_update(process_id: str, db, storage, config, *, cache=None, fi
         })
 
 
-async def process_start(process_id: str, db, storage, config, *, cache=None) -> None:
+async def process_start(process_id: str, db, storage, config, *, cache=None, publisher=None) -> None:
     """Entry point routed from the queue (app.consumer.HANDLERS).
 
     Retries the whole task in-process up to config.processing_retries
@@ -1310,14 +1306,16 @@ async def process_start(process_id: str, db, storage, config, *, cache=None) -> 
     `cache` (app.pdf.cache.ParseCache) is keyword-only with a default of None
     so every call site that predates the parse cache - every test fixture
     among them - keeps working unchanged; None behaves exactly like a cache
-    that is configured off.
+    that is configured off. `publisher` (app.consumer.Publisher) is None the
+    same way for every test fixture that predates process.hypotheses - the
+    follow-up task publish is then simply skipped (_publish_hypotheses_task).
     """
     attempts_allowed = 1 + max(config.processing_retries, 0)
     last_exc: BaseException | None = None
     started = time.monotonic()
     for attempt in range(1, attempts_allowed + 1):
         try:
-            await _process_start_once(process_id, db, storage, config, cache=cache)
+            await _process_start_once(process_id, db, storage, config, cache=cache, publisher=publisher)
             process_duration_seconds.observe(time.monotonic() - started)
             processes_total.labels(result="ready").inc()
             return
@@ -1352,3 +1350,134 @@ async def process_start(process_id: str, db, storage, config, *, cache=None) -> 
         logger.error("admin notification failed", extra={
             "process_id": process_id, "error": str(exc),
         })
+
+
+async def _publish_hypotheses_task(publisher, process_id: str, object_id: str, *,
+                                    file_ids: list[str] | None) -> None:
+    """Publish the "process.hypotheses" follow-up task process_start/
+    process_update end on (this module's own docstring) - file_ids=None asks
+    process_hypotheses to consider every PD/RD pair (a fresh run), a list
+    asks it to consider only pairs a дозагрузка's own new files touch.
+
+    publisher is None for every test fixture that predates process.hypotheses
+    (app.consumer.consume always builds a real one) - skipped rather than
+    raising, the same way cache=None already behaves for the parse cache. A
+    publish failure once a real one is configured is logged, not fatal: the
+    matrix protocol already reached its own resolved status without it, and
+    an operator watching the logs is the only recovery this needs - nothing
+    downstream is blocked on it either way, only degraded.
+    """
+    if publisher is None:
+        return
+    try:
+        await publisher.publish({
+            "type": "process.hypotheses",
+            "process_id": process_id,
+            "object_id": object_id,
+            "file_ids": file_ids,
+        })
+    except Exception as exc:  # noqa: BLE001 - see docstring
+        logger.error("publishing process.hypotheses task failed", extra={
+            "process_id": process_id, "error": str(exc),
+        })
+
+
+async def _process_hypotheses_once(process_id: str, file_ids: list[str] | None, db, config) -> None:
+    """One run of process_hypotheses: recompute the PD/RD sheet pairing
+    (cheap - stored text only, no PDF bytes), ask the model about the pairs
+    in scope, and upsert whatever it produced into the process's current
+    protocol.
+
+    file_ids=None (a fresh run's own follow-up) considers every pair;
+    file_ids=[...] (a дозагрузка's own follow-up) narrows to pairs where the
+    PD or the RD sheet came from one of those files - a дозагрузка that
+    touched nothing SEM-ROOM-FN-relevant then has nothing to ask about at
+    all, and nothing is written.
+    """
+    process = await db.get_process(process_id)
+    if process is None:
+        logger.error("process not found", extra={"process_id": process_id})
+        return
+
+    files = await db.get_files(process_id)
+    pairs, file_by_id = await _pd_rd_sheet_pairs(process_id, files, db)
+    if not pairs:
+        return
+
+    if file_ids is not None:
+        touched_ids = set(file_ids)
+        pairs = [
+            (pd_sheet, rd_sheet) for pd_sheet, rd_sheet in pairs
+            if pd_sheet.file_id in touched_ids or rd_sheet.file_id in touched_ids
+        ]
+        if not pairs:
+            return
+
+    specs = load_specs()
+    # None when LLM_BASE_URL is unset (see app.config's own docstring): every
+    # call downstream already treats that the same as LlmUnavailable, so no
+    # branch is needed here beyond building it once for the pairs in scope.
+    provider = provider_from_config(config)
+    checks = await _room_function_checks(
+        process_id, process.object_id, specs.version, pairs, file_by_id, provider, config.llm_batch_size,
+    )
+    if not checks:
+        return
+
+    added = await db.upsert_hypothesis_checks(process_id, process.object_id, checks)
+    if added is None:
+        logger.info("hypotheses not written: protocol finalized or superseded", extra={
+            "process_id": process_id,
+        })
+        return
+
+    logger.info("hypotheses written", extra={"process_id": process_id, "added": added})
+
+    if added > 0:
+        try:
+            # Section 9.5: the inspector who owns this process is told a
+            # hypothesis is waiting on their screen - never sent for a batch
+            # that only ever produced NOT_COMPARABLE rows (added == 0, no
+            # model configured or every batch failed), which has nothing new
+            # for them to look at.
+            await db.notify_process_owner(
+                process, "HYPOTHESES_READY", "Гипотезы свободного поиска готовы",
+                f"Гипотезы свободного поиска готовы: {added}.",
+            )
+        except Exception as exc:  # noqa: BLE001 - the hypotheses are already written without it
+            logger.error("notifying process owner failed", extra={
+                "process_id": process_id, "error": str(exc),
+            })
+
+
+async def process_hypotheses(process_id: str, db, storage, config, *,
+                              cache=None, publisher=None, file_ids=None) -> None:
+    """Entry point routed from the queue (app.consumer.HANDLERS) for
+    "process.hypotheses" - the follow-up task process_start/process_update
+    publish once their own matrix work already reached a resolved status
+    (this module's own docstring). Runs off the ТЗ's 1-minute budget
+    entirely: the matrix protocol was already usable before this task was
+    even published.
+
+    Unlike process_start/process_update, a failure here is logged once and
+    never retried whole, and never turns the process itself FAILED - the
+    process already reached READY/VERIFYING without this task, and a slow or
+    unreachable model already fails at the batch granularity inside
+    _room_function_checks (one NOT_COMPARABLE row for that batch, the rest
+    continue) rather than failing this task outright. `storage`, `cache` and
+    `publisher` are accepted only so app.consumer can call every handler the
+    same way - none of them do anything here: sheet pairing only ever reads
+    stored text (app.db.Database.get_page_lines), and this task publishes no
+    follow-up of its own.
+    """
+    started = time.monotonic()
+    try:
+        await _process_hypotheses_once(process_id, file_ids, db, config)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - never raised back into the consumer
+        logger.error("process.hypotheses failed", extra={
+            "process_id": process_id, "error": str(exc) or exc.__class__.__name__,
+        })
+    finally:
+        hypotheses_duration_seconds.observe(time.monotonic() - started)

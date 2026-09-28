@@ -4,8 +4,8 @@ import logging
 
 import pytest
 from app import consumer as consumer_module
-from app.consumer import _consume_messages, handle_task, UnknownTaskType
-from app.pipeline import process_start, process_update
+from app.consumer import Publisher, _consume_messages, handle_task, UnknownTaskType
+from app.pipeline import process_hypotheses, process_start, process_update
 
 
 class FakeDb:
@@ -44,14 +44,22 @@ def test_routes_process_update_to_the_pipeline_handler():
     assert handle_task(payload) is process_update
 
 
+def test_routes_process_hypotheses_to_the_pipeline_handler():
+    # This module's own docstring: the follow-up task process_start/
+    # process_update publish once their own matrix work is READY.
+    payload = {"type": "process.hypotheses", "process_id": "p1", "object_id": "o1", "file_ids": None}
+    assert handle_task(payload) is process_hypotheses
+
+
 @pytest.mark.asyncio
 async def test_process_update_message_threads_file_ids_through(monkeypatch):
-    """process_update is the only handler that takes file_ids - proves
-    _process_message actually forwards the payload's own list to it, and
-    that process_start (which accepts no such keyword) never receives it."""
+    """process.update and process.hypotheses are the only task types that
+    carry file_ids - proves _process_message actually forwards the payload's
+    own list to the handler, and that process_start (which accepts no such
+    keyword) never receives it."""
     received = {}
 
-    async def fake_process_update(process_id, db, storage, config, *, cache=None, file_ids=None):
+    async def fake_process_update(process_id, db, storage, config, *, cache=None, publisher=None, file_ids=None):
         received["process_id"] = process_id
         received["file_ids"] = file_ids
 
@@ -63,6 +71,47 @@ async def test_process_update_message_threads_file_ids_through(monkeypatch):
 
     assert received == {"process_id": "p1", "file_ids": ["f1", "f2"]}
     assert message.acked is True
+
+
+@pytest.mark.asyncio
+async def test_process_hypotheses_message_threads_a_null_file_ids_through(monkeypatch):
+    """A fresh run's own follow-up carries file_ids: null (every pair) -
+    proves payload.get("file_ids") (not the process.update branch's old
+    default of []) is what reaches the handler for this task type too."""
+    received = {}
+
+    async def fake_process_hypotheses(process_id, db, storage, config, *, cache=None, publisher=None, file_ids=None):
+        received["process_id"] = process_id
+        received["file_ids"] = file_ids
+
+    monkeypatch.setitem(consumer_module.HANDLERS, "process.hypotheses", fake_process_hypotheses)
+    payload = {"type": "process.hypotheses", "process_id": "p1", "object_id": "o1", "file_ids": None}
+    message = FakeMessage(json.dumps(payload).encode())
+
+    await _consume_messages(_fake_messages(message), FakeDb(), FakeStorage(), FakeConfig())
+
+    assert received == {"process_id": "p1", "file_ids": None}
+    assert message.acked is True
+
+
+@pytest.mark.asyncio
+async def test_handlers_receive_the_publisher(monkeypatch):
+    """process_start/process_update need the same Publisher consume() built
+    for the channel it is already consuming from - proves it is actually
+    threaded from _consume_messages down to the handler call."""
+    received = {}
+
+    async def fake_process_start(process_id, db, storage, config, *, cache=None, publisher=None):
+        received["publisher"] = publisher
+
+    monkeypatch.setitem(consumer_module.HANDLERS, "process.start", fake_process_start)
+    payload = {"type": "process.start", "process_id": "p1", "object_id": "o1"}
+    message = FakeMessage(json.dumps(payload).encode())
+    sentinel = object()
+
+    await _consume_messages(_fake_messages(message), FakeDb(), FakeStorage(), FakeConfig(), publisher=sentinel)
+
+    assert received["publisher"] is sentinel
 
 
 def test_unknown_task_type_raises():
@@ -144,3 +193,34 @@ async def test_cancelled_error_is_not_swallowed():
 
     with pytest.raises(asyncio.CancelledError):
         await _consume_messages(_fake_messages(CancellingMessage(b"{}")), FakeDb(), FakeStorage(), FakeConfig())
+
+
+class FakeExchange:
+    def __init__(self):
+        self.published: list[tuple] = []
+
+    async def publish(self, message, *, routing_key):
+        self.published.append((message, routing_key))
+
+
+class FakeChannel:
+    def __init__(self):
+        self.default_exchange = FakeExchange()
+
+
+@pytest.mark.asyncio
+async def test_publisher_sends_the_task_as_persistent_json_to_the_task_queue():
+    """app.consumer.Publisher - the follow-up publish app.pipeline's own
+    process_start/process_update call, over the same channel this module is
+    already consuming from (see Publisher's own docstring)."""
+    channel = FakeChannel()
+    publisher = Publisher(channel, "inspector.tasks")
+
+    await publisher.publish({"type": "process.hypotheses", "process_id": "p1", "file_ids": None})
+
+    assert len(channel.default_exchange.published) == 1
+    message, routing_key = channel.default_exchange.published[0]
+    assert routing_key == "inspector.tasks"
+    assert json.loads(message.body.decode()) == {
+        "type": "process.hypotheses", "process_id": "p1", "file_ids": None,
+    }

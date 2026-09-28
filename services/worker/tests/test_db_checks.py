@@ -320,3 +320,105 @@ async def test_create_protocol_versions_are_per_object(db, scenario):
         # rows to still exist at that point) - delete explicitly here.
         async with db._pool.acquire() as connection:
             await connection.execute("DELETE FROM protocols WHERE object_id = $1", object_id)
+
+
+def _sem_room_fn_check(object_id: str, group_label: str, *, confidence: float = 0.9,
+                        rationale: str = "Назначение помещения изменено.") -> dict:
+    return {
+        "param_code": "SEM-ROOM-FN",
+        "evidence_group_id": f"{object_id}:SEM-ROOM-FN:{group_label}",
+        "subject": f"function {group_label}",
+        "expected_value": "Техническое помещение",
+        "actual_value": "Склад ГСМ",
+        "delta": None,
+        "completeness_status": "COMPLETE",
+        "finding_status": "SUSPICION",
+        "detection_method": "SEMANTIC",
+        "confidence": confidence,
+        "review_priority": "MEDIUM",
+        "rationale": rationale,
+        "matrix_version": "1.1",
+        "fragments": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_upsert_hypothesis_checks_inserts_a_suspicion(db, scenario):
+    """process.hypotheses's own write path (app.pipeline.process_hypotheses):
+    a fresh SUSPICION row is inserted, and its own count is reported back."""
+    object_id, process_id, file_id = scenario
+    await db.create_protocol(process_id, object_id, "1.1", "rules-2026.09", "none", "a" * 64)
+
+    try:
+        added = await db.upsert_hypothesis_checks(process_id, object_id, [
+            _sem_room_fn_check(object_id, "1.109"),
+        ])
+        assert added == 1
+
+        async with db._pool.acquire() as connection:
+            row = await connection.fetchrow("SELECT * FROM checks WHERE process_id = $1", process_id)
+        assert row["param_code"] == "SEM-ROOM-FN"
+        assert row["finding_status"] == "SUSPICION"
+        assert row["param_id"] is None
+    finally:
+        async with db._pool.acquire() as connection:
+            await connection.execute("DELETE FROM protocols WHERE object_id = $1", object_id)
+
+
+@pytest.mark.asyncio
+async def test_upsert_hypothesis_checks_never_overwrites_a_decided_row(db, scenario):
+    """A row an inspector already verified (verified_by set) is left exactly
+    as it is - a later run with a different confidence/rationale for the
+    same evidence_group_id must not replace it."""
+    object_id, process_id, file_id = scenario
+    await db.create_protocol(process_id, object_id, "1.1", "rules-2026.09", "none", "a" * 64)
+
+    try:
+        await db.upsert_hypothesis_checks(process_id, object_id, [
+            _sem_room_fn_check(object_id, "1.109", confidence=0.5, rationale="первая версия"),
+        ])
+        async with db._pool.acquire() as connection:
+            check_id = await connection.fetchval("SELECT id FROM checks WHERE process_id = $1", process_id)
+            await connection.execute(
+                "UPDATE checks SET verified_by = $2 WHERE id = $1", check_id, "user-1",
+            )
+
+        added = await db.upsert_hypothesis_checks(process_id, object_id, [
+            _sem_room_fn_check(object_id, "1.109", confidence=0.99, rationale="вторая версия"),
+        ])
+        assert added == 0
+
+        async with db._pool.acquire() as connection:
+            rows = await connection.fetch("SELECT * FROM checks WHERE process_id = $1", process_id)
+        assert len(rows) == 1
+        assert rows[0]["id"] == check_id
+        assert rows[0]["confidence"] == 0.5
+        assert rows[0]["rationale"] == "первая версия"
+        assert rows[0]["verified_by"] == "user-1"
+    finally:
+        async with db._pool.acquire() as connection:
+            await connection.execute("DELETE FROM protocols WHERE object_id = $1", object_id)
+
+
+@pytest.mark.asyncio
+async def test_upsert_hypothesis_checks_skips_a_finalized_protocol(db, scenario):
+    object_id, process_id, file_id = scenario
+    await db.create_protocol(process_id, object_id, "1.1", "rules-2026.09", "none", "a" * 64)
+
+    try:
+        async with db._pool.acquire() as connection:
+            await connection.execute(
+                "UPDATE protocols SET status = 'PROTOCOL_FINALIZED' WHERE process_id = $1", process_id,
+            )
+
+        added = await db.upsert_hypothesis_checks(process_id, object_id, [
+            _sem_room_fn_check(object_id, "1.109"),
+        ])
+        assert added is None
+
+        async with db._pool.acquire() as connection:
+            rows = await connection.fetch("SELECT id FROM checks WHERE process_id = $1", process_id)
+        assert rows == []
+    finally:
+        async with db._pool.acquire() as connection:
+            await connection.execute("DELETE FROM protocols WHERE object_id = $1", object_id)

@@ -25,6 +25,12 @@ class Config:
     llm_base_url: str
     llm_model: str
     llm_timeout_s: float
+    # Section 9.5's hypotheses (SEM-ROOM-FN) are asked about in batches of
+    # this many room-name pairs per model call rather than the whole package
+    # in one request: the reference school package's 23 pairs in one call
+    # outran LLM_TIMEOUT_S's default 60s entirely (app.pipeline's own module
+    # docstring). Defaulted here too, same reason as the two fields above.
+    llm_batch_size: int = 5
     # Customer's ТЗ, "Обработка ошибок при загрузке" (p.17): a file whose
     # extraction times out or errors is retried up to this many further times
     # before the failure is recorded and an admin is notified; a whole
@@ -69,6 +75,7 @@ def load_config() -> Config:
         llm_base_url=os.environ.get("LLM_BASE_URL", ""),
         llm_model=os.environ.get("LLM_MODEL", ""),
         llm_timeout_s=float(os.environ.get("LLM_TIMEOUT_S", "60")),
+        llm_batch_size=int(os.environ.get("LLM_BATCH_SIZE", "5")),
         file_processing_timeout_s=float(os.environ.get("FILE_PROCESSING_TIMEOUT_S", "300")),
         processing_retries=int(os.environ.get("PROCESSING_RETRIES", "2")),
         metrics_port=int(os.environ.get("METRICS_PORT", "9100")),

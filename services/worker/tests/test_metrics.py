@@ -17,7 +17,7 @@ from prometheus_client import REGISTRY
 
 from app import metrics
 from app.pdf.cache import ParseCache
-from app.pipeline import process_start
+from app.pipeline import process_hypotheses, process_start
 from tests.test_pipeline import (
     CONFIG, FakeDb, FakeRedis, FakeStorage, RaisingRedis, _FakeLlmServer, _llm_config,
     _one_page_pdf, _openai_response, _requested_name_pairs, _room_function_package,
@@ -124,7 +124,11 @@ async def test_room_area_candidate_increments_findings_counter():
 
 @pytest.mark.asyncio
 async def test_llm_call_that_answers_increments_ok_counter():
+    """The model is only ever called from process.hypotheses now (this
+    module's own docstring) - process_start first, with no model configured,
+    to get the package to a protocol process_hypotheses can write into."""
     db, storage = _room_function_package()
+    await process_start("p1", db, storage, CONFIG)
 
     def handler(body: bytes):
         pairs = _requested_name_pairs(body)
@@ -138,11 +142,10 @@ async def test_llm_call_that_answers_increments_ok_counter():
     before_ok = _sample("inspector_llm_requests_total", {"result": "ok"})
     before_duration_count = _sample("inspector_llm_request_duration_seconds_count")
     try:
-        await process_start("p1", db, storage, _llm_config(server.base_url))
+        await process_hypotheses("p1", db, storage, _llm_config(server.base_url))
     finally:
         server.close()
 
-    assert db.saved["status"] == "READY"
     assert _sample("inspector_llm_requests_total", {"result": "ok"}) == before_ok + 1
     assert _sample("inspector_llm_request_duration_seconds_count") == before_duration_count + 1
 
@@ -150,6 +153,7 @@ async def test_llm_call_that_answers_increments_ok_counter():
 @pytest.mark.asyncio
 async def test_llm_call_that_fails_increments_error_counter():
     db, storage = _room_function_package()
+    await process_start("p1", db, storage, CONFIG)
 
     def handler(body: bytes):
         return 200, _openai_response("прошу прощения, не могу ответить")
@@ -157,12 +161,23 @@ async def test_llm_call_that_fails_increments_error_counter():
     server = _FakeLlmServer(handler)
     before_error = _sample("inspector_llm_requests_total", {"result": "error"})
     try:
-        await process_start("p1", db, storage, _llm_config(server.base_url))
+        await process_hypotheses("p1", db, storage, _llm_config(server.base_url))
     finally:
         server.close()
 
-    assert db.saved["status"] == "READY"
     assert _sample("inspector_llm_requests_total", {"result": "error"}) == before_error + 1
+
+
+@pytest.mark.asyncio
+async def test_process_hypotheses_observes_its_own_duration_histogram():
+    db, storage = _room_function_package()
+    await process_start("p1", db, storage, CONFIG)
+
+    before_count = _sample("inspector_hypotheses_duration_seconds_count")
+
+    await process_hypotheses("p1", db, storage, CONFIG)  # no model configured
+
+    assert _sample("inspector_hypotheses_duration_seconds_count") == before_count + 1
 
 
 @pytest.mark.asyncio

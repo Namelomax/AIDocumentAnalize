@@ -555,6 +555,65 @@ class Database:
                     for atom in check.get("atoms") or []:
                         await self._insert_check(connection, process_id, object_id, atom, check_id)
 
+    async def upsert_hypothesis_checks(
+        self, process_id: str, object_id: str, checks: list[dict],
+    ) -> int | None:
+        """SEM-ROOM-FN's own write path (section 9.5's free-search
+        hypotheses, app.pipeline.process_hypotheses) - one row inserted or
+        replaced per evidence_group_id, never a blanket delete-and-reinsert
+        the way save_checks writes the matrix (a дозагрузка's own merge,
+        app.pipeline._process_update_once, never touches SEM-ROOM-FN rows at
+        all - see app.pipeline._matrix_rows_for_merge).
+
+        A row an inspector has already decided on is left exactly as it is:
+        either verified_by is set (an ordinary verdict), or it was promoted
+        from a hypothesis to a candidate (POST /findings/:id/promote,
+        services/api's routes/verdicts.ts) - that action leaves verified_by
+        null but moves finding_status off SUSPICION while engine_status
+        stays SUSPICION, the same pair app.incremental's own _has_decision
+        reads a verdict by, just without a verified_by to check here.
+
+        Returns the number of SUSPICION rows actually written (inserted, or
+        replacing a not-yet-decided row) - process_hypotheses reports this
+        to the process owner - or None when the process's own current
+        protocol has since been finalized or superseded and nothing here was
+        written at all.
+        """
+        async with self._pool.acquire() as connection:
+            async with connection.transaction():
+                protocol = await connection.fetchrow(
+                    """
+                    SELECT status FROM protocols
+                    WHERE process_id = $1 AND status != 'SUPERSEDED'
+                    ORDER BY version DESC LIMIT 1
+                    """,
+                    process_id,
+                )
+                if protocol is None or protocol["status"] == "PROTOCOL_FINALIZED":
+                    return None
+
+                added = 0
+                for check in checks:
+                    existing = await connection.fetchrow(
+                        """
+                        SELECT id, verified_by, engine_status, finding_status
+                        FROM checks WHERE process_id = $1 AND evidence_group_id = $2
+                        """,
+                        process_id, check["evidence_group_id"],
+                    )
+                    if existing is not None:
+                        decided = bool(existing["verified_by"]) or (
+                            existing["engine_status"] == "SUSPICION"
+                            and existing["finding_status"] != "SUSPICION"
+                        )
+                        if decided:
+                            continue
+                        await connection.execute("DELETE FROM checks WHERE id = $1", existing["id"])
+                    await self._insert_check(connection, process_id, object_id, check, None)
+                    if check.get("finding_status") == "SUSPICION":
+                        added += 1
+                return added
+
     async def get_user_names(self, user_ids: list[str]) -> dict[str, str]:
         """Names for a merge's "previous decision by X" notes
         (app.incremental._changed_note/_decision_label) - an id alone would

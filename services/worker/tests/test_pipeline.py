@@ -320,6 +320,42 @@ class FakeDb:
     async def get_user_names(self, user_ids):
         return {uid: self.user_names[uid] for uid in user_ids if uid in self.user_names}
 
+    async def upsert_hypothesis_checks(self, process_id, object_id, checks):
+        # Mirrors app.db.Database.upsert_hypothesis_checks closely enough for
+        # tests: skip entirely once the process's own latest protocol is
+        # SUPERSEDED/PROTOCOL_FINALIZED, otherwise insert or replace one row
+        # per evidence_group_id, leaving a decided row (verified_by set, or
+        # promoted off SUSPICION - see the real method's own docstring)
+        # exactly as it is.
+        calls = [c for c in self.protocol_calls if c["process_id"] == process_id]
+        if not calls:
+            return None
+        current = calls[-1]
+        if current["status"] in ("SUPERSEDED", "PROTOCOL_FINALIZED"):
+            return None
+
+        added = 0
+        for check in checks:
+            existing_id = next(
+                (cid for cid, row in self._checks.items()
+                 if row["evidence_group_id"] == check["evidence_group_id"]),
+                None,
+            )
+            if existing_id is not None:
+                existing = self._checks[existing_id]
+                decided = bool(existing.get("verified_by")) or (
+                    existing.get("engine_status") == "SUSPICION"
+                    and existing.get("finding_status") != "SUSPICION"
+                )
+                if decided:
+                    continue
+                del self._checks[existing_id]
+            check_id = str(uuid.uuid4())
+            self._checks[check_id] = _fake_check_row(check_id, check, None)
+            if check.get("finding_status") == "SUSPICION":
+                added += 1
+        return added
+
     async def mark_files_added_in_protocol(self, file_ids, version):
         for file_id in file_ids:
             self.marked_files_version[file_id] = version
@@ -386,6 +422,28 @@ class FakeStorage:
         # the parse cache's own tests: raises (like minio's own S3Error)
         # when the source object is gone, rather than inventing bytes.
         self._objects[dest_key] = self._objects[source_key]
+
+
+class FakePublisher:
+    """Stands in for app.consumer.Publisher: records every task published
+    rather than touching a real RabbitMQ channel - what process_start/
+    process_update's own follow-up publish (app.pipeline._publish_hypotheses_task)
+    calls when a test hands it one."""
+
+    def __init__(self):
+        self.published: list[dict] = []
+
+    async def publish(self, task: dict) -> None:
+        self.published.append(task)
+
+
+class RaisingPublisher:
+    """A publisher whose publish always raises - proves a failed follow-up
+    publish is logged, never fatal to a process that already reached a
+    resolved status."""
+
+    async def publish(self, task: dict) -> None:
+        raise ConnectionError("rabbitmq unreachable")
 
 
 class FakeRedis:
@@ -673,20 +731,20 @@ def _room_function_package():
 
 
 @pytest.mark.asyncio
-async def test_changed_room_function_produces_one_suspicion_with_two_fragments():
-    """Task 4, step 1: a room whose name changed function, and a fake model
-    that agrees - one SUSPICION check, never a CANDIDATE (Global Constraint:
-    a hypothesis is not a violation)."""
+async def test_process_start_never_calls_the_model():
+    """This module's own docstring: SEM-ROOM-FN is never computed on
+    process_start's own critical path any more, so a room whose name changed
+    function produces no SEM-ROOM-FN row at all yet - not even NOT_COMPARABLE
+    - and the fake LLM server behind it is never even contacted. Coverage for
+    what process.hypotheses itself does with the very same package lives in
+    tests/test_hypotheses.py.
+    """
     db, storage = _room_function_package()
+    calls = {"count": 0}
 
     def handler(body: bytes):
-        pairs = _requested_name_pairs(body)
-        answer = [
-            {"key": p["key"], "same_function": False, "confidence": 0.9,
-             "reason": "было техническое помещение, стало складом ГСМ"}
-            for p in pairs
-        ]
-        return 200, _openai_response(json.dumps(answer, ensure_ascii=False))
+        calls["count"] += 1
+        return 200, _openai_response("[]")
 
     server = _FakeLlmServer(handler)
     try:
@@ -695,67 +753,58 @@ async def test_changed_room_function_produces_one_suspicion_with_two_fragments()
         server.close()
 
     assert db.saved["status"] == "READY"
-    checks = db.saved_checks
-    sem_checks = [c for c in checks if c["param_code"] == "SEM-ROOM-FN"]
-    assert len(sem_checks) == 1
-    suspicion = sem_checks[0]
-    assert suspicion["finding_status"] == "SUSPICION"
-    assert suspicion["completeness_status"] == "COMPLETE"
-    assert suspicion["detection_method"] == "SEMANTIC"
-    assert suspicion["confidence"] == 0.9
-    assert suspicion["expected_value"] == "Техническое помещение"
-    assert suspicion["actual_value"] == "Склад ГСМ"
-    assert "Техническое помещение" in suspicion["rationale"]
-    assert "Склад ГСМ" in suspicion["rationale"]
-    assert len(suspicion["fragments"]) == 2
-    assert {f["role"] for f in suspicion["fragments"]} == {"expected", "actual"}
-    # A hypothesis is never a candidate: M-003 itself may still report on
-    # this same room (its area did not change here, so it does not), but
-    # nothing from SEM-ROOM-FN ever carries CANDIDATE.
-    assert not any(c["finding_status"] == "CANDIDATE" for c in sem_checks)
+    assert calls["count"] == 0
+    sem_checks = [c for c in db.saved_checks if c["param_code"] == "SEM-ROOM-FN"]
+    assert sem_checks == []
 
 
 @pytest.mark.asyncio
-async def test_room_function_without_a_provider_is_not_comparable():
-    """No LLM_BASE_URL configured: honest refusal, never a guess (Global
-    Constraint: the system works without a model)."""
-    db, storage = _room_function_package()
+async def test_process_start_publishes_a_hypotheses_follow_up_task():
+    """The follow-up task this module's own docstring describes: published
+    once the matrix protocol itself is already READY, file_ids=None asking
+    process.hypotheses to consider every PD/RD pair."""
+    process = mk_process(manifest_uploaded=False, object_id="o1")
+    doc = mk_file(id="f-doc", file_name="a.pdf", storage_key="key-doc")
+    db = FakeDb(process, [doc])
+    storage = FakeStorage({"key-doc": _one_page_pdf("текст")})
+    publisher = FakePublisher()
 
-    await process_start("p1", db, storage, CONFIG)  # CONFIG's llm_base_url is ""
+    await process_start("p1", db, storage, CONFIG, publisher=publisher)
 
     assert db.saved["status"] == "READY"
-    checks = db.saved_checks
-    sem_checks = [c for c in checks if c["param_code"] == "SEM-ROOM-FN"]
-    assert len(sem_checks) == 1
-    assert sem_checks[0]["completeness_status"] == "NOT_COMPARABLE"
-    assert sem_checks[0]["finding_status"] is None
-    assert sem_checks[0]["rationale"] == (
-        "Языковая модель не подключена: сравнение назначений помещений не выполнялось"
-    )
+    assert publisher.published == [{
+        "type": "process.hypotheses", "process_id": "p1", "object_id": "o1", "file_ids": None,
+    }]
 
 
 @pytest.mark.asyncio
-async def test_room_function_model_unavailable_still_reaches_ready():
-    """The model answers something that is not JSON: LlmUnavailable, caught
-    the same way an unconfigured provider is - never a lost package."""
-    db, storage = _room_function_package()
+async def test_process_start_without_a_publisher_still_reaches_ready():
+    """publisher=None (every test fixture that predates process.hypotheses,
+    and app.consumer's own call when RabbitMQ has not been wired up yet)
+    behaves like cache=None already does - skipped, not an error."""
+    process = mk_process(manifest_uploaded=False)
+    doc = mk_file(id="f-doc", file_name="a.pdf", storage_key="key-doc")
+    db = FakeDb(process, [doc])
+    storage = FakeStorage({"key-doc": _one_page_pdf("текст")})
 
-    def handler(body: bytes):
-        return 200, _openai_response("прошу прощения, не могу ответить")
-
-    server = _FakeLlmServer(handler)
-    try:
-        await process_start("p1", db, storage, _llm_config(server.base_url))
-    finally:
-        server.close()
+    await process_start("p1", db, storage, CONFIG)  # publisher not passed
 
     assert db.saved["status"] == "READY"
-    checks = db.saved_checks
-    sem_checks = [c for c in checks if c["param_code"] == "SEM-ROOM-FN"]
-    assert len(sem_checks) == 1
-    assert sem_checks[0]["completeness_status"] == "NOT_COMPARABLE"
-    assert sem_checks[0]["finding_status"] is None
-    assert sem_checks[0]["rationale"]  # carries LlmUnavailable's own reason
+
+
+@pytest.mark.asyncio
+async def test_process_start_publish_failure_is_logged_not_fatal(caplog):
+    process = mk_process(manifest_uploaded=False)
+    doc = mk_file(id="f-doc", file_name="a.pdf", storage_key="key-doc")
+    db = FakeDb(process, [doc])
+    storage = FakeStorage({"key-doc": _one_page_pdf("текст")})
+
+    with caplog.at_level(logging.ERROR, logger="app.pipeline"):
+        await process_start("p1", db, storage, CONFIG, publisher=RaisingPublisher())
+
+    assert db.saved["status"] == "READY"
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert any(r.msg == "publishing process.hypotheses task failed" for r in errors)
 
 
 @pytest.mark.asyncio
