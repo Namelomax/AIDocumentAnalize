@@ -84,6 +84,21 @@ class Room:
     # ground floor's "Зона мойки" and the antresol's "Тех.помещение"), and
     # the scope is what lets a caller tell those two rooms apart.
     scope: str | None = None
+    # The rectangle actually drawn as evidence - wider than `box` for a table
+    # row. СОШ25's reference markup (Задание/Матрица_параметров) frames a
+    # table finding with the row above and the row below it, not the row
+    # alone: a missing room's two table neighbours are boxed together with
+    # one further row on each side, and an added room's own row keeps its
+    # immediate neighbours too (see `_row_neighbourhood`). A plan label
+    # (Detector 1) has no neighbouring rows to speak of - it is already the
+    # room's own CAD tag - so it carries no padding of its own. Defaults to
+    # `box` so a caller built before this field existed (a plan label, a
+    # merge, a test's own `Room(...)`) still gets a usable evidence box.
+    evidence_box: NormalizedBox | None = None
+
+    def __post_init__(self) -> None:
+        if self.evidence_box is None:
+            object.__setattr__(self, "evidence_box", self.box)
 
 
 @dataclass(frozen=True)
@@ -91,6 +106,14 @@ class FloorTotal:
     label: str               # "Общий итог по этажу", "итоговая площадь"...
     area: float
     box: NormalizedBox
+    # Same widening as `Room.evidence_box`, padded with the table's own last
+    # room row (a total is always the table's last line, so there is never
+    # a row below it to pad with) - see `_total_evidence_box`.
+    evidence_box: NormalizedBox | None = None
+
+    def __post_init__(self) -> None:
+        if self.evidence_box is None:
+            object.__setattr__(self, "evidence_box", self.box)
 
 
 def _area_value(text: str) -> float | None:
@@ -345,7 +368,20 @@ def _y_mid(box: NormalizedBox) -> float:
     return (box.y0 + box.y1) / 2
 
 
-def _rooms_from_table(page: ExtractedPage, anchor: _TableAnchor) -> list[Room]:
+def _group_rows(page: ExtractedPage, anchor: _TableAnchor) -> list[dict]:
+    """Every line inside one table's column band, folded into rows by shared
+    y-position - the row-finding half of Detector 2, split out so both a
+    room's own evidence box and a floor total's (in `find_floor_totals`) can
+    borrow "the row above" or "the row below" from the same table without
+    re-deriving it.
+
+    Each row dict carries its cells (`number_line`, `area_line`, `name_lines`,
+    `inline_name`) for `_rooms_from_table` to turn into a `Room`, plus
+    `span`: the row's own full vertical extent, wrapped name lines included -
+    a room's name routinely wraps two or three lines (СОШ25's "1.109", школа
+    лист 20), and a neighbouring row's padding has to carry that whole name,
+    not just its number and area cells, to mean anything as evidence.
+    """
     numbers: list[tuple[ExtractedLine, str, str | None]] = []
     areas: list[tuple[ExtractedLine, float]] = []
     name_candidates: list[ExtractedLine] = []
@@ -420,16 +456,56 @@ def _rooms_from_table(page: ExtractedPage, anchor: _TableAnchor) -> list[Room]:
         if abs(_y_mid(line.box) - _y_mid(nearest["number_line"].box)) <= _NAME_MAX_DISTANCE:
             nearest["name_lines"].append(line)
 
-    rooms = []
     for row in rows:
+        parts = [row["number_line"].box, row["area_line"].box, *(l.box for l in row["name_lines"])]
+        row["span"] = _union(parts)
+
+    rows.sort(key=lambda r: r["span"].y0)
+    return rows
+
+
+# A finding's evidence box is padded with this many table rows on each side -
+# the one free parameter of the widening rule below, not a page-specific
+# offset. Measured against СОШ25-V01, the reference package's only reference
+# bbox for an explication finding: room 1.109's reference box (RD, лист 20)
+# covers its own row plus its immediate neighbours, and the reference box for
+# its absence (PD, лист 19) covers the two rows bounding the gap plus one
+# further row past each of them - which is exactly what padding *each*
+# neighbour's own evidence box by one row already produces once
+# `compare.py` unions the two neighbours together. Padding by 0 rows (the row
+# alone) undershoots both reference boxes (IoU 0.32 and 0.17); padding by 2
+# overshoots the absence box (IoU drops back to 0.38) even as it improves the
+# single-room box further. 1 is the only value that clears the ТЗ's IoU >=
+# 0.50 threshold on both of this package's reference boxes at once.
+_ROW_PADDING = 1
+
+
+def _row_neighbourhood(rows: list[dict], index: int, anchor: _TableAnchor) -> NormalizedBox:
+    """`rows[index]`'s own row, padded with `_ROW_PADDING` rows on each side,
+    spanning every column the table anchor bounds (i.e. including the name
+    column that `Room.box` itself leaves out, and stopping short of the next
+    table the same way `anchor.x_right` already does)."""
+    lo = max(0, index - _ROW_PADDING)
+    hi = min(len(rows) - 1, index + _ROW_PADDING)
+    y0 = min(rows[i]["span"].y0 for i in range(lo, hi + 1))
+    y1 = max(rows[i]["span"].y1 for i in range(lo, hi + 1))
+    return NormalizedBox(anchor.x_left, y0, anchor.x_right, y1)
+
+
+def _rooms_from_table(page: ExtractedPage, anchor: _TableAnchor) -> list[Room]:
+    rows = _group_rows(page, anchor)
+
+    rooms = []
+    for index, row in enumerate(rows):
         if row["inline_name"]:
             name = row["inline_name"].strip()
         else:
             ordered = sorted(row["name_lines"], key=lambda l: l.box.y0)
             name = " ".join(l.text for l in ordered) if ordered else None
-        box_parts = [row["number_line"].box, row["area_line"].box]
+        box = _union([row["number_line"].box, row["area_line"].box])
         rooms.append(Room(number=row["number"], area=row["area_value"], name=name,
-                           box=_union(box_parts), scope=anchor.scope))
+                           box=box, scope=anchor.scope,
+                           evidence_box=_row_neighbourhood(rows, index, anchor)))
 
     return rooms
 
@@ -473,8 +549,13 @@ def _merge_cluster(number: str, cluster: list[Room]) -> Room:
     candidates = plan_labels if plan_labels else cluster
     representative = min(candidates, key=lambda r: _box_area(r.box))
 
+    # Carried over explicitly, not left to `Room`'s own default: leaving it
+    # off would default the merged room's evidence box back to
+    # `representative.box` (the narrow one), throwing away whatever row
+    # padding `_row_neighbourhood` already computed for it.
     return Room(number=number, area=cluster[0].area, name=name,
-                box=representative.box, scope=scope)
+                box=representative.box, scope=scope,
+                evidence_box=representative.evidence_box)
 
 
 def _dedupe_rooms(rooms: list[Room]) -> list[Room]:
@@ -554,7 +635,36 @@ def room_key(room: Room, rooms: list[Room]) -> str:
 # organizer's annotation reading "Итоговая площадь стала 6252,3 м²." in one
 # sentence - it never matches because the label and the value must each be
 # a whole line on their own, and here they are one sentence together.
+def _total_evidence_box(page: ExtractedPage, anchors: list[_TableAnchor],
+                         label_line: ExtractedLine, own_box: NormalizedBox) -> NormalizedBox:
+    """Widen a floor total's box the same way a table row is widened - one
+    neighbouring row of context (`_ROW_PADDING`), here the table's own last
+    room row, since a total is always the table's last line and never has a
+    row below it to pad with instead.
+
+    A total whose label does not sit inside any of the page's own table
+    column bands (a shape `_find_table_anchors` never expected) keeps its own
+    narrow box rather than guessing which table it belongs to.
+    """
+    anchor = next(
+        (a for a in anchors if a.x_left <= label_line.box.x0 <= a.x_right),
+        None,
+    )
+    if anchor is None:
+        return own_box
+
+    rows = _group_rows(page, anchor)
+    if not rows:
+        return NormalizedBox(anchor.x_left, own_box.y0, anchor.x_right, own_box.y1)
+
+    last_row = rows[-1]["span"]
+    y0 = min(own_box.y0, last_row.y0)
+    y1 = max(own_box.y1, last_row.y1)
+    return NormalizedBox(anchor.x_left, y0, anchor.x_right, y1)
+
+
 def find_floor_totals(page: ExtractedPage) -> list[FloorTotal]:
+    anchors = _find_table_anchors(page)
     all_lines = [line for block in page.blocks for line in block.lines]
     totals = []
     used_values: set[int] = set()
@@ -587,10 +697,12 @@ def find_floor_totals(page: ExtractedPage) -> list[FloorTotal]:
             continue
         used_values.add(best_index)
         value_line = all_lines[best_index]
+        own_box = _union([label_line.box, value_line.box])
         totals.append(FloorTotal(
             label=label_line.text,
             area=_area_value(value_line.text),
-            box=_union([label_line.box, value_line.box]),
+            box=own_box,
+            evidence_box=_total_evidence_box(page, anchors, label_line, own_box),
         ))
 
     return totals

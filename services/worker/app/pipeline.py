@@ -383,8 +383,8 @@ def _room_function_check(object_id: str, matrix_version: str,
         ),
         "matrix_version": matrix_version,
         "fragments": [
-            _fragment(expected_file, pd_sheet, pd_room.box, pd_room.name, "expected"),
-            _fragment(actual_file, rd_sheet, rd_room.box, rd_room.name, "actual"),
+            _fragment(expected_file, pd_sheet, pd_room.evidence_box, pd_room.name, "expected"),
+            _fragment(actual_file, rd_sheet, rd_room.evidence_box, rd_room.name, "actual"),
         ],
     }
 

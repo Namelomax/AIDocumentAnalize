@@ -159,8 +159,8 @@ def _compare_room(key: str, pd: SheetRooms, pd_room: Room, rd: SheetRooms, rd_ro
                 f"Площадь помещения {pd_room.number} совпадает в ПД и РД: "
                 f"{_fmt_ru(pd_room.area)} м²."
             ),
-            expected_sheet=pd, expected_box=pd_room.box,
-            actual_sheet=rd, actual_box=rd_room.box,
+            expected_sheet=pd, expected_box=pd_room.evidence_box,
+            actual_sheet=rd, actual_box=rd_room.evidence_box,
         )
 
     delta = rd_room.area - pd_room.area
@@ -172,8 +172,8 @@ def _compare_room(key: str, pd: SheetRooms, pd_room: Room, rd: SheetRooms, rd_ro
             f"{_fmt_ru(pd_room.area)} м², в РД {_fmt_ru(rd_room.area)} м² "
             f"(дельта {_fmt_signed_ru(delta)} м²)."
         ),
-        expected_sheet=pd, expected_box=pd_room.box,
-        actual_sheet=rd, actual_box=rd_room.box,
+        expected_sheet=pd, expected_box=pd_room.evidence_box,
+        actual_sheet=rd, actual_box=rd_room.evidence_box,
     )
 
 
@@ -192,7 +192,7 @@ def _absent_from_rd(key: str, pd: SheetRooms, pd_room: Room, rd: SheetRooms) -> 
     if lower is None or upper is None:
         return None
 
-    absence_box = _union([lower.box, upper.box])
+    absence_box = _union([lower.evidence_box, upper.evidence_box])
     return RoomFinding(
         subject=f"room {key}", status="CANDIDATE",
         expected=_fmt(pd_room.area), actual=None, delta=None,
@@ -201,7 +201,7 @@ def _absent_from_rd(key: str, pd: SheetRooms, pd_room: Room, rd: SheetRooms) -> 
             f"{_fmt_ru(pd_room.area)} м²; в РД между {lower_number} и "
             f"{upper_number} его нет."
         ),
-        expected_sheet=pd, expected_box=pd_room.box,
+        expected_sheet=pd, expected_box=pd_room.evidence_box,
         actual_sheet=rd, actual_box=absence_box,
     )
 
@@ -217,7 +217,7 @@ def _added_in_rd(key: str, pd: SheetRooms, rd: SheetRooms, rd_room: Room) -> Roo
     if lower is None or upper is None:
         return None
 
-    absence_box = _union([lower.box, upper.box])
+    absence_box = _union([lower.evidence_box, upper.evidence_box])
     return RoomFinding(
         subject=f"room {key}", status="CANDIDATE",
         expected=None, actual=_fmt(rd_room.area), delta=None,
@@ -227,7 +227,7 @@ def _added_in_rd(key: str, pd: SheetRooms, rd: SheetRooms, rd_room: Room) -> Roo
             f"{upper_number} его нет."
         ),
         expected_sheet=pd, expected_box=absence_box,
-        actual_sheet=rd, actual_box=rd_room.box,
+        actual_sheet=rd, actual_box=rd_room.evidence_box,
     )
 
 
@@ -246,8 +246,8 @@ def _compare_totals(pd: SheetRooms, rd: SheetRooms) -> RoomFinding | None:
             subject="floor total", status="NEGATIVE_VERIFIED",
             expected=_fmt(pd_total.area), actual=_fmt(rd_total.area), delta=None,
             rationale=f"Итог по этажу совпадает в ПД и РД: {_fmt_ru(pd_total.area)} м².",
-            expected_sheet=pd, expected_box=pd_total.box,
-            actual_sheet=rd, actual_box=rd_total.box,
+            expected_sheet=pd, expected_box=pd_total.evidence_box,
+            actual_sheet=rd, actual_box=rd_total.evidence_box,
         )
 
     return RoomFinding(
@@ -257,8 +257,8 @@ def _compare_totals(pd: SheetRooms, rd: SheetRooms) -> RoomFinding | None:
             f"Итог по этажу изменён: в ПД {_fmt_ru(pd_total.area)} м², "
             f"в РД {_fmt_ru(rd_total.area)} м² (дельта {_fmt_signed_ru(delta)} м²)."
         ),
-        expected_sheet=pd, expected_box=pd_total.box,
-        actual_sheet=rd, actual_box=rd_total.box,
+        expected_sheet=pd, expected_box=pd_total.evidence_box,
+        actual_sheet=rd, actual_box=rd_total.evidence_box,
     )
 
 
