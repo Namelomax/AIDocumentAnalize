@@ -6,6 +6,7 @@
 // goes through a function here.
 import type {
   ApprovalStatus,
+  CompletenessRowStatus,
   CompletenessStatus,
   DocStage,
   EvidenceFragment,
@@ -16,8 +17,11 @@ import type {
   ProcessStatus,
   ProjectObject,
   Protocol,
+  ProtocolCompletenessRow,
+  ProtocolStatus,
   ReasonCode,
   ReviewPriority,
+  SyncStatus,
   UploadedFile,
 } from '../types';
 
@@ -77,6 +81,18 @@ export interface ApiFileItem {
   from_manifest: boolean;
   uploaded_at: string;
   process_id: string;
+}
+
+// GET /api/v1/processes/:id/progress (services/api/src/routes/processes.ts).
+// The route deliberately reports only these honest counters — which of the
+// processing screen's four stages each one feeds is this file's job, not
+// the server's (see toProgress below and ProcessingScreen.tsx).
+export interface ApiProgress {
+  status: string;
+  files: { total: number; pdf: number };
+  pages: { extracted: number; needs_ocr: number };
+  checks: { total: number; candidates: number };
+  protocol_id: string | null;
 }
 
 export interface ApiDashboardSummary {
@@ -147,7 +163,19 @@ export interface ApiProtocolSummary {
   not_applicable: number;
   not_comparable: number;
   clarification_required: number;
+  // Added alongside `suspicions` below by a parallel change to
+  // protocol/view.ts; optional here since this file may see either shape
+  // while that lands, and the hypotheses screen does not read it yet.
+  suspicions?: number;
 }
+
+// SUSPICION-status findings, alongside `findings`/`completeness`, from a
+// parallel change to protocol/view.ts (the free-search hypothesis module
+// itself is still not wired up — see HypothesesScreen.tsx). Declared here so
+// a response that includes it type-checks; toProtocol() below does not read
+// it, since this task's hypotheses screen stays an honest empty state
+// regardless of what the protocol response carries.
+export type ApiSuspicion = ApiFinding & { detection_method?: string; confidence?: number };
 
 export interface ApiProtocol {
   id: string;
@@ -165,6 +193,7 @@ export interface ApiProtocol {
   summary: ApiProtocolSummary;
   completeness: ApiCompletenessRow[];
   findings: ApiFinding[];
+  suspicions?: ApiSuspicion[];
 }
 
 /* ─────────── Общие преобразования ─────────── */
@@ -234,6 +263,36 @@ export function toObjectProcess(api: ApiObjectProcess): ObjectProcess {
     createdAt: formatDateTime(api.created_at),
     protocolId: api.protocol_id,
     protocolVersion: api.protocol_version,
+  };
+}
+
+// The processing screen's four stages (Plan 7, Task 5): "recognition" and
+// "value extraction" both read against this same progress snapshot, "CV
+// analysis" has no stage of its own — there is no GPU stand behind it — and
+// "matching" is done once the process itself is READY or further along.
+// ProcessingScreen.tsx turns these counters into that stage view; this
+// function only carries the response into camelCase.
+export interface ProcessProgress {
+  status: ProcessStatus;
+  filesTotal: number;
+  filesPdf: number;
+  pagesExtracted: number;
+  pagesNeedsOcr: number;
+  checksTotal: number;
+  checksCandidates: number;
+  protocolId: string | null;
+}
+
+export function toProgress(api: ApiProgress): ProcessProgress {
+  return {
+    status: api.status as ProcessStatus,
+    filesTotal: api.files.total,
+    filesPdf: api.files.pdf,
+    pagesExtracted: api.pages.extracted,
+    pagesNeedsOcr: api.pages.needs_ocr,
+    checksTotal: api.checks.total,
+    checksCandidates: api.checks.candidates,
+    protocolId: api.protocol_id,
   };
 }
 
@@ -373,27 +432,32 @@ export function toFinding(api: ApiFinding): Finding {
   };
 }
 
+export function toCompletenessRow(api: ApiCompletenessRow): ProtocolCompletenessRow {
+  return {
+    paramCode: api.param_code,
+    parameterName: api.parameter_name ?? api.param_code,
+    status: api.completeness_status as CompletenessRowStatus,
+    rationale: api.rationale ?? '',
+  };
+}
+
 export function toProtocol(api: ApiProtocol): Protocol {
   return {
     id: api.id,
     // The API has no separate human protocol number (section 10's Protocols
     // table has none either) — the id's short form stands in for display
-    // until Task 5, which owns the protocol screen, decides the real format.
+    // until export (a later plan) settles on the real format.
     number: api.id.slice(0, 8),
     objectId: api.object_id,
     createdAt: formatDateTime(api.created_at),
     version: api.version,
-    // Mismatch carried over from the mock model: Protocol.processStatus was
-    // named for a Process (PENDING/PARSING/READY/VERIFYING/COMPLETED/
-    // FINALIZED) but a protocol's own status also includes
-    // VERIFICATION_COMPLETED and PROTOCOL_FINALIZED, which are not part of
-    // that union. Left as a direct cast for Task 5 to resolve together with
-    // the protocol screen it feeds.
-    processStatus: api.status as ProcessStatus,
+    status: api.status as ProtocolStatus,
+    syncStatus: (api.sync_status as SyncStatus | null) ?? null,
     matrixVersion: api.matrix_version,
     modelVersion: api.model_version,
     datasetVersion: api.dataset_version,
     hash: api.input_manifest_hash,
+    finalizedAt: api.finalized_at ? formatDateTime(api.finalized_at) : null,
     summary: {
       checked: api.summary.checked,
       candidates: api.summary.candidates,
@@ -401,10 +465,15 @@ export function toProtocol(api: ApiProtocol): Protocol {
       negative: api.summary.negative,
       noEvidence: api.summary.missing_evidence,
       notApplicable: api.summary.not_applicable,
-      // not_comparable and clarification_required have no slot in the
-      // current summary shape; Task 5 extends it alongside the protocol
-      // screen's completeness tab.
+      notComparable: api.summary.not_comparable,
+      clarificationRequired: api.summary.clarification_required,
     },
+    // Section 9.2: completeness/comparability and findings are two separate
+    // tables of the protocol — never merged into one list here.
+    completeness: api.completeness.map(toCompletenessRow),
     findings: api.findings.map(toFinding),
+    // api.suspicions is intentionally not read: the free-search hypothesis
+    // module has no screen wired to it yet (HypothesesScreen.tsx stays an
+    // honest empty state), so there is nothing here to show it in.
   };
 }

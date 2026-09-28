@@ -1,7 +1,6 @@
 // Russian labels for the interface's own vocabulary of statuses, stages and
 // reasons. These are not sample data — every screen reads them regardless of
-// whether it shows real objects or (until Task 5 rewires it) mock ones, so
-// they live here rather than in src/mocks/data.ts (Plan 7, Task 4).
+// what backs it, real objects throughout (Plan 7).
 import type { CompletenessStatus, ReasonCode } from './types';
 
 export const statusLabels: Record<string, string> = {

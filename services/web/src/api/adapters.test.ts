@@ -1,14 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import {
+  toCompletenessRow,
   toDashboardSummary,
   toEvidenceFragment,
   toFinding,
+  toProgress,
   toProjectObject,
   toProtocol,
   toUploadedFile,
+  type ApiCompletenessRow,
   type ApiEvidence,
   type ApiFinding,
   type ApiObjectListItem,
+  type ApiProgress,
   type ApiProtocol,
 } from './adapters';
 
@@ -230,6 +234,30 @@ describe('toDashboardSummary', () => {
   });
 });
 
+describe('toCompletenessRow', () => {
+  const completenessFixture: ApiCompletenessRow = {
+    param_code: 'M-014',
+    parameter_name: 'Площадь МОП',
+    completeness_status: 'NOT_COMPARABLE',
+    rationale: 'В РД раздел ПЗ отсутствует',
+  };
+
+  it('maps a completeness row to camelCase, separately from a finding', () => {
+    const row = toCompletenessRow(completenessFixture);
+    expect(row).toEqual({
+      paramCode: 'M-014',
+      parameterName: 'Площадь МОП',
+      status: 'NOT_COMPARABLE',
+      rationale: 'В РД раздел ПЗ отсутствует',
+    });
+  });
+
+  it('falls back to the param code when the parameter has no name', () => {
+    const row = toCompletenessRow({ ...completenessFixture, parameter_name: null });
+    expect(row.parameterName).toBe('M-014');
+  });
+});
+
 describe('toProtocol', () => {
   const protocolFixture: ApiProtocol = {
     id: 'protocol-1',
@@ -249,7 +277,9 @@ describe('toProtocol', () => {
       missing_evidence: 0, not_applicable: 0, not_comparable: 1,
       clarification_required: 0,
     },
-    completeness: [],
+    completeness: [
+      { param_code: 'M-014', parameter_name: 'Площадь МОП', completeness_status: 'NOT_COMPARABLE', rationale: null },
+    ],
     findings: [findingFixture],
   };
 
@@ -258,8 +288,34 @@ describe('toProtocol', () => {
     expect(protocol.summary.checked).toBe(3);
     expect(protocol.summary.candidates).toBe(1);
     expect(protocol.summary.negative).toBe(1);
+    expect(protocol.summary.notComparable).toBe(1);
+    expect(protocol.summary.clarificationRequired).toBe(0);
     expect(protocol.findings).toHaveLength(1);
     expect(protocol.findings[0].id).toBe('check-1');
+  });
+
+  it('keeps completeness rows in their own list, separate from findings', () => {
+    const protocol = toProtocol(protocolFixture);
+    expect(protocol.completeness).toHaveLength(1);
+    expect(protocol.completeness[0].paramCode).toBe('M-014');
+    expect(protocol.findings.every((f) => f.code !== 'M-014')).toBe(true);
+  });
+
+  it('maps status, sync_status and finalized_at', () => {
+    const protocol = toProtocol(protocolFixture);
+    expect(protocol.status).toBe('READY');
+    expect(protocol.syncStatus).toBeNull();
+    expect(protocol.finalizedAt).toBeNull();
+  });
+
+  it('formats finalized_at when the protocol was finalized', () => {
+    const protocol = toProtocol({
+      ...protocolFixture,
+      status: 'PROTOCOL_FINALIZED',
+      finalized_at: '2025-11-14T12:00:00.000Z',
+    });
+    expect(protocol.status).toBe('PROTOCOL_FINALIZED');
+    expect(protocol.finalizedAt).toEqual(expect.any(String));
   });
 
   it('carries technical versions and the input manifest hash through', () => {
@@ -268,5 +324,47 @@ describe('toProtocol', () => {
     expect(protocol.modelVersion).toBe('rules-2026.09');
     expect(protocol.datasetVersion).toBe('none');
     expect(protocol.hash).toBe('c'.repeat(64));
+  });
+
+  it('does not fail when the response carries a suspicions section (hypothesis module, in parallel development)', () => {
+    const protocol = toProtocol({
+      ...protocolFixture,
+      summary: { ...protocolFixture.summary, suspicions: 2 },
+      suspicions: [{ ...findingFixture, id: 'check-suspicion', detection_method: 'ml', confidence: 0.8 }],
+    });
+    // The hypotheses screen stays an honest empty state regardless — this
+    // only asserts the adapter tolerates the extra field rather than throwing.
+    expect(protocol.findings).toHaveLength(1);
+    expect(protocol.findings.some((f) => f.id === 'check-suspicion')).toBe(false);
+  });
+});
+
+describe('toProgress', () => {
+  const progressFixture: ApiProgress = {
+    status: 'PARSING',
+    files: { total: 5, pdf: 4 },
+    pages: { extracted: 12, needs_ocr: 2 },
+    checks: { total: 0, candidates: 0 },
+    protocol_id: null,
+  };
+
+  it('maps every counter to camelCase', () => {
+    const progress = toProgress(progressFixture);
+    expect(progress).toEqual({
+      status: 'PARSING',
+      filesTotal: 5,
+      filesPdf: 4,
+      pagesExtracted: 12,
+      pagesNeedsOcr: 2,
+      checksTotal: 0,
+      checksCandidates: 0,
+      protocolId: null,
+    });
+  });
+
+  it('carries the protocol id through once the pipeline creates one', () => {
+    const progress = toProgress({ ...progressFixture, status: 'READY', protocol_id: 'protocol-1' });
+    expect(progress.status).toBe('READY');
+    expect(progress.protocolId).toBe('protocol-1');
   });
 });

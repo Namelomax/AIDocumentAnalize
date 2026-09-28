@@ -92,16 +92,13 @@ export default function App() {
         {nav.screen === 'processing' && (
           <ProcessingScreen
             objectId={nav.objectId}
+            processId={nav.processId}
             onBack={() => onNavigate({ screen: 'upload', objectId: nav.objectId })}
-            onComplete={() =>
+            onComplete={(protocolId) =>
               onNavigate({
                 screen: 'protocol',
                 objectId: nav.objectId,
-                // ProtocolScreen still shows mock data until Task 5 wires it
-                // to GET /processes/:id/progress → protocol_id; nav.processId
-                // is threaded through regardless, so Task 5 only has to read
-                // it instead of also plumbing it here.
-                protocolId: nav.protocolId,
+                protocolId,
                 processId: nav.processId
               })
             }

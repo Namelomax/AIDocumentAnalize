@@ -8,8 +8,11 @@ import PriorityIndicator from '../components/PriorityIndicator';
 import StatusBadge from '../components/StatusBadge';
 import StageBadge from '../components/StageBadge';
 import EvidencePanel from '../components/EvidencePanel';
-import { protocol, inspector } from '../mocks/data';
+import { SkeletonQueue, SkeletonEvidencePanel } from '../components/Skeleton';
+import { useToast } from '../components/Toast';
 import { reasonCodes, reasonLabels, approvalLabels } from '../labels';
+import { api, ApiError, getSession } from '../api/client';
+import { toFinding, type ApiFinding } from '../api/adapters';
 import type { Finding, ReasonCode, RevisionCard } from '../types';
 
 interface Props {
@@ -17,12 +20,6 @@ interface Props {
   onBack: () => void;
   onFinish: (protocolId: string) => void;
 }
-
-type Decision =
-  | { kind: 'none' }
-  | { kind: 'saved'; status: 'CONFIRMED_VIOLATION' | 'NEGATIVE_VERIFIED' | 'CLARIFICATION_REQUIRED'; reason?: ReasonCode; comment?: string; timestamp: string };
-
-const CANDIDATES = protocol.findings.filter((f) => f.status === 'CANDIDATE');
 
 function nowStr(): string {
   const d = new Date();
@@ -80,8 +77,18 @@ function RevisionCardView({
 /* ─────────── Основной компонент ─────────── */
 
 export default function VerificationScreen({ protocolId, onBack, onFinish }: Props) {
-  const [index, setIndex] = useState(2);
-  const [decisions, setDecisions] = useState<Record<string, Decision>>({});
+  const { push } = useToast();
+
+  const [candidates, setCandidates] = useState<Finding[]>([]);
+  // Findings the server has confirmed a decision for, keyed by id — the
+  // response from POST .../verdict replaces the finding here directly; this
+  // screen never recomputes a status on its own (Plan 7, Task 5).
+  const [decided, setDecided] = useState<Record<string, Finding>>({});
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const [index, setIndex] = useState(0);
   const [comment, setComment] = useState('');
   const [showReasons, setShowReasons] = useState(false);
   const [pendingReason, setPendingReason] = useState<ReasonCode | undefined>(undefined);
@@ -89,18 +96,39 @@ export default function VerificationScreen({ protocolId, onBack, onFinish }: Pro
   const [selectedAtoms, setSelectedAtoms] = useState<Record<string, boolean>>({});
   const [queueCompleted, setQueueCompleted] = useState(false);
 
-  const finding: Finding = CANDIDATES[index];
-  const currentDecision = decisions[finding.id] ?? { kind: 'none' } as Decision;
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setLoadError(null);
+    (async () => {
+      try {
+        const response = await api<{ items: ApiFinding[] }>(
+          `/api/v1/protocols/${protocolId}/findings?status=CANDIDATE`,
+        );
+        if (cancelled) return;
+        setCandidates(response.items.map(toFinding));
+        setIndex(0);
+      } catch (err) {
+        if (!cancelled) setLoadError(err instanceof ApiError ? err.message : 'Не удалось загрузить кандидатов');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [protocolId]);
 
-  const processedCount = Object.values(decisions).filter((d) => d.kind === 'saved').length;
-  const allProcessed = processedCount === CANDIDATES.length;
+  const baseFinding: Finding | undefined = candidates[index];
+  const finding: Finding | undefined = baseFinding ? (decided[baseFinding.id] ?? baseFinding) : undefined;
 
-  const isClarification = !!finding.clarificationConflict;
-  const isComposite = !!finding.composite;
+  const processedCount = Object.keys(decided).length;
+  const allProcessed = candidates.length > 0 && processedCount === candidates.length;
+
+  const isClarification = !!finding?.clarificationConflict;
+  const isComposite = !!finding?.composite;
 
   /* ─── Клавиатурные сокращения ─── */
   useEffect(() => {
-    if (queueCompleted) return;
+    if (queueCompleted || !finding || saving) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) return;
       if (isClarification) {
@@ -119,7 +147,7 @@ export default function VerificationScreen({ protocolId, onBack, onFinish }: Pro
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [finding.id, showReasons, pendingReason, comment, selectedRevisionIdx, queueCompleted, isClarification]);
+  }, [finding?.id, showReasons, pendingReason, comment, selectedRevisionIdx, queueCompleted, isClarification, saving]);
 
   const resetLocal = () => {
     setComment('');
@@ -130,7 +158,7 @@ export default function VerificationScreen({ protocolId, onBack, onFinish }: Pro
   };
 
   const goNext = () => {
-    if (index < CANDIDATES.length - 1) {
+    if (index < candidates.length - 1) {
       setIndex(index + 1);
       resetLocal();
     } else {
@@ -145,78 +173,184 @@ export default function VerificationScreen({ protocolId, onBack, onFinish }: Pro
     }
   };
 
-  const saveDecision = (d: Decision) => {
-    setDecisions((prev) => ({ ...prev, [finding.id]: d }));
+  // Every real decision goes through here — the server's response (already
+  // in the finding form the rest of the screen reads) replaces the local
+  // entry, so the screen never has to decide the new status itself.
+  const submitVerdict = async (
+    decision: 'CONFIRMED_VIOLATION' | 'NEGATIVE_VERIFIED' | 'CLARIFICATION_REQUIRED',
+    reasonCode?: ReasonCode,
+  ) => {
+    if (!finding) return;
+    setSaving(true);
+    try {
+      const body: Record<string, unknown> = { decision };
+      if (reasonCode) body.reason_code = reasonCode;
+      if (comment.trim()) body.comment = comment.trim();
+      const updated = await api<ApiFinding>(`/api/v1/findings/${finding.id}/verdict`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+      const mapped = toFinding(updated);
+      setDecided((prev) => ({ ...prev, [mapped.id]: mapped }));
+      window.setTimeout(goNext, 120);
+    } catch (err) {
+      push({
+        kind: 'error',
+        message: 'Не удалось сохранить решение',
+        detail: err instanceof ApiError ? err.message : undefined,
+      });
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleConfirm = () => {
-    if (isComposite) return;
-    saveDecision({ kind: 'saved', status: 'CONFIRMED_VIOLATION', comment, timestamp: nowStr() });
-    window.setTimeout(goNext, 120);
+    if (isComposite || saving) return;
+    void submitVerdict('CONFIRMED_VIOLATION');
   };
 
   const handleRejectSave = () => {
-    if (!pendingReason) return;
-    saveDecision({
-      kind: 'saved', status: 'NEGATIVE_VERIFIED',
-      reason: pendingReason, comment, timestamp: nowStr()
-    });
-    window.setTimeout(goNext, 120);
+    if (!pendingReason || !comment.trim() || saving) return;
+    void submitVerdict('NEGATIVE_VERIFIED', pendingReason);
   };
 
   const handleClarify = () => {
-    saveDecision({ kind: 'saved', status: 'CLARIFICATION_REQUIRED', comment, timestamp: nowStr() });
-    window.setTimeout(goNext, 120);
+    if (saving) return;
+    void submitVerdict('CLARIFICATION_REQUIRED');
   };
 
+  const handleEditDecision = () => {
+    if (!finding) return;
+    setDecided((prev) => {
+      const next = { ...prev };
+      delete next[finding.id];
+      return next;
+    });
+    resetLocal();
+  };
+
+  // The engine has no endpoint yet to recompute a check after an inspector
+  // resolves a revision conflict (Plan 6 scope, deferred) — updated locally
+  // only, same as the mock this screen replaces. toFinding() never sets
+  // clarificationConflict from real data, so this path stays unreachable
+  // until that endpoint exists.
   const handleClarificationSave = () => {
-  if (selectedRevisionIdx === null || !finding.clarificationConflict) return;
-  const chosenRevision = finding.clarificationConflict.revisions[selectedRevisionIdx];
-
-  // Логика по ТЗ: фиксируем выбранную редакцию как единственный авторитетный источник.
-  // (A `toast.success(...)` call used to sit here referencing an undefined
-  // `toast` — dead code left over from a different screen's pattern; this
-  // screen has no toast plumbing of its own, so it is dropped rather than
-  // wired up as part of a screen this task does not otherwise touch.)
-
-  // Сбрасываем статус конфликта, так как инспектор его разрешил камерально.
-  // Only the fields a chosen revision actually carries are overwritten;
-  // bbox/role/fileId/imageUrl stay as they were, since RevisionCard has no
-  // equivalents for them.
-  finding.actualEvidence = {
-    ...finding.actualEvidence,
-    stage: 'RD',
-    documentCode: chosenRevision.documentCode,
-    revision: chosenRevision.revision,
-    approvalStatus: chosenRevision.approvalStatus,
-    sheetPage: chosenRevision.sheetPage,
-    sha256: chosenRevision.sha256,
-    extractedValue: chosenRevision.extractedValue
+    if (selectedRevisionIdx === null || !finding?.clarificationConflict) return;
+    const chosenRevision = finding.clarificationConflict.revisions[selectedRevisionIdx];
+    const updatedFinding: Finding = {
+      ...finding,
+      actual: chosenRevision.extractedValue,
+      actualEvidence: {
+        ...finding.actualEvidence,
+        stage: 'RD',
+        documentCode: chosenRevision.documentCode,
+        revision: chosenRevision.revision,
+        approvalStatus: chosenRevision.approvalStatus,
+        sheetPage: chosenRevision.sheetPage,
+        sha256: chosenRevision.sha256,
+        extractedValue: chosenRevision.extractedValue,
+      },
+      clarificationConflict: undefined,
+    };
+    setCandidates((prev) => prev.map((f) => (f.id === updatedFinding.id ? updatedFinding : f)));
+    setSelectedRevisionIdx(null);
   };
 
-  // Возвращаем интерфейс к стандартному сравнению по ТЗ Мосгосстройнадзора
-  setSelectedRevisionIdx(null);
-  // Пересчитываем дельту на ходу
-  finding.actual = chosenRevision.extractedValue;
-  finding.clarificationConflict = undefined;
-};
-
+  // The engine does not yet split a composite candidate into atomic findings
+  // (Plan 6 scope: "Разбиение составного кандидата") — recorded locally
+  // only, same as the mock this screen replaces, until a split endpoint
+  // exists. toFinding() never sets `composite` from real data, so this path
+  // stays unreachable in practice.
   const handleCompositeSave = () => {
+    if (!finding) return;
     const atoms = Object.entries(selectedAtoms).filter(([, v]) => v).map(([k]) => k);
     if (atoms.length === 0) return;
-    saveDecision({
-      kind: 'saved',
-      status: 'CONFIRMED_VIOLATION',
-      comment: `${comment ? comment + ' · ' : ''}Выделено находок: ${atoms.length}`,
-      timestamp: nowStr()
-    });
+    const session = getSession();
+    setDecided((prev) => ({
+      ...prev,
+      [finding.id]: {
+        ...finding,
+        status: 'CONFIRMED_VIOLATION',
+        decision: {
+          status: 'CONFIRMED_VIOLATION',
+          comment: `${comment ? comment + ' · ' : ''}Выделено находок: ${atoms.length}`,
+          inspector: session?.user.fullName || session?.user.login || '—',
+          timestamp: nowStr(),
+        },
+      },
+    }));
     window.setTimeout(goNext, 120);
   };
 
-  const progress = useMemo(() => ((index + 1) / CANDIDATES.length) * 100, [index]);
+  const progress = useMemo(
+    () => (candidates.length > 0 ? ((index + 1) / candidates.length) * 100 : 0),
+    [index, candidates.length],
+  );
+
+  if (loading) {
+    return (
+      <div className="h-screen flex flex-col bg-[#F5F7FA] overflow-hidden">
+        <div className="h-11 shrink-0 px-6 border-b border-[#E2E8F0] bg-white flex items-center gap-4">
+          <button type="button" onClick={onBack} className="text-[13px] text-[#475569] hover:text-[#0F172A] flex items-center gap-1">
+            <ArrowLeft size={14} /> К протоколу
+          </button>
+        </div>
+        <div className="flex-1 flex min-h-0">
+          <aside className="w-[280px] shrink-0 border-r border-[#E2E8F0] bg-white overflow-y-auto">
+            <SkeletonQueue />
+          </aside>
+          <section className="flex-1 min-w-0 flex gap-3 p-5">
+            <SkeletonEvidencePanel />
+            <SkeletonEvidencePanel />
+          </section>
+        </div>
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="h-screen flex flex-col bg-[#F5F7FA] overflow-hidden">
+        <div className="h-11 shrink-0 px-6 border-b border-[#E2E8F0] bg-white flex items-center gap-4">
+          <button type="button" onClick={onBack} className="text-[13px] text-[#475569] hover:text-[#0F172A] flex items-center gap-1">
+            <ArrowLeft size={14} /> К протоколу
+          </button>
+        </div>
+        <div className="flex-1 flex items-center justify-center">
+          <div className="bg-[#FEF3F2] border border-[#FECDCA] rounded-lg px-4 py-3 text-[13px] text-[#B42318]">
+            {loadError}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (candidates.length === 0 || !finding) {
+    return (
+      <div className="h-screen flex flex-col bg-[#F5F7FA] overflow-hidden">
+        <div className="h-11 shrink-0 px-6 border-b border-[#E2E8F0] bg-white flex items-center gap-4">
+          <button type="button" onClick={onBack} className="text-[13px] text-[#475569] hover:text-[#0F172A] flex items-center gap-1">
+            <ArrowLeft size={14} /> К протоколу
+          </button>
+        </div>
+        <div className="flex-1 flex items-center justify-center px-8">
+          <div className="w-[480px] bg-white border border-[#E2E8F0] rounded-lg">
+            <EmptyState
+              kind="no-candidates"
+              title="Нет кандидатов для верификации"
+              description="В этом протоколе не осталось необработанных кандидатов."
+              action={<Button variant="secondary" onClick={onBack}>Вернуться к протоколу</Button>}
+            />
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   /* ─── Экран «Все кандидаты обработаны» ─── */
   if (queueCompleted) {
+    const confirmedCount = Object.values(decided).filter((f) => f.decision?.status === 'CONFIRMED_VIOLATION').length;
+    const rejectedCount = Object.values(decided).filter((f) => f.decision?.status === 'NEGATIVE_VERIFIED').length;
     return (
       <div className="h-screen flex flex-col bg-[#F5F7FA] overflow-hidden">
         <div className="h-11 shrink-0 px-6 border-b border-[#E2E8F0] bg-white flex items-center gap-4">
@@ -235,12 +369,12 @@ export default function VerificationScreen({ protocolId, onBack, onFinish }: Pro
           <div className="w-[560px] bg-white border border-[#E2E8F0] rounded-lg">
             <EmptyState
               kind="all-processed"
-              description={`Обработано ${processedCount} из ${CANDIDATES.length} кандидатов. Подтверждено нарушений: ${Object.values(decisions).filter((d) => d.kind === 'saved' && d.status === 'CONFIRMED_VIOLATION').length}. Отклонено: ${Object.values(decisions).filter((d) => d.kind === 'saved' && d.status === 'NEGATIVE_VERIFIED').length}.`}
+              description={`Обработано ${processedCount} из ${candidates.length} кандидатов. Подтверждено нарушений: ${confirmedCount}. Отклонено: ${rejectedCount}.`}
               action={
                 <div className="flex items-center gap-2">
                   <Button
                     variant="secondary"
-                    onClick={() => { setQueueCompleted(false); setIndex(CANDIDATES.length - 1); }}
+                    onClick={() => { setQueueCompleted(false); setIndex(candidates.length - 1); }}
                   >
                     Вернуться к очереди
                   </Button>
@@ -270,7 +404,7 @@ export default function VerificationScreen({ protocolId, onBack, onFinish }: Pro
         <span className="text-[#94A3B8]">·</span>
         <span className="text-[13px] text-[#0F172A]">Верификация кандидата</span>
         <span className="ml-auto text-[12px] text-[#475569]">
-          Обработано {processedCount} из {CANDIDATES.length}
+          Обработано {processedCount} из {candidates.length}
         </span>
       </div>
 
@@ -280,17 +414,16 @@ export default function VerificationScreen({ protocolId, onBack, onFinish }: Pro
           <div className="px-4 py-3 border-b border-[#E2E8F0]">
             <div className="flex items-center justify-between text-[12px] text-[#475569] mb-2">
               <span>Очередь кандидатов</span>
-              <span className="num">{index + 1} из {CANDIDATES.length}</span>
+              <span className="num">{index + 1} из {candidates.length}</span>
             </div>
             <div className="h-1 w-full bg-[#EDF1F7] rounded-full overflow-hidden">
               <div className="h-full bg-[#1B4E9B]" style={{ width: `${progress}%` }} />
             </div>
           </div>
           <div className="flex-1 overflow-y-auto">
-            {CANDIDATES.map((f, i) => {
-              const d = decisions[f.id];
+            {candidates.map((f, i) => {
               const isActive = i === index;
-              const isDone = d && d.kind === 'saved';
+              const isDone = !!decided[f.id];
               return (
                 <button
                   key={f.id}
@@ -468,23 +601,23 @@ export default function VerificationScreen({ protocolId, onBack, onFinish }: Pro
           </div>
 
           <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
-            {currentDecision.kind === 'saved' ? (
+            {finding.decision ? (
               <div className="border border-[#E2E8F0] rounded-lg p-3 bg-[#F8FAFC]">
-                <StatusBadge status={currentDecision.status} />
+                <StatusBadge status={finding.status} />
                 <div className="mt-2 text-[12px] text-[#475569]">
-                  {inspector.name} · {currentDecision.timestamp}
+                  {finding.decision.inspector} · {finding.decision.timestamp}
                 </div>
-                {currentDecision.reason && (
+                {finding.decision.reasonCode && (
                   <div className="mt-1 text-[12px] text-[#475569]">
-                    Причина: {reasonLabels[currentDecision.reason]}
+                    Причина: {reasonLabels[finding.decision.reasonCode]}
                   </div>
                 )}
-                {currentDecision.comment && (
-                  <div className="mt-1 text-[12px] text-[#475569] italic">«{currentDecision.comment}»</div>
+                {finding.decision.comment && (
+                  <div className="mt-1 text-[12px] text-[#475569] italic">«{finding.decision.comment}»</div>
                 )}
                 <button
                   type="button"
-                  onClick={() => saveDecision({ kind: 'none' })}
+                  onClick={handleEditDecision}
                   className="mt-3 text-[12px] text-[#1B4E9B] hover:underline"
                 >
                   Изменить решение
@@ -509,6 +642,7 @@ export default function VerificationScreen({ protocolId, onBack, onFinish }: Pro
                   variant="secondary"
                   size="lg"
                   className="w-full"
+                  disabled={saving}
                   onClick={handleClarify}
                 >
                   Требует уточнения у заказчика
@@ -578,7 +712,7 @@ export default function VerificationScreen({ protocolId, onBack, onFinish }: Pro
                       variant="primary"
                       size="lg"
                       className="w-full mt-3"
-                      disabled={!pendingReason}
+                      disabled={!pendingReason || !comment.trim() || saving}
                       icon={<Save size={14} />}
                       onClick={handleRejectSave}
                     >
@@ -602,13 +736,14 @@ export default function VerificationScreen({ protocolId, onBack, onFinish }: Pro
             ) : (
               /* Стандартный кандидат */
               <>
-                <Button variant="danger" size="lg" onClick={handleConfirm} className="w-full">
+                <Button variant="danger" size="lg" onClick={handleConfirm} disabled={saving} className="w-full">
                   Подтвердить нарушение
                 </Button>
                 <Button
                   variant="secondary"
                   size="lg"
                   onClick={() => setShowReasons(true)}
+                  disabled={saving}
                   className="w-full"
                 >
                   Отклонить
@@ -617,6 +752,7 @@ export default function VerificationScreen({ protocolId, onBack, onFinish }: Pro
                   variant="secondary"
                   size="lg"
                   onClick={handleClarify}
+                  disabled={saving}
                   className="w-full"
                 >
                   Требует уточнения
@@ -652,13 +788,13 @@ export default function VerificationScreen({ protocolId, onBack, onFinish }: Pro
 
                 <div className="mt-2">
                   <div className="text-[12px] text-[#94A3B8] uppercase tracking-wide mb-1.5">
-                    Комментарий инспектора
+                    Комментарий инспектора {showReasons && <span className="text-[#B42318]">· обязателен при отклонении</span>}
                   </div>
                   <textarea
                     value={comment}
                     onChange={(e) => setComment(e.target.value)}
                     rows={3}
-                    placeholder="Обоснование решения (необязательно)"
+                    placeholder={showReasons ? 'Обоснование отклонения (обязательно)' : 'Обоснование решения (необязательно)'}
                     className="w-full px-2.5 py-2 border border-[#CBD5E1] rounded-md text-[13px] resize-none outline-none focus:border-[#1B4E9B]"
                   />
                 </div>
@@ -667,11 +803,11 @@ export default function VerificationScreen({ protocolId, onBack, onFinish }: Pro
                   variant="primary"
                   size="lg"
                   icon={<Save size={14} />}
-                  disabled={showReasons && !pendingReason}
+                  disabled={saving || (showReasons && (!pendingReason || !comment.trim()))}
                   onClick={showReasons ? handleRejectSave : handleConfirm}
                   className="w-full mt-1"
                 >
-                  Сохранить решение
+                  {saving ? 'Сохранение…' : 'Сохранить решение'}
                 </Button>
 
                 <div className="mt-3 pt-3 border-t border-[#E2E8F0] flex items-start gap-2 text-[12px] text-[#475569]">

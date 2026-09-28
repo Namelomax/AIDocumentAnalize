@@ -1,6 +1,8 @@
+import { useEffect, useState } from 'react';
 import { ZoomIn, ZoomOut, ExternalLink } from 'lucide-react';
 import StageBadge from './StageBadge';
 import { approvalLabels } from '../labels';
+import { apiBlob, ApiError } from '../api/client';
 import type { EvidenceFragment } from '../types';
 
 interface Props {
@@ -21,6 +23,42 @@ export default function EvidencePanel({ fragment, accent }: Props) {
   const width  = `${(x2 - x1) * 100}%`;
   const height = `${(y2 - y1) * 100}%`;
 
+  const [imageSrc, setImageSrc] = useState<string | null>(null);
+  const [imageError, setImageError] = useState<string | null>(null);
+
+  useEffect(() => {
+    // A plain <img src> cannot carry the bearer token the page image route
+    // requires, so the bytes come through apiBlob() and get handed to the
+    // <img> as an object URL instead (Plan 7, Task 5).
+    setImageSrc(null);
+    setImageError(null);
+    if (!fragment.imageUrl) return;
+
+    let cancelled = false;
+    let objectUrl: string | null = null;
+
+    (async () => {
+      try {
+        const blob = await apiBlob(fragment.imageUrl);
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(blob);
+        setImageSrc(objectUrl);
+      } catch (err) {
+        if (!cancelled) {
+          setImageError(err instanceof ApiError ? err.message : 'Не удалось загрузить изображение страницы');
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      // Sheet pages run several megabytes each at drawing resolution
+      // (~4000px) — releasing the object URL on every fragment change or
+      // unmount keeps an open evidence card from growing without bound.
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [fragment.imageUrl]);
+
   return (
     <div className="flex flex-col bg-white border border-[#E2E8F0] rounded-lg overflow-hidden flex-1 min-w-0">
       {/* Шапка панели */}
@@ -36,20 +74,28 @@ export default function EvidencePanel({ fragment, accent }: Props) {
 
       {/* Область просмотра */}
       <div className="relative flex-1 bg-[#F8FAFC] min-h-[180px]">
-        {/* Сетка-подложка чертежа */}
-        <svg className="absolute inset-0 w-full h-full" aria-hidden>
-          <defs>
-            <pattern id={`grid-${fragment.stage}-${accent}`} width="24" height="24" patternUnits="userSpaceOnUse">
-              <path d="M 24 0 L 0 0 0 24" fill="none" stroke="#E2E8F0" strokeWidth="1" />
-            </pattern>
-          </defs>
-          <rect width="100%" height="100%" fill={`url(#grid-${fragment.stage}-${accent})`} />
-        </svg>
-
-        {/* Пометка — что это фрагмент чертежа */}
-        <div className="absolute top-2 left-2 text-[10px] mono text-[#94A3B8] bg-white/80 px-1.5 py-0.5 rounded">
-          фрагмент чертежа
-        </div>
+        {imageSrc ? (
+          <img
+            src={imageSrc}
+            alt={`Страница ${fragment.sheetPage} документа ${fragment.documentCode}`}
+            className="absolute inset-0 w-full h-full object-contain"
+          />
+        ) : (
+          <>
+            {/* Сетка-подложка, пока изображение грузится или недоступно */}
+            <svg className="absolute inset-0 w-full h-full" aria-hidden>
+              <defs>
+                <pattern id={`grid-${fragment.stage}-${accent}`} width="24" height="24" patternUnits="userSpaceOnUse">
+                  <path d="M 24 0 L 0 0 0 24" fill="none" stroke="#E2E8F0" strokeWidth="1" />
+                </pattern>
+              </defs>
+              <rect width="100%" height="100%" fill={`url(#grid-${fragment.stage}-${accent})`} />
+            </svg>
+            <div className="absolute top-2 left-2 text-[10px] mono text-[#94A3B8] bg-white/80 px-1.5 py-0.5 rounded">
+              {imageError ? imageError : fragment.imageUrl ? 'Загрузка страницы…' : 'Нет изображения страницы'}
+            </div>
+          </>
+        )}
 
         {/* Оверлей bbox в процентах */}
         <div

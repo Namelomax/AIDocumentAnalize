@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, Download, CheckCircle2 } from 'lucide-react';
+import { ArrowLeft, Download, CheckCircle2, Clock } from 'lucide-react';
 import PageHeader from '../components/PageHeader';
 import StatusBadge from '../components/StatusBadge';
 import PriorityIndicator from '../components/PriorityIndicator';
@@ -7,9 +7,10 @@ import StageBadge from '../components/StageBadge';
 import Button from '../components/Button';
 import EmptyState from '../components/EmptyState';
 import { SkeletonTable } from '../components/Skeleton';
-import { protocol } from '../mocks/data';
+import { api, ApiError } from '../api/client';
+import { toProtocol, type ApiProtocol } from '../api/adapters';
 import { processStatusLabels } from '../labels';
-import type { FindingStatus, ReviewPriority } from '../types';
+import type { DocStage, FindingStatus, Protocol, ReviewPriority } from '../types';
 
 interface Props {
   protocolId: string;
@@ -20,63 +21,164 @@ interface Props {
 
 type TabKey = 'completeness' | 'candidates' | 'confirmed' | 'verified' | 'hypotheses';
 
-interface TabDef {
-  key: TabKey;
-  label: string;
-  statuses: FindingStatus[];
-}
+// One status per finding tab; 'completeness' has none — it reads from
+// protocol.completeness, a separate table entirely (section 9.2).
+const FINDING_TAB_STATUS: Record<Exclude<TabKey, 'completeness'>, FindingStatus> = {
+  candidates: 'CANDIDATE',
+  confirmed: 'CONFIRMED_VIOLATION',
+  verified: 'NEGATIVE_VERIFIED',
+  hypotheses: 'SUSPICION',
+};
 
-const TABS: TabDef[] = [
-  { key: 'completeness', label: 'Комплектность и сопоставимость',
-    statuses: ['MISSING_EVIDENCE', 'NOT_APPLICABLE', 'NOT_COMPARABLE', 'CLARIFICATION_REQUIRED'] },
-  { key: 'candidates',  label: 'Кандидаты',
-    statuses: ['CANDIDATE'] },
-  { key: 'confirmed',   label: 'Подтверждённые нарушения',
-    statuses: ['CONFIRMED_VIOLATION'] },
-  { key: 'verified',    label: 'Проверено, расхождений нет',
-    statuses: ['NEGATIVE_VERIFIED'] },
-  { key: 'hypotheses',  label: 'Гипотезы свободного поиска',
-    statuses: ['SUSPICION'] }
-];
+const TAB_LABELS: Record<TabKey, string> = {
+  completeness: 'Комплектность и сопоставимость',
+  candidates: 'Кандидаты',
+  confirmed: 'Подтверждённые нарушения',
+  verified: 'Проверено, расхождений нет',
+  hypotheses: 'Гипотезы свободного поиска',
+};
+
+const TAB_ORDER: TabKey[] = ['completeness', 'candidates', 'confirmed', 'verified', 'hypotheses'];
+
+const STATUS_DOT: Record<Protocol['status'], string> = {
+  READY: '#B54708',
+  VERIFYING: '#1B4E9B',
+  VERIFICATION_COMPLETED: '#027A48',
+  PROTOCOL_FINALIZED: '#027A48',
+};
 
 export default function ProtocolScreen({
   protocolId, onBack, onOpenVerification, onOpenHypotheses
 }: Props) {
-  const [activeTab, setActiveTab] = useState<TabKey>('candidates');
+  const [protocol, setProtocol] = useState<Protocol | null>(null);
+  const [objectName, setObjectName] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<TabKey>('candidates');
   const [priorityFilter, setPriorityFilter] = useState<'ALL' | ReviewPriority>('ALL');
 
   useEffect(() => {
-    const t = window.setTimeout(() => setLoading(false), 500);
-    return () => window.clearTimeout(t);
-  }, []);
-
-  const counts = useMemo<Record<TabKey, number>>(() => ({
-    completeness: 19, candidates: 14, confirmed: 3, verified: 96, hypotheses: 5
-  }), []);
-
-  const rows = useMemo(() => {
-    const tab = TABS.find((t) => t.key === activeTab)!;
-    let list = protocol.findings.filter((f) => tab.statuses.includes(f.status));
-    if (priorityFilter !== 'ALL') {
-      list = list.filter((f) => f.priority === priorityFilter);
+    if (!protocolId) {
+      setLoading(false);
+      setLoadError('Протокол не выбран');
+      return;
     }
-    return list;
-  }, [activeTab, priorityFilter]);
+    let cancelled = false;
+    setLoading(true);
+    setLoadError(null);
+    (async () => {
+      try {
+        const data = await api<ApiProtocol>(`/api/v1/protocols/${protocolId}`);
+        if (cancelled) return;
+        const mapped = toProtocol(data);
+        setProtocol(mapped);
+        // Best-effort only — the breadcrumb falls back to a generic label
+        // if this second call fails, the protocol itself already loaded.
+        try {
+          const objectDetail = await api<{ name: string }>(`/api/v1/objects/${mapped.objectId}`);
+          if (!cancelled) setObjectName(objectDetail.name);
+        } catch {
+          // Ignored — see comment above.
+        }
+      } catch (err) {
+        if (!cancelled) setLoadError(err instanceof ApiError ? err.message : 'Не удалось загрузить протокол');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [protocolId]);
 
-  const candidatesCount = protocol.findings.filter((f) => f.status === 'CANDIDATE').length;
+  const counts = useMemo<Record<TabKey, number>>(() => {
+    if (!protocol) return { completeness: 0, candidates: 0, confirmed: 0, verified: 0, hypotheses: 0 };
+    return {
+      completeness: protocol.completeness.length,
+      candidates: protocol.findings.filter((f) => f.status === 'CANDIDATE').length,
+      confirmed: protocol.findings.filter((f) => f.status === 'CONFIRMED_VIOLATION').length,
+      verified: protocol.findings.filter((f) => f.status === 'NEGATIVE_VERIFIED').length,
+      hypotheses: protocol.findings.filter((f) => f.status === 'SUSPICION').length,
+    };
+  }, [protocol]);
+
+  const findingRows = useMemo(() => {
+    if (!protocol || activeTab === 'completeness') return [];
+    const status = FINDING_TAB_STATUS[activeTab];
+    let list = protocol.findings.filter((f) => f.status === status);
+    if (priorityFilter !== 'ALL') list = list.filter((f) => f.priority === priorityFilter);
+    return list;
+  }, [protocol, activeTab, priorityFilter]);
+
+  const completenessRows = protocol?.completeness ?? [];
+  const candidatesCount = protocol?.findings.filter((f) => f.status === 'CANDIDATE').length ?? 0;
+
+  // "Тип проверки" is derived from the stages the protocol's own findings
+  // actually cite, not a hardcoded label — a protocol with only PD+RD
+  // findings never claims to have checked ИД.
+  const stagesInPlay = useMemo(() => {
+    const set = new Set<DocStage>();
+    protocol?.findings.forEach((f) => f.sources.forEach((s) => set.add(s)));
+    return set;
+  }, [protocol]);
+  const checkTypeLabel = useMemo(() => {
+    if (stagesInPlay.size === 0) return 'Нет данных';
+    return (['PD', 'RD', 'ID'] as const)
+      .filter((s) => stagesInPlay.has(s))
+      .map((s) => ({ PD: 'ПД', RD: 'РД', ID: 'ИД' }[s]))
+      .join(' + ');
+  }, [stagesInPlay]);
+
+  if (loading) {
+    return (
+      <div className="h-full flex flex-col overflow-hidden bg-[#F5F7FA]">
+        <div className="px-8 pt-6 pb-4 border-b border-[#E2E8F0] bg-white">
+          <div className="h-6 w-64 bg-[#EDF1F7] rounded animate-pulse" />
+        </div>
+        <div className="flex-1 overflow-auto px-8 py-5">
+          <SkeletonTable rows={8} />
+        </div>
+      </div>
+    );
+  }
+
+  if (loadError || !protocol) {
+    return (
+      <div className="h-full flex flex-col overflow-hidden bg-[#F5F7FA]">
+        <PageHeader
+          crumbs={['Объекты', 'Протокол']}
+          title="Протокол"
+          actions={
+            <Button variant="ghost" icon={<ArrowLeft size={14} />} onClick={onBack}>
+              Назад
+            </Button>
+          }
+        />
+        <div className="flex-1 flex items-center justify-center">
+          <div className="bg-[#FEF3F2] border border-[#FECDCA] rounded-lg px-4 py-3 text-[13px] text-[#B42318]">
+            {loadError ?? 'Протокол не найден'}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="h-full flex flex-col overflow-hidden bg-[#F5F7FA]">
       <PageHeader
-        crumbs={['Объекты', 'Торговое здание, Алтуфьевское ш., 79Б', `Протокол № ${protocol.number}`]}
+        crumbs={['Объекты', objectName ?? 'Объект', `Протокол № ${protocol.number}`]}
         title={`Протокол проверки № ${protocol.number}`}
         actions={
           <>
             <Button variant="ghost" icon={<ArrowLeft size={14} />} onClick={onBack}>
               Назад
             </Button>
-            <Button variant="secondary" icon={<Download size={14} />}>Экспорт</Button>
+            <Button
+              variant="secondary"
+              icon={<Download size={14} />}
+              disabled
+              title="Экспорт протокола появится в следующем обновлении"
+            >
+              Экспорт
+            </Button>
             <Button
               variant="primary"
               disabled={candidatesCount > 0}
@@ -101,11 +203,16 @@ export default function ProtocolScreen({
         {/* Шапка протокола */}
         <div className="grid grid-cols-12 gap-3 mb-4">
           <div className="col-span-8 bg-white border border-[#E2E8F0] rounded-lg px-4 py-3">
-            <div className="text-[11px] text-[#94A3B8] uppercase tracking-wide mb-1">Статус процесса</div>
+            <div className="text-[11px] text-[#94A3B8] uppercase tracking-wide mb-1">Статус протокола</div>
             <div className="flex items-center gap-3">
-              <span className="inline-flex items-center gap-1.5 text-[13px] text-[#027A48]">
-                <CheckCircle2 size={14} aria-hidden />
-                {processStatusLabels[protocol.processStatus]}
+              <span
+                className="inline-flex items-center gap-1.5 text-[13px]"
+                style={{ color: STATUS_DOT[protocol.status] }}
+              >
+                {protocol.status === 'VERIFYING'
+                  ? <Clock size={14} aria-hidden />
+                  : <CheckCircle2 size={14} aria-hidden />}
+                {processStatusLabels[protocol.status] ?? protocol.status}
               </span>
               <span className="text-[12px] text-[#475569]">
                 Создан: <span className="mono text-[#0F172A]">{protocol.createdAt}</span>
@@ -113,13 +220,20 @@ export default function ProtocolScreen({
               <span className="text-[12px] text-[#475569]">
                 Версия: <span className="mono text-[#0F172A]">{protocol.version}</span>
               </span>
+              {protocol.finalizedAt && (
+                <span className="text-[12px] text-[#475569]">
+                  Финализирован: <span className="mono text-[#0F172A]">{protocol.finalizedAt}</span>
+                </span>
+              )}
             </div>
           </div>
           <div className="col-span-4 bg-white border border-[#E2E8F0] rounded-lg px-4 py-3">
             <div className="text-[11px] text-[#94A3B8] uppercase tracking-wide mb-1">Тип проверки</div>
-            <div className="text-[13px] text-[#0F172A] font-medium">ПД + РД</div>
+            <div className="text-[13px] text-[#0F172A] font-medium">{checkTypeLabel}</div>
             <div className="flex items-center gap-2 mt-1.5">
-              <StageBadge stage="PD" /><StageBadge stage="RD" /><StageBadge stage="ID" active={false} />
+              <StageBadge stage="PD" active={stagesInPlay.has('PD')} />
+              <StageBadge stage="RD" active={stagesInPlay.has('RD')} />
+              <StageBadge stage="ID" active={stagesInPlay.has('ID')} />
             </div>
           </div>
         </div>
@@ -137,17 +251,21 @@ export default function ProtocolScreen({
           <span><span className="num text-[#0F172A] font-medium">{protocol.summary.noEvidence}</span> без доказательств</span>
           <span className="text-[#CBD5E1]">·</span>
           <span><span className="num text-[#0F172A] font-medium">{protocol.summary.notApplicable}</span> неприменимо</span>
+          <span className="text-[#CBD5E1]">·</span>
+          <span><span className="num text-[#0F172A] font-medium">{protocol.summary.notComparable}</span> нельзя сопоставить</span>
+          <span className="text-[#CBD5E1]">·</span>
+          <span><span className="num text-[#0F172A] font-medium">{protocol.summary.clarificationRequired}</span> требует уточнения</span>
         </div>
 
         {/* Вкладки */}
         <div className="border-b border-[#E2E8F0] flex items-center gap-1 mb-3">
-          {TABS.map((t) => {
-            const isActive = t.key === activeTab;
+          {TAB_ORDER.map((key) => {
+            const isActive = key === activeTab;
             return (
               <button
-                key={t.key}
+                key={key}
                 type="button"
-                onClick={() => { setActiveTab(t.key); setPriorityFilter('ALL'); }}
+                onClick={() => { setActiveTab(key); setPriorityFilter('ALL'); }}
                 className={[
                   'px-3 h-9 text-[13px] rounded-t-md transition-colors flex items-center gap-2',
                   isActive
@@ -155,43 +273,45 @@ export default function ProtocolScreen({
                     : 'text-[#475569] hover:text-[#0F172A]'
                 ].join(' ')}
               >
-                <span>{t.label}</span>
+                <span>{TAB_LABELS[key]}</span>
                 <span className={[
                   'num text-[11px] px-1.5 rounded-[4px]',
                   isActive ? 'bg-[#E8F0FB] text-[#1B4E9B]' : 'bg-[#EDF1F7] text-[#475569]'
                 ].join(' ')}>
-                  {counts[t.key]}
+                  {counts[key]}
                 </span>
               </button>
             );
           })}
         </div>
 
-        {/* Фильтры над таблицей */}
-        <div className="flex items-center gap-3 mb-3">
-          <select
-            value={priorityFilter}
-            onChange={(e) => setPriorityFilter(e.target.value as 'ALL' | ReviewPriority)}
-            className="h-9 px-3 border border-[#CBD5E1] rounded-md bg-white text-[13px] text-[#475569] outline-none focus:border-[#1B4E9B]"
-          >
-            <option value="ALL">Приоритет: все</option>
-            <option value="HIGH">HIGH</option>
-            <option value="MEDIUM">MEDIUM</option>
-            <option value="LOW">LOW</option>
-          </select>
-          {priorityFilter !== 'ALL' && (
-            <button
-              type="button"
-              onClick={() => setPriorityFilter('ALL')}
-              className="text-[12px] text-[#1B4E9B] hover:underline"
+        {/* Фильтры над таблицей находок (комплектность своих приоритетов не несёт) */}
+        {activeTab !== 'completeness' && (
+          <div className="flex items-center gap-3 mb-3">
+            <select
+              value={priorityFilter}
+              onChange={(e) => setPriorityFilter(e.target.value as 'ALL' | ReviewPriority)}
+              className="h-9 px-3 border border-[#CBD5E1] rounded-md bg-white text-[13px] text-[#475569] outline-none focus:border-[#1B4E9B]"
             >
-              Сбросить фильтр
-            </button>
-          )}
-        </div>
+              <option value="ALL">Приоритет: все</option>
+              <option value="HIGH">HIGH</option>
+              <option value="MEDIUM">MEDIUM</option>
+              <option value="LOW">LOW</option>
+            </select>
+            {priorityFilter !== 'ALL' && (
+              <button
+                type="button"
+                onClick={() => setPriorityFilter('ALL')}
+                className="text-[12px] text-[#1B4E9B] hover:underline"
+              >
+                Сбросить фильтр
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Плашка вкладки гипотез */}
-        {activeTab === 'hypotheses' && !loading && rows.length > 0 && (
+        {activeTab === 'hypotheses' && counts.hypotheses > 0 && (
           <div className="mb-3 flex items-center justify-between bg-[#EDF1F7] border border-[#E2E8F0] rounded-lg px-4 py-2.5">
             <span className="text-[13px] text-[#475569]">
               Гипотезы не входят в число нарушений и не используются для обучения модели.
@@ -202,10 +322,41 @@ export default function ProtocolScreen({
           </div>
         )}
 
-        {/* Таблица / скелетон / пустое состояние */}
-        {loading ? (
+        {/* Комплектность и сопоставимость — отдельная таблица: у строки нет
+            ни ожидаемого/фактического значения, ни доказательств (раздел
+            9.2 ТЗ требует, чтобы этот раздел не смешивался с находками). */}
+        {activeTab === 'completeness' ? (
+          completenessRows.length === 0 ? (
+            <div className="bg-white border border-[#E2E8F0] rounded-lg">
+              <EmptyState kind="no-candidates" title="Нет записей" description="В этом протоколе нет параметров с проблемами комплектности или сопоставимости." />
+            </div>
+          ) : (
+            <div className="bg-white border border-[#E2E8F0] rounded-lg overflow-hidden">
+              <table className="w-full text-[13px] border-collapse">
+                <thead>
+                  <tr className="bg-[#EDF1F7] text-[#475569] text-[12px]">
+                    <th className="text-left font-medium px-3 h-10 w-[100px]">Код</th>
+                    <th className="text-left font-medium px-3 h-10">Наименование параметра</th>
+                    <th className="text-left font-medium px-3 h-10 w-[180px]">Статус</th>
+                    <th className="text-left font-medium px-3 h-10">Обоснование</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {completenessRows.map((row) => (
+                    <tr key={row.paramCode} className="h-10 border-t border-[#E2E8F0]">
+                      <td className="px-3 mono text-[#0F172A]">{row.paramCode}</td>
+                      <td className="px-3 text-[#0F172A]">{row.parameterName}</td>
+                      <td className="px-3"><StatusBadge status={row.status} /></td>
+                      <td className="px-3 text-[#475569]">{row.rationale || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )
+        ) : loading ? (
           <SkeletonTable rows={8} />
-        ) : rows.length === 0 ? (
+        ) : findingRows.length === 0 ? (
           <div className="bg-white border border-[#E2E8F0] rounded-lg">
             <EmptyState
               kind={priorityFilter !== 'ALL' ? 'no-filter-results' : 'no-candidates'}
@@ -236,7 +387,7 @@ export default function ProtocolScreen({
                 </tr>
               </thead>
               <tbody>
-                {rows.map((f) => (
+                {findingRows.map((f) => (
                   <tr key={f.id} className="h-10 border-t border-[#E2E8F0] hover:bg-[#E8F0FB]">
                     <td className="px-3 mono text-[#0F172A]">{f.code}</td>
                     <td className="px-3 text-[#475569]">{f.section}</td>

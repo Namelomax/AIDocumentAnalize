@@ -24,6 +24,24 @@ export type CompletenessStatus = 'full' | 'partial' | 'missing' | 'not_applicabl
 
 export type ReviewPriority = 'HIGH' | 'MEDIUM' | 'LOW';
 
+// A protocol's own lifecycle (section 9.3), distinct from ProcessStatus:
+// FINALIZED/COMPLETED never apply to a protocol, and VERIFICATION_COMPLETED/
+// PROTOCOL_FINALIZED never apply to a process. Kept as its own union rather
+// than folded into ProcessStatus, which the mock model used to do (see
+// adapters.ts, toProtocol).
+export type ProtocolStatus = 'READY' | 'VERIFYING' | 'VERIFICATION_COMPLETED' | 'PROTOCOL_FINALIZED';
+
+// Transfer to ИАИС «РиН» (section 9.6) is a stub on the server — this only
+// reflects what protocols.sync_status already reports, never invented here.
+export type SyncStatus = 'PENDING_SYNC' | 'SYNCED';
+
+// The subset of FindingStatus a completeness/comparability row can carry —
+// a check without a finding_status was never compared, so it can never be a
+// CANDIDATE, a decided outcome, or a hypothesis (services/api's
+// buildCompletenessRow only ever sees these four).
+export type CompletenessRowStatus =
+  | 'MISSING_EVIDENCE' | 'NOT_APPLICABLE' | 'NOT_COMPARABLE' | 'CLARIFICATION_REQUIRED';
+
 export type ReasonCode =
   | 'WRONG_REVISION'
   | 'APPROVED_CHANGE'
@@ -130,17 +148,30 @@ export interface UploadedFile {
   sha256: string;
 }
 
+// One row of the protocol's completeness/comparability table (section 9.2:
+// "раздельные таблицы: комплектность и сопоставимость; кандидаты…") — a
+// check that was never compared, so it carries none of a finding's fields
+// (expected/actual/evidence/priority).
+export interface ProtocolCompletenessRow {
+  paramCode: string;
+  parameterName: string;
+  status: CompletenessRowStatus;
+  rationale: string;
+}
+
 export interface Protocol {
   id: string;
   number: string;
   objectId: string;
   createdAt: string;
   version: number;
-  processStatus: ProcessStatus;
+  status: ProtocolStatus;
+  syncStatus: SyncStatus | null;
   matrixVersion: string;
   modelVersion: string;
   datasetVersion: string;
   hash: string;
+  finalizedAt: string | null;
   summary: {
     checked: number;
     candidates: number;
@@ -148,7 +179,10 @@ export interface Protocol {
     negative: number;
     noEvidence: number;
     notApplicable: number;
+    notComparable: number;
+    clarificationRequired: number;
   };
+  completeness: ProtocolCompletenessRow[];
   findings: Finding[];
 }
 
