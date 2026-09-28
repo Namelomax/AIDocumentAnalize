@@ -74,6 +74,18 @@ export interface ProtocolSummary {
   not_applicable: number;
   not_comparable: number;
   clarification_required: number;
+  // Free-search hypotheses (section 9.5) counted on their own: a SUSPICION
+  // is never a violation, so it must never inflate `candidates`.
+  suspicions: number;
+}
+
+// A hypothesis in the shape of a finding, plus how it was found and how sure
+// the model was (section 9.5, table Suspicions of section 10). Kept as its
+// own type rather than reusing FindingView's fields loosely, so a caller
+// cannot forget the two fields that make a suspicion a suspicion.
+export interface SuspicionView extends FindingView {
+  detection_method: string | null;
+  confidence: number | null;
 }
 
 export interface ProtocolResponse {
@@ -92,6 +104,9 @@ export interface ProtocolResponse {
   summary: ProtocolSummary;
   completeness: CompletenessRow[];
   findings: FindingView[];
+  // Free-search hypotheses (Global Constraint: a hypothesis is not a
+  // violation) - their own section, never merged into `findings`.
+  suspicions: SuspicionView[];
 }
 
 function evidenceView(fragment: EvidenceFragment): EvidenceView {
@@ -171,6 +186,21 @@ export function buildFinding(
   };
 }
 
+// Same card as a finding, with the two fields a hypothesis adds. Built on
+// top of buildFinding rather than duplicating its field list, so the two
+// never drift apart on the fields they share.
+export function buildSuspicion(
+  check: CheckWithFragments,
+  param: ParamForView | undefined,
+  inspectorsById: Map<string, InspectorForView>,
+): SuspicionView {
+  return {
+    ...buildFinding(check, param, inspectorsById),
+    detection_method: check.detectionMethod,
+    confidence: check.confidence,
+  };
+}
+
 export function buildCompletenessRow(check: Check, param: ParamForView | undefined): CompletenessRow {
   return {
     param_code: check.paramCode,
@@ -183,10 +213,19 @@ export function buildCompletenessRow(check: Check, param: ParamForView | undefin
 // Section 9.2 keeps completeness/comparability and findings as separate
 // tables of the protocol. A check without a finding_status was never
 // compared - it belongs to completeness, never to findings, and never both.
-export function splitChecks<T extends Check>(checks: T[]): { findings: T[]; completeness: T[] } {
-  const findings = checks.filter((check) => check.findingStatus !== null);
+// SUSPICION is a third, equally disjoint set: it does carry a finding_status,
+// so it is not completeness, but a free-search hypothesis is never a finding
+// either (Global Constraint: a hypothesis is not a violation) - it gets its
+// own section instead.
+export function splitChecks<T extends Check>(
+  checks: T[],
+): { findings: T[]; suspicions: T[]; completeness: T[] } {
+  const findings = checks.filter(
+    (check) => check.findingStatus !== null && check.findingStatus !== 'SUSPICION',
+  );
+  const suspicions = checks.filter((check) => check.findingStatus === 'SUSPICION');
   const completeness = checks.filter((check) => check.findingStatus === null);
-  return { findings, completeness };
+  return { findings, suspicions, completeness };
 }
 
 export function buildSummary(checks: Check[]): ProtocolSummary {
@@ -199,6 +238,7 @@ export function buildSummary(checks: Check[]): ProtocolSummary {
     not_applicable: 0,
     not_comparable: 0,
     clarification_required: 0,
+    suspicions: 0,
   };
   for (const check of checks) {
     switch (check.findingStatus) {
@@ -210,6 +250,9 @@ export function buildSummary(checks: Check[]): ProtocolSummary {
         break;
       case 'NEGATIVE_VERIFIED':
         summary.negative += 1;
+        break;
+      case 'SUSPICION':
+        summary.suspicions += 1;
         break;
       case null:
         // No finding_status: the outcome to count is why it wasn't
@@ -244,7 +287,7 @@ export function buildProtocolResponse(
   paramsByCode: Map<string, ParamForView>,
   inspectorsById: Map<string, InspectorForView>,
 ): ProtocolResponse {
-  const { findings, completeness } = splitChecks(checks);
+  const { findings, suspicions, completeness } = splitChecks(checks);
   return {
     id: protocol.id,
     object_id: protocol.objectId,
@@ -261,5 +304,6 @@ export function buildProtocolResponse(
     summary: buildSummary(checks),
     completeness: completeness.map((check) => buildCompletenessRow(check, paramsByCode.get(check.paramCode))),
     findings: findings.map((check) => buildFinding(check, paramsByCode.get(check.paramCode), inspectorsById)),
+    suspicions: suspicions.map((check) => buildSuspicion(check, paramsByCode.get(check.paramCode), inspectorsById)),
   };
 }

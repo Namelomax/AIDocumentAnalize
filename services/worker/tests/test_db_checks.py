@@ -128,6 +128,43 @@ async def test_save_checks_writes_a_check_and_its_evidence_fragments(db, scenari
 
 
 @pytest.mark.asyncio
+async def test_save_checks_writes_a_suspicion_with_a_null_param_id(db, scenario):
+    """SEM-ROOM-FN (plan 8, Task 4): a free-search hypothesis, not a matrix
+    parameter - the params table has no row for its code, so the param_id
+    subquery in save_checks must resolve to NULL rather than fail the
+    insert, and detection_method/confidence must round-trip untouched."""
+    object_id, process_id, file_id = scenario
+
+    await db.save_checks(process_id, object_id, [{
+        "param_code": "SEM-ROOM-FN",
+        "evidence_group_id": f"{object_id}:SEM-ROOM-FN:function 1.109",
+        "subject": "function 1.109",
+        "expected_value": "Техническое помещение",
+        "actual_value": "Склад ГСМ",
+        "delta": None,
+        "completeness_status": "COMPLETE",
+        "finding_status": "SUSPICION",
+        "detection_method": "SEMANTIC",
+        "confidence": 0.9,
+        "review_priority": "MEDIUM",
+        "rationale": "Назначение помещения 1.109 изменено.",
+        "matrix_version": "1.1",
+        "fragments": [],
+    }])
+
+    async with db._pool.acquire() as connection:
+        check_row = await connection.fetchrow(
+            "SELECT * FROM checks WHERE process_id = $1", process_id,
+        )
+
+    assert check_row["param_code"] == "SEM-ROOM-FN"
+    assert check_row["param_id"] is None
+    assert check_row["finding_status"] == "SUSPICION"
+    assert check_row["detection_method"] == "SEMANTIC"
+    assert check_row["confidence"] == 0.9
+
+
+@pytest.mark.asyncio
 async def test_save_checks_replaces_the_previous_set(db, scenario):
     object_id, process_id, file_id = scenario
 

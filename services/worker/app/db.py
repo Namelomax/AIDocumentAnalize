@@ -301,11 +301,11 @@ class Database:
                             id, process_id, object_id, param_id, param_code,
                             evidence_group_id, subject, expected_value, actual_value,
                             delta, completeness_status, finding_status, review_priority,
-                            rationale, matrix_version
+                            rationale, matrix_version, detection_method, confidence
                         )
                         VALUES (
                             $1, $2, $3, (SELECT id FROM params WHERE code = $4), $4,
-                            $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
+                            $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
                         )
                         """,
                         check_id,
@@ -322,6 +322,13 @@ class Database:
                         check["review_priority"],
                         check.get("rationale"),
                         check["matrix_version"],
+                        # Free-search hypotheses only (section 9.5): how the
+                        # model found this and how sure it was. Null for
+                        # every matrix check - (SELECT id FROM params …)
+                        # above is null for SEM-ROOM-FN the same way, since
+                        # it is not a matrix parameter either.
+                        check.get("detection_method"),
+                        check.get("confidence"),
                     )
 
                     fragments = check.get("fragments") or []

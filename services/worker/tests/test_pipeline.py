@@ -4,8 +4,10 @@ Driven entirely by fakes standing in for app.db.Database and
 app.storage.ManifestStorage: no real PostgreSQL or MinIO is touched here.
 """
 
+import http.server
 import json
 import logging
+import threading
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -72,6 +74,81 @@ def _floor_sheet_pdf(number: str, area: str, total: str) -> bytes:
     raw = document.tobytes()
     document.close()
     return raw
+
+
+def _named_room_sheet_pdf(number: str, area: str, name: str) -> bytes:
+    """Like _room_sheet_pdf, but with a third line Detector 1 reads as the
+    room's name (app.explication.parse: "any number of leftover lines are
+    joined as the name") - room-function comparison needs a name on both
+    sheets, which the bare number+area fixture never has.
+    """
+    document = pymupdf.open()
+    page = document.new_page(width=400, height=800)
+    page.insert_htmlbox(pymupdf.Rect(20, 20, 200, 100), f"<p>{number}<br>{area}<br>{name}</p>")
+    raw = document.tobytes()
+    document.close()
+    return raw
+
+
+class _FakeLlmServer:
+    """A one-test /chat/completions endpoint, in the shape of
+    test_llm_provider.py's own fake server. The pipeline is driven through a
+    real ChatProvider pointed at this local server, not a hand-rolled stand-in
+    for it, so these tests exercise the same request/parse path a live LM
+    Studio run does - only the network address differs.
+    """
+
+    def __init__(self, handler_fn):
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *_args):  # keep pytest output quiet
+                pass
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(length)
+                status, response_body = handler_fn(body)
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(response_body)
+
+        self.server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    @property
+    def base_url(self) -> str:
+        return f"http://127.0.0.1:{self.server.server_port}/v1"
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
+
+
+def _llm_config(base_url: str) -> Config:
+    return Config(
+        database_url="", rabbitmq_url="", log_level="INFO", minio_endpoint="",
+        minio_root_user="", minio_root_password="", minio_bucket="",
+        model_version="rules-2026.09", dataset_version="none",
+        llm_base_url=base_url, llm_model="fake-model", llm_timeout_s=5.0,
+    )
+
+
+def _openai_response(content: str) -> bytes:
+    return json.dumps({"choices": [{"message": {"content": content}}]}).encode("utf-8")
+
+
+def _requested_name_pairs(body: bytes) -> list[dict]:
+    """Pull the [{"key": ..., "pd_name": ..., "rd_name": ...}, ...] array
+    app.explication.functions embeds in its user prompt back out of the
+    request body, so a fake handler can answer with the keys actually asked
+    for instead of guessing at app.pipeline's own numbering scheme.
+    """
+    request = json.loads(body)
+    user_content = request["messages"][1]["content"]
+    start = user_content.index("[")
+    return json.loads(user_content[start:])
 
 
 def mk_process(**overrides):
@@ -435,6 +512,113 @@ async def test_room_area_change_produces_one_candidate_and_the_rest_not_comparab
         c for c in checks if c["param_code"] != "M-003" and c["completeness_status"] == "NOT_COMPARABLE"
     ]
     assert len(other_not_comparable) == 131
+
+
+def _room_function_package():
+    """One PD/RD pair, one room, same number and area, different name -
+    the shape every SEM-ROOM-FN test below needs, built once so the three
+    scenarios (a verdict, no provider, an unavailable model) only differ in
+    what they hand process_start as its config.
+    """
+    process = mk_process(manifest_uploaded=False)
+    pd = mk_file(id="f-pd", file_name="pd.pdf", storage_key="key-pd",
+                 mime_type="application/pdf", doc_stage="PD", document_code="AR-01",
+                 approval_status="APPROVED")
+    rd = mk_file(id="f-rd", file_name="rd.pdf", storage_key="key-rd",
+                 mime_type="application/pdf", doc_stage="RD", document_code="AR-01",
+                 approval_status="FOR_CONSTRUCTION")
+    db = FakeDb(process, [pd, rd])
+    storage = FakeStorage({
+        "key-pd": _named_room_sheet_pdf("1.1", "10,00", "Техническое помещение"),
+        "key-rd": _named_room_sheet_pdf("1.1", "10,00", "Склад ГСМ"),
+    })
+    return db, storage
+
+
+@pytest.mark.asyncio
+async def test_changed_room_function_produces_one_suspicion_with_two_fragments():
+    """Task 4, step 1: a room whose name changed function, and a fake model
+    that agrees - one SUSPICION check, never a CANDIDATE (Global Constraint:
+    a hypothesis is not a violation)."""
+    db, storage = _room_function_package()
+
+    def handler(body: bytes):
+        pairs = _requested_name_pairs(body)
+        answer = [
+            {"key": p["key"], "same_function": False, "confidence": 0.9,
+             "reason": "было техническое помещение, стало складом ГСМ"}
+            for p in pairs
+        ]
+        return 200, _openai_response(json.dumps(answer, ensure_ascii=False))
+
+    server = _FakeLlmServer(handler)
+    try:
+        await process_start("p1", db, storage, _llm_config(server.base_url))
+    finally:
+        server.close()
+
+    assert db.saved["status"] == "READY"
+    checks = db.saved_checks
+    sem_checks = [c for c in checks if c["param_code"] == "SEM-ROOM-FN"]
+    assert len(sem_checks) == 1
+    suspicion = sem_checks[0]
+    assert suspicion["finding_status"] == "SUSPICION"
+    assert suspicion["completeness_status"] == "COMPLETE"
+    assert suspicion["detection_method"] == "SEMANTIC"
+    assert suspicion["confidence"] == 0.9
+    assert suspicion["expected_value"] == "Техническое помещение"
+    assert suspicion["actual_value"] == "Склад ГСМ"
+    assert "Техническое помещение" in suspicion["rationale"]
+    assert "Склад ГСМ" in suspicion["rationale"]
+    assert len(suspicion["fragments"]) == 2
+    assert {f["role"] for f in suspicion["fragments"]} == {"expected", "actual"}
+    # A hypothesis is never a candidate: M-003 itself may still report on
+    # this same room (its area did not change here, so it does not), but
+    # nothing from SEM-ROOM-FN ever carries CANDIDATE.
+    assert not any(c["finding_status"] == "CANDIDATE" for c in sem_checks)
+
+
+@pytest.mark.asyncio
+async def test_room_function_without_a_provider_is_not_comparable():
+    """No LLM_BASE_URL configured: honest refusal, never a guess (Global
+    Constraint: the system works without a model)."""
+    db, storage = _room_function_package()
+
+    await process_start("p1", db, storage, CONFIG)  # CONFIG's llm_base_url is ""
+
+    assert db.saved["status"] == "READY"
+    checks = db.saved_checks
+    sem_checks = [c for c in checks if c["param_code"] == "SEM-ROOM-FN"]
+    assert len(sem_checks) == 1
+    assert sem_checks[0]["completeness_status"] == "NOT_COMPARABLE"
+    assert sem_checks[0]["finding_status"] is None
+    assert sem_checks[0]["rationale"] == (
+        "Языковая модель не подключена: сравнение назначений помещений не выполнялось"
+    )
+
+
+@pytest.mark.asyncio
+async def test_room_function_model_unavailable_still_reaches_ready():
+    """The model answers something that is not JSON: LlmUnavailable, caught
+    the same way an unconfigured provider is - never a lost package."""
+    db, storage = _room_function_package()
+
+    def handler(body: bytes):
+        return 200, _openai_response("прошу прощения, не могу ответить")
+
+    server = _FakeLlmServer(handler)
+    try:
+        await process_start("p1", db, storage, _llm_config(server.base_url))
+    finally:
+        server.close()
+
+    assert db.saved["status"] == "READY"
+    checks = db.saved_checks
+    sem_checks = [c for c in checks if c["param_code"] == "SEM-ROOM-FN"]
+    assert len(sem_checks) == 1
+    assert sem_checks[0]["completeness_status"] == "NOT_COMPARABLE"
+    assert sem_checks[0]["finding_status"] is None
+    assert sem_checks[0]["rationale"]  # carries LlmUnavailable's own reason
 
 
 @pytest.mark.asyncio

@@ -24,6 +24,7 @@ let imageKey: string;
 let candidateCheckId: string;
 let negativeCheckId: string;
 let notComparableCheckId: string;
+let suspicionCheckId: string;
 let protocolId: string;
 let param: { code: string; parameterName: string; spReference: string | null; gostReference: string | null };
 let createdParam = false;
@@ -101,6 +102,22 @@ beforeAll(async () => {
   });
   notComparableCheckId = notComparable.id;
 
+  // A free-search hypothesis (section 9.5): its own param code, no Param row
+  // needed - buildFinding/buildSuspicion fall back to the check's own
+  // paramCode when the matrix has no row for it, exactly as SEM-ROOM-FN
+  // itself has none (plan 8, Task 4, rule 6).
+  const suspicion = await prisma.check.create({
+    data: {
+      processId, objectId, paramCode: 'SEM-ROOM-FN', evidenceGroupId: `${processId}:suspicion`,
+      subject: 'function 1.109', expectedValue: 'Техническое помещение', actualValue: 'Склад ГСМ',
+      completenessStatus: 'COMPLETE', findingStatus: 'SUSPICION', detectionMethod: 'SEMANTIC',
+      confidence: 0.9, reviewPriority: 'MEDIUM',
+      rationale: 'Назначение помещения 1.109 изменено: в ПД «Техническое помещение», в РД «Склад ГСМ».',
+      matrixVersion: '1.1',
+    },
+  });
+  suspicionCheckId = suspicion.id;
+
   const protocol = await prisma.protocol.create({
     data: {
       objectId, processId, version: 1, matrixVersion: '1.1', datasetVersion: 'none',
@@ -165,11 +182,13 @@ describe('GET /api/v1/protocols/:protocol_id', () => {
 
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    expect(body.summary).toMatchObject({ checked: 3, candidates: 1, negative: 1, not_comparable: 1 });
+    expect(body.summary).toMatchObject({
+      checked: 4, candidates: 1, negative: 1, not_comparable: 1, suspicions: 1,
+    });
     await app.close();
   });
 
-  it('keeps findings and completeness as two disjoint sections', async () => {
+  it('keeps findings, completeness and suspicions as three disjoint sections', async () => {
     const app = await buildServer();
     const res = await app.inject({
       method: 'GET', url: `/api/v1/protocols/${protocolId}`, headers: await authHeaders(),
@@ -178,15 +197,45 @@ describe('GET /api/v1/protocols/:protocol_id', () => {
 
     expect(body.findings).toHaveLength(2);
     expect(body.completeness).toHaveLength(1);
+    expect(body.suspicions).toHaveLength(1);
     const findingIds = body.findings.map((f: { id: string }) => f.id);
     expect(findingIds.sort()).toEqual([candidateCheckId, negativeCheckId].sort());
     expect(body.completeness[0]).toMatchObject({
       param_code: param.code, completeness_status: 'NOT_COMPARABLE',
       rationale: 'Параметр не реализован в текущей версии матрицы',
     });
-    // No check appears in both sections.
-    const completenessIds = new Set([notComparableCheckId]);
-    for (const id of findingIds) expect(completenessIds.has(id)).toBe(false);
+    // A hypothesis is never a finding (Global Constraint) - it must not
+    // appear in `findings`, and no CANDIDATE/CONFIRMED_VIOLATION count
+    // above was inflated by it either.
+    expect(findingIds).not.toContain(suspicionCheckId);
+    expect(body.suspicions.map((s: { id: string }) => s.id)).toEqual([suspicionCheckId]);
+    // No check appears in more than one section.
+    const otherIds = new Set([notComparableCheckId, suspicionCheckId]);
+    for (const id of findingIds) expect(otherIds.has(id)).toBe(false);
+    expect(findingIds.includes(notComparableCheckId)).toBe(false);
+    await app.close();
+  });
+
+  it('carries detection_method and confidence on a suspicion, in the shape of a finding', async () => {
+    const app = await buildServer();
+    const res = await app.inject({
+      method: 'GET', url: `/api/v1/protocols/${protocolId}`, headers: await authHeaders(),
+    });
+    const body = res.json();
+
+    const suspicion = body.suspicions.find((s: { id: string }) => s.id === suspicionCheckId);
+    expect(suspicion).toBeTruthy();
+    expect(suspicion).toMatchObject({
+      param_code: 'SEM-ROOM-FN',
+      finding_status: 'SUSPICION',
+      detection_method: 'SEMANTIC',
+      confidence: 0.9,
+      expected_value: 'Техническое помещение',
+      actual_value: 'Склад ГСМ',
+    });
+    // The shape of a finding: title, evidence and a (null, undecided) decision.
+    expect(suspicion.title).toBe('SEM-ROOM-FN — function 1.109');
+    expect(suspicion.decision).toBeNull();
     await app.close();
   });
 

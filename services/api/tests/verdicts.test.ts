@@ -341,6 +341,28 @@ describe('POST /api/v1/protocols/:protocol_id/finalize', () => {
     }
   });
 
+  it('finalizes with a pending hypothesis and no candidates', async () => {
+    // Global Constraint: a hypothesis is not a violation - SUSPICION must
+    // never be counted as a pending candidate, so finalization is not
+    // blocked by one, unlike an undecided CANDIDATE above.
+    const { object, protocol } = await makeScenario([
+      { subject: 'function 1.109', findingStatus: 'SUSPICION', completenessStatus: 'COMPLETE' },
+    ]);
+    try {
+      const app = await buildServer();
+      const res = await app.inject({
+        method: 'POST', url: `/api/v1/protocols/${protocol.id}/finalize`,
+        headers: await authHeaders('INSPECTOR'),
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json().status).toBe('PROTOCOL_FINALIZED');
+      await app.close();
+    } finally {
+      await cleanupScenario(object.id);
+    }
+  });
+
   it('finalizes once every candidate is decided', async () => {
     const inspector = await prisma.user.findUniqueOrThrow({ where: { login: 'test-inspector' } });
     const { object, process, protocol } = await makeScenario(

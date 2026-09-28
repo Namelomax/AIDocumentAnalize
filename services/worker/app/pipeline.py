@@ -15,6 +15,7 @@ be driven by fakes in tests without a real PostgreSQL or MinIO.
 
 import hashlib
 import logging
+import time
 from dataclasses import replace
 from datetime import date, datetime
 
@@ -22,7 +23,9 @@ from app.domain.completeness import STAGES, compute_completeness, determine_scen
 from app.domain.manifest import parse_manifest
 from app.domain.revisions import FileMeta, select_source_revision
 from app.explication.compare import RoomFinding, SheetRooms, compare_sheets, pair_sheets
-from app.explication.parse import find_floor_totals, find_rooms, room_key
+from app.explication.functions import NamePair, compare_room_functions, normalize_room_name
+from app.explication.parse import Room, find_floor_totals, find_rooms, room_key
+from app.llm.provider import LlmUnavailable, provider_from_config
 from app.params.engine import evaluate_all
 from app.params.specs import ParamSpec, load_specs
 from app.pdf.extract import ExtractedBlock, ExtractedLine, ExtractedPage, extract_pages
@@ -35,6 +38,13 @@ logger = logging.getLogger(__name__)
 # executive documentation (ID) stage has no explication of its own to read
 # (see "Что этот план сознательно не делает").
 _COMPARABLE_STAGES = ("PD", "RD")
+
+# Section 9.5's "semantic dissonance" rule. Free-search, not part of the
+# GOLD matrix (plan 8, Task 4, rule 6): no params.yaml spec exists for it, so
+# save_checks's own param_id subquery returns NULL for it by design, not by
+# omission.
+_SEM_ROOM_FN_CODE = "SEM-ROOM-FN"
+_SEM_ROOM_FN_PRIORITY = "MEDIUM"
 
 
 def _as_date(value: date | datetime | None) -> date | None:
@@ -315,8 +325,136 @@ def _room_finding_check(object_id: str, spec: ParamSpec, matrix_version: str,
     }
 
 
+def _sem_room_fn_not_comparable(object_id: str, matrix_version: str, group_label: str, reason: str) -> dict:
+    """A checks row that states the model could not be asked - never a
+    hypothesis (Global Constraint: without a model, the package still
+    finishes). SEM-ROOM-FN has no ParamSpec of its own - it is a free-search
+    rule (section 9.5), not a matrix parameter - so its fields are supplied
+    directly here rather than read off a spec, the way _completeness_check
+    does for M-003 and the matrix.
+    """
+    return {
+        "param_code": _SEM_ROOM_FN_CODE,
+        "evidence_group_id": f"{object_id}:{_SEM_ROOM_FN_CODE}:{group_label}",
+        "subject": None,
+        "expected_value": None,
+        "actual_value": None,
+        "delta": None,
+        "completeness_status": "NOT_COMPARABLE",
+        "finding_status": None,
+        "review_priority": _SEM_ROOM_FN_PRIORITY,
+        "rationale": reason,
+        "matrix_version": matrix_version,
+        "fragments": [],
+    }
+
+
+def _room_function_check(object_id: str, matrix_version: str,
+                          pd_sheet: SheetRooms, rd_sheet: SheetRooms, key: str,
+                          pd_room: Room, rd_room: Room, verdict, file_by_id: dict) -> dict:
+    """A SUSPICION row for one room the model says changed function.
+
+    Global Constraint: a hypothesis is not a violation - finding_status is
+    SUSPICION, never CANDIDATE, and detection_method/confidence exist only
+    for the inspector's screen (section 9.5), never to gate anything here.
+    """
+    expected_file = file_by_id[pd_sheet.file_id]
+    actual_file = file_by_id[rd_sheet.file_id]
+    # Same scheme as M-003's own findings (_room_finding_check): the sheet
+    # pair a room came from, not the room key alone, is what keeps the group
+    # id unique across a package with more than one PD/RD pair.
+    pair_id = f"{pd_sheet.file_id}#{pd_sheet.page_no}~{rd_sheet.file_id}#{rd_sheet.page_no}"
+    subject = f"function {key}"
+    return {
+        "param_code": _SEM_ROOM_FN_CODE,
+        "evidence_group_id": f"{object_id}:{_SEM_ROOM_FN_CODE}:{pair_id}:{subject}",
+        "subject": subject,
+        "expected_value": pd_room.name,
+        "actual_value": rd_room.name,
+        "delta": None,
+        "completeness_status": "COMPLETE",
+        "finding_status": "SUSPICION",
+        "detection_method": "SEMANTIC",
+        "confidence": verdict.confidence,
+        "review_priority": _SEM_ROOM_FN_PRIORITY,
+        "rationale": (
+            f"Назначение помещения {pd_room.number} изменено: в ПД «{pd_room.name}», "
+            f"в РД «{rd_room.name}». {verdict.reason}"
+        ),
+        "matrix_version": matrix_version,
+        "fragments": [
+            _fragment(expected_file, pd_sheet, pd_room.box, pd_room.name, "expected"),
+            _fragment(actual_file, rd_sheet, rd_room.box, rd_room.name, "actual"),
+        ],
+    }
+
+
+async def _room_function_checks(process_id: str, object_id: str, matrix_version: str,
+                                 pairs: list[tuple[SheetRooms, SheetRooms]],
+                                 file_by_id: dict, provider) -> list[dict]:
+    """Section 9.5 semantic dissonance: every room that kept its number on
+    both sheets but reads differently after normalize_room_name, across
+    every PD/RD pair of the package, asked about in one model call total
+    (Global Constraint: one call per package, not one per sheet pair).
+    """
+    name_pairs: list[NamePair] = []
+    lookup: dict[str, tuple[SheetRooms, SheetRooms, str, Room, Room]] = {}
+    for pd_sheet, rd_sheet in pairs:
+        for key in sorted(set(pd_sheet.rooms) & set(rd_sheet.rooms)):
+            pd_room, rd_room = pd_sheet.rooms[key], rd_sheet.rooms[key]
+            if not pd_room.name or not rd_room.name:
+                continue
+            if normalize_room_name(pd_room.name) == normalize_room_name(rd_room.name):
+                continue
+            pair_key = f"p{len(name_pairs) + 1}"
+            name_pairs.append(NamePair(key=pair_key, pd_name=pd_room.name, rd_name=rd_room.name))
+            lookup[pair_key] = (pd_sheet, rd_sheet, key, pd_room, rd_room)
+
+    if not name_pairs:
+        # Nothing disagrees after normalization: there is no hypothesis to
+        # raise and nothing a model call could have told us, so no
+        # SEM-ROOM-FN row at all - not even NOT_COMPARABLE, the same way
+        # M-003 itself never reports on a pair with nothing to compare.
+        return []
+
+    if provider is None:
+        logger.info("room functions compared", extra={
+            "process_id": process_id, "pairs": len(name_pairs), "elapsed_s": 0.0, "configured": False,
+        })
+        return [_sem_room_fn_not_comparable(
+            object_id, matrix_version, "no-provider",
+            "Языковая модель не подключена: сравнение назначений помещений не выполнялось",
+        )]
+
+    started = time.monotonic()
+    try:
+        verdicts = await compare_room_functions(name_pairs, provider)
+    except LlmUnavailable as exc:
+        logger.info("room functions compared", extra={
+            "process_id": process_id, "pairs": len(name_pairs),
+            "elapsed_s": round(time.monotonic() - started, 3), "configured": True, "error": str(exc),
+        })
+        return [_sem_room_fn_not_comparable(object_id, matrix_version, "unavailable", str(exc))]
+
+    logger.info("room functions compared", extra={
+        "process_id": process_id, "pairs": len(name_pairs),
+        "elapsed_s": round(time.monotonic() - started, 3), "configured": True,
+        "different": sum(1 for v in verdicts if not v.same_function),
+    })
+
+    checks = []
+    for verdict in verdicts:
+        if verdict.same_function:
+            continue  # Global Constraint: same_function never produces a row.
+        pd_sheet, rd_sheet, key, pd_room, rd_room = lookup[verdict.key]
+        checks.append(_room_function_check(
+            object_id, matrix_version, pd_sheet, rd_sheet, key, pd_room, rd_room, verdict, file_by_id,
+        ))
+    return checks
+
+
 async def _explication_checks(process_id: str, object_id: str, files, db,
-                               m003: ParamSpec, matrix_version: str) -> list[dict]:
+                               m003: ParamSpec, matrix_version: str, provider) -> list[dict]:
     """M-003: compare room explications between the current PD and RD sources.
 
     Every group that could not contribute a comparable file records its own
@@ -364,6 +502,10 @@ async def _explication_checks(process_id: str, object_id: str, files, db,
             checks.append(_room_finding_check(
                 object_id, m003, matrix_version, pd_sheet, rd_sheet, finding, file_by_id,
             ))
+
+    checks.extend(await _room_function_checks(
+        process_id, object_id, matrix_version, pairs, file_by_id, provider,
+    ))
 
     return checks
 
@@ -516,9 +658,14 @@ async def process_start(process_id: str, db, storage, config) -> None:
     specs = load_specs()
     m003 = next(spec for spec in specs.params if spec.code == "M-003")
 
+    # None when LLM_BASE_URL is unset (see app.config's own docstring): every
+    # call downstream already treats that the same as LlmUnavailable, so no
+    # branch is needed here beyond building it once for the whole package.
+    provider = provider_from_config(config)
+
     try:
         checks = await _explication_checks(
-            process_id, process.object_id, final_files, db, m003, specs.version,
+            process_id, process.object_id, final_files, db, m003, specs.version, provider,
         )
     except Exception as exc:  # noqa: BLE001 - a failed comparison is one finding, not a lost package
         logger.error("explication comparison failed", extra={
