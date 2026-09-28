@@ -190,6 +190,27 @@ export interface Protocol {
   suspicions: Finding[];
 }
 
+// One row of the "Протоколы" sidebar screen's list (GET /api/v1/protocols)
+// - across every object at once, unlike Protocol above which carries one
+// protocol's full findings. `awaitingDecision`/`confirmed`/`rejected` mirror
+// the engine's own CANDIDATE/CONFIRMED_VIOLATION/NEGATIVE_VERIFIED, computed
+// through the same composite-visibility rule as the rest of the app
+// (services/api's checks/visibility.ts).
+export interface ProtocolListItem {
+  id: string;
+  objectId: string;
+  objectName: string;
+  version: number;
+  status: ProtocolStatus;
+  createdAt: string;
+  finalizedAt: string | null;
+  finalizedBy: string | null;
+  awaitingDecision: number;
+  confirmed: number;
+  rejected: number;
+  suspicions: number;
+}
+
 export interface CompositeAtom {
   id: string;
   code: string;

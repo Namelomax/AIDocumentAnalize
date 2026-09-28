@@ -21,6 +21,7 @@ import type {
   ProjectObject,
   Protocol,
   ProtocolCompletenessRow,
+  ProtocolListItem,
   ProtocolStatus,
   ReasonCode,
   ReviewPriority,
@@ -220,6 +221,28 @@ export interface ApiSuspicionListItem extends ApiSuspicion {
   object_id: string;
   object_name: string;
   protocol_id: string;
+}
+
+// GET /api/v1/protocols → { total, items[] } (services/api/src/routes/protocols.ts)
+// - the "Протоколы" sidebar screen's own list, across every object at once.
+export interface ApiProtocolListItem {
+  id: string;
+  object_id: string;
+  object_name: string;
+  version: number;
+  status: string;
+  created_at: string;
+  finalized_at: string | null;
+  finalized_by: string | null;
+  awaiting_decision: number;
+  confirmed: number;
+  rejected: number;
+  suspicions: number;
+}
+
+export interface ApiProtocolsListResponse {
+  total: number;
+  items: ApiProtocolListItem[];
 }
 
 /* ─────────── Общие преобразования ─────────── */
@@ -610,5 +633,22 @@ export function toProtocol(api: ApiProtocol): Protocol {
     // A third, disjoint section (Global Constraint: a hypothesis is not a
     // violation) — `?? []` covers a response from before this field existed.
     suspicions: (api.suspicions ?? []).map(toSuspicion),
+  };
+}
+
+export function toProtocolListItem(api: ApiProtocolListItem): ProtocolListItem {
+  return {
+    id: api.id,
+    objectId: api.object_id,
+    objectName: api.object_name,
+    version: api.version,
+    status: api.status as ProtocolStatus,
+    createdAt: formatDateTime(api.created_at),
+    finalizedAt: api.finalized_at ? formatDateTime(api.finalized_at) : null,
+    finalizedBy: api.finalized_by,
+    awaitingDecision: api.awaiting_decision,
+    confirmed: api.confirmed,
+    rejected: api.rejected,
+    suspicions: api.suspicions,
   };
 }

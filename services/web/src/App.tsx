@@ -5,6 +5,7 @@ import DashboardScreen from './screens/DashboardScreen';
 import ObjectScreen from './screens/ObjectScreen';
 import UploadScreen from './screens/UploadScreen';
 import ProcessingScreen from './screens/ProcessingScreen';
+import ProtocolsScreen from './screens/ProtocolsScreen';
 import ProtocolScreen from './screens/ProtocolScreen';
 import VerificationScreen from './screens/VerificationScreen';
 import FinalizationScreen from './screens/FinalizationScreen';
@@ -17,6 +18,7 @@ export type ScreenId =
   | 'object'
   | 'upload'
   | 'processing'
+  | 'protocols'
   | 'protocol'
   | 'verification'
   | 'finalization'
@@ -27,6 +29,10 @@ export interface NavState {
   objectId?: string;
   protocolId?: string;
   processId?: string;
+  // Where 'protocol' should go back to - the sidebar's "Протоколы" list
+  // (Sidebar.tsx) rather than the object's own upload screen, which is
+  // 'protocol''s default back target (see its onBack below).
+  returnTo?: ScreenId;
 }
 
 export default function App() {
@@ -117,10 +123,22 @@ export default function App() {
           />
         )}
 
+        {nav.screen === 'protocols' && (
+          <ProtocolsScreen
+            onOpenProtocol={(protocolId, objectId) =>
+              onNavigate({ screen: 'protocol', protocolId, objectId, returnTo: 'protocols' })
+            }
+          />
+        )}
+
         {nav.screen === 'protocol' && (
           <ProtocolScreen
             protocolId={nav.protocolId ?? ''}
-            onBack={() => onNavigate({ screen: 'upload', objectId: nav.objectId })}
+            onBack={() => (
+              nav.returnTo === 'protocols'
+                ? onNavigate({ screen: 'protocols' })
+                : onNavigate({ screen: 'upload', objectId: nav.objectId })
+            )}
             onOpenVerification={(protocolId) =>
               onNavigate({ screen: 'verification', protocolId, objectId: nav.objectId })
             }

@@ -24,7 +24,7 @@ function initials(user: SessionUser): string {
 
 const items: { id: ScreenId; icon: typeof Building2; label: string }[] = [
   { id:'dashboard',  icon: Building2,  label:'Объекты' },
-  { id:'protocol',   icon: FileText,   label:'Протоколы' },
+  { id:'protocols',  icon: FileText,   label:'Протоколы' },
   { id:'hypotheses', icon: Lightbulb,  label:'Гипотезы' },
   { id:'finalization', icon: ScrollText, label:'Журнал аудита' }
 ];

@@ -242,4 +242,19 @@ assert_at_least "checks recorded for the reference process" \
   "SELECT count(*) FROM checks WHERE process_id = '$PROCESS3';" \
   132
 
+echo "19. the protocol the worker created shows up in the protocols list for its object"
+# db.create_protocol runs before the process is saved as READY (worker's
+# pipeline.py), so by step 13 above the protocol already exists - this only
+# proves GET /api/v1/protocols?object_id=... (the "Протоколы" screen's own
+# endpoint) actually finds it.
+curl -fsS "$API/protocols?object_id=$OBJECT3" "${AUTH[@]}" | python -c "
+import sys, json
+body = json.loads(sys.stdin.buffer.read().decode('utf-8'))
+assert body['total'] >= 1, f\"expected total >= 1, got {body['total']}\"
+items = [i for i in body['items'] if i['object_id'] == '$OBJECT3']
+assert items, 'no protocol for object $OBJECT3 in the list'
+assert items[0]['object_name'], 'object_name missing on the listed protocol'
+print('ok')
+"
+
 echo "PASS"

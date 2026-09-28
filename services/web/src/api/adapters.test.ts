@@ -9,6 +9,7 @@ import {
   toProgress,
   toProjectObject,
   toProtocol,
+  toProtocolListItem,
   toSuspicion,
   toSuspicionListItem,
   toUploadedFile,
@@ -19,6 +20,7 @@ import {
   type ApiObjectListItem,
   type ApiProgress,
   type ApiProtocol,
+  type ApiProtocolListItem,
   type ApiSuspicion,
   type ApiSuspicionListItem,
 } from './adapters';
@@ -433,6 +435,55 @@ describe('toProtocol', () => {
   it('defaults suspicions to an empty list when the response has none', () => {
     const protocol = toProtocol(protocolFixture);
     expect(protocol.suspicions).toEqual([]);
+  });
+});
+
+describe('toProtocolListItem', () => {
+  const listItemFixture: ApiProtocolListItem = {
+    id: 'protocol-1',
+    object_id: 'obj-1',
+    object_name: 'Школа №1',
+    version: 2,
+    status: 'VERIFYING',
+    created_at: '2025-11-14T10:14:00.000Z',
+    finalized_at: null,
+    finalized_by: null,
+    awaiting_decision: 3,
+    confirmed: 1,
+    rejected: 2,
+    suspicions: 1,
+  };
+
+  it('maps object, version, status and the four counters', () => {
+    const item = toProtocolListItem(listItemFixture);
+    expect(item.objectId).toBe('obj-1');
+    expect(item.objectName).toBe('Школа №1');
+    expect(item.version).toBe(2);
+    expect(item.status).toBe('VERIFYING');
+    expect(item.awaitingDecision).toBe(3);
+    expect(item.confirmed).toBe(1);
+    expect(item.rejected).toBe(2);
+    expect(item.suspicions).toBe(1);
+  });
+
+  it('formats created_at and leaves finalizedAt/finalizedBy null when never finalized', () => {
+    const item = toProtocolListItem(listItemFixture);
+    expect(item.createdAt).toEqual(expect.any(String));
+    expect(item.createdAt).not.toBe(listItemFixture.created_at);
+    expect(item.finalizedAt).toBeNull();
+    expect(item.finalizedBy).toBeNull();
+  });
+
+  it('formats finalized_at and carries the finalizer full name when finalized', () => {
+    const item = toProtocolListItem({
+      ...listItemFixture,
+      status: 'PROTOCOL_FINALIZED',
+      finalized_at: '2025-11-15T09:00:00.000Z',
+      finalized_by: 'Петрова Е.И.',
+    });
+    expect(item.status).toBe('PROTOCOL_FINALIZED');
+    expect(item.finalizedAt).toEqual(expect.any(String));
+    expect(item.finalizedBy).toBe('Петрова Е.И.');
   });
 });
 

@@ -10,7 +10,7 @@ import { SkeletonTable } from '../components/Skeleton';
 import { useToast } from '../components/Toast';
 import { api, apiBlob, saveBlob, ApiError } from '../api/client';
 import { toProtocol, type ApiProtocol } from '../api/adapters';
-import { processStatusLabels } from '../labels';
+import { protocolStatusColor, protocolStatusLabels } from '../labels';
 import type { DocStage, FindingStatus, Protocol, ReviewPriority } from '../types';
 
 interface Props {
@@ -40,13 +40,6 @@ const TAB_LABELS: Record<TabKey, string> = {
 };
 
 const TAB_ORDER: TabKey[] = ['completeness', 'candidates', 'confirmed', 'verified', 'hypotheses'];
-
-const STATUS_DOT: Record<Protocol['status'], string> = {
-  READY: '#B54708',
-  VERIFYING: '#1B4E9B',
-  VERIFICATION_COMPLETED: '#027A48',
-  PROTOCOL_FINALIZED: '#027A48',
-};
 
 // Extension of the task's own "pdf" | "docx" | "xml" export formats
 // (routes/export.ts), kept local to the two screens that offer a download.
@@ -259,12 +252,12 @@ export default function ProtocolScreen({
             <div className="flex items-center gap-3">
               <span
                 className="inline-flex items-center gap-1.5 text-[13px]"
-                style={{ color: STATUS_DOT[protocol.status] }}
+                style={{ color: protocolStatusColor(protocol.status) }}
               >
                 {protocol.status === 'VERIFYING'
                   ? <Clock size={14} aria-hidden />
                   : <CheckCircle2 size={14} aria-hidden />}
-                {processStatusLabels[protocol.status] ?? protocol.status}
+                {protocolStatusLabels[protocol.status] ?? protocol.status}
               </span>
               <span className="text-[12px] text-[#475569]">
                 Создан: <span className="mono text-[#0F172A]">{protocol.createdAt}</span>

@@ -34,6 +34,27 @@ export function processStatusColor(status: string): string | undefined {
   return status === 'FAILED' ? '#B42318' : undefined;
 }
 
+// A protocol's own lifecycle (section 9.3, types/index.ts's ProtocolStatus)
+// - distinct from processStatusLabels above even though READY/VERIFYING read
+// identically for both, because VERIFICATION_COMPLETED/PROTOCOL_FINALIZED
+// never apply to a process at all.
+export const protocolStatusLabels: Record<string, string> = {
+  READY:                  'Готов к верификации',
+  VERIFYING:               'Верификация',
+  VERIFICATION_COMPLETED:  'Верификация завершена',
+  PROTOCOL_FINALIZED:      'Протокол финализирован'
+};
+
+// Same colour a protocol's status dot already used on ProtocolScreen -
+// shared here so the "Протоколы" list's status chip agrees with it.
+export function protocolStatusColor(status: string): string {
+  switch (status) {
+    case 'READY': return '#B54708';
+    case 'VERIFYING': return '#1B4E9B';
+    default: return '#027A48'; // VERIFICATION_COMPLETED / PROTOCOL_FINALIZED
+  }
+}
+
 export const approvalLabels: Record<string, string> = {
   DRAFT: 'Черновик',
   APPROVED: 'Утверждён',
