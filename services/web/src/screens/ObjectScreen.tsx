@@ -5,7 +5,7 @@ import StageBadge from '../components/StageBadge';
 import Button from '../components/Button';
 import EmptyState from '../components/EmptyState';
 import { SkeletonText } from '../components/Skeleton';
-import { completenessLabels, processStatusLabels } from '../labels';
+import { completenessLabels, processStatusColor, processStatusLabels } from '../labels';
 import { api, ApiError } from '../api/client';
 import { toObjectProcess, toProjectObject, type ApiObjectDetail } from '../api/adapters';
 import type { DocStage, ObjectProcess, ProjectObject } from '../types';
@@ -177,7 +177,12 @@ export default function ObjectScreen({ objectId, onBack, onOpenUpload, onOpenPro
 
             <div className="col-span-4 bg-white border border-[#E2E8F0] rounded-lg p-4">
               <div className="text-[11px] text-[#94A3B8] uppercase tracking-wide mb-1">Статус процесса</div>
-              <div className="text-[13px] text-[#0F172A] font-medium">{processStatusLabels[object.processStatus]}</div>
+              <div
+                className="text-[13px] text-[#0F172A] font-medium"
+                style={{ color: processStatusColor(object.processStatus) }}
+              >
+                {processStatusLabels[object.processStatus]}
+              </div>
               <div className="mt-3 text-[12px] text-[#475569] flex flex-col gap-1">
                 <span>Кандидатов: <span className="num text-[#0F172A]">{object.candidates}</span></span>
                 <span>Подтверждено: <span className="num text-[#0F172A]">{object.confirmed}</span></span>
@@ -217,7 +222,9 @@ export default function ObjectScreen({ objectId, onBack, onOpenUpload, onOpenPro
                     >
                       <td className="px-3 num text-[#0F172A]">{p.protocolVersion ?? '—'}</td>
                       <td className="px-3 mono text-[11px] text-[#475569]">{p.processId.slice(0, 8)}</td>
-                      <td className="px-3 text-[#475569]">{processStatusLabels[p.status]}</td>
+                      <td className="px-3 text-[#475569]" style={{ color: processStatusColor(p.status) }}>
+                        {processStatusLabels[p.status]}
+                      </td>
                       <td className="px-3 mono text-[12px] text-[#475569]">{p.createdAt}</td>
                     </tr>
                   ))}
@@ -237,7 +244,9 @@ export default function ObjectScreen({ objectId, onBack, onOpenUpload, onOpenPro
               {processes.map((p) => (
                 <div key={p.processId} className="px-4 py-3 flex items-center gap-3 text-[13px]">
                   <span className="mono text-[11px] text-[#94A3B8] w-[90px] shrink-0">{p.createdAt}</span>
-                  <span className="text-[#0F172A]">{processStatusLabels[p.status]}</span>
+                  <span className="text-[#0F172A]" style={{ color: processStatusColor(p.status) }}>
+                    {processStatusLabels[p.status]}
+                  </span>
                   {p.scenario && <span className="text-[#94A3B8]">· {p.scenario}</span>}
                   {p === latestProcess && (
                     <span className="ml-auto text-[11px] text-[#1B4E9B]">текущий</span>

@@ -16,6 +16,7 @@ import { pageRoutes } from './routes/pages.js';
 import { verdictRoutes } from './routes/verdicts.js';
 import { suspicionRoutes } from './routes/suspicions.js';
 import { exportRoutes } from './routes/export.js';
+import { notificationRoutes } from './routes/notifications.js';
 import { ensureBucket } from './storage.js';
 import { seedDemoUsers } from './auth/seed.js';
 import { authPlugin } from './auth/plugin.js';
@@ -76,6 +77,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
   await app.register(verdictRoutes);
   await app.register(suspicionRoutes);
   await app.register(exportRoutes);
+  await app.register(notificationRoutes);
   return app;
 }
 

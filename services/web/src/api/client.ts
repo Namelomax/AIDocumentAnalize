@@ -169,6 +169,39 @@ export function splitComposite(checkId: string): Promise<{ atoms: SplitResponseA
   return api<{ atoms: SplitResponseAtom[] }>(`/api/v1/findings/${checkId}/split`, { method: 'POST' });
 }
 
+// The raw (snake_case) shape of GET /api/v1/notifications - mirrors
+// adapters.ts's own ApiNotification/ApiNotificationsResponse (kept separate
+// rather than imported, the same way splitComposite above defines its own
+// SplitResponseAtom instead of reaching into adapters.ts for one).
+export interface NotificationItem {
+  id: string;
+  kind: string;
+  title: string;
+  body: string;
+  process_id: string | null;
+  object_id: string | null;
+  created_at: string;
+  read_at: string | null;
+}
+
+export interface NotificationsResponse {
+  items: NotificationItem[];
+  unread_count: number;
+}
+
+// Polled by NotificationBell (components/NotificationBell.tsx) every 30s.
+export function fetchNotifications(): Promise<NotificationsResponse> {
+  return api<NotificationsResponse>('/api/v1/notifications');
+}
+
+export function markNotificationRead(id: string): Promise<{ id: string; read_at: string | null }> {
+  return api(`/api/v1/notifications/${id}/read`, { method: 'POST' });
+}
+
+export function markAllNotificationsRead(): Promise<{ updated: number }> {
+  return api('/api/v1/notifications/read-all', { method: 'POST' });
+}
+
 export async function apiBlob(path: string): Promise<Blob> {
   const response = await fetch(path, { headers: authHeaders() });
   if (response.status === 401) {

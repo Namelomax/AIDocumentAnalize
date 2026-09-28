@@ -200,6 +200,43 @@ describe('process routes', () => {
     });
     await app.close();
   });
+
+  it('records who started the process', async () => {
+    const app = await buildServer();
+    const process = await makeProcess(1);
+    const headers = await authHeaders();
+
+    await app.inject({ method: 'POST', url: `/api/v1/processes/${process.id}/start`, headers });
+
+    const stored = await prisma.process.findUniqueOrThrow({ where: { id: process.id } });
+    expect(stored.startedBy).not.toBeNull();
+    await app.close();
+  });
+
+  it('reports a FAILED process with its error message (worker\'s own exhausted-retries path)', async () => {
+    // Customer's ТЗ p.17: a process.start task that still fails after its
+    // retries (services/worker/app/pipeline.py) is moved to FAILED with a
+    // short reason - this only checks that the API surfaces it, the same
+    // way the worker itself sets it (services/worker/app/db.py's
+    // mark_process_failed).
+    const app = await buildServer();
+    const process = await makeProcess(1);
+    await prisma.process.update({
+      where: { id: process.id },
+      data: { status: 'FAILED', errorMessage: 'Обработка пакета завершилась ошибкой: database unreachable' },
+    });
+
+    const res = await app.inject({
+      method: 'GET', url: `/api/v1/processes/${process.id}`, headers: await authHeaders(),
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({
+      status: 'FAILED',
+      error_message: 'Обработка пакета завершилась ошибкой: database unreachable',
+    });
+    await app.close();
+  });
 });
 
 describe('GET /api/v1/processes/:process_id/progress', () => {

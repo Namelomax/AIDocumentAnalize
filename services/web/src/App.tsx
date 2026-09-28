@@ -10,6 +10,7 @@ import VerificationScreen from './screens/VerificationScreen';
 import FinalizationScreen from './screens/FinalizationScreen';
 import HypothesesScreen from './screens/HypothesesScreen';
 import { clearSession, getSession, onUnauthorized, type Session } from './api/client';
+import type { AppNotification } from './types';
 
 export type ScreenId =
   | 'dashboard'
@@ -52,6 +53,16 @@ export default function App() {
     setSession(null);
   };
 
+  // Both notification kinds the worker/API ever create carry an object_id
+  // (PROCESS_READY, FILE_PROCESSING_FAILED, PROCESS_FAILED all originate
+  // from a process, which always has one) - the object screen is the
+  // universal landing page, since it is also where "Протоколы" lives.
+  const handleOpenNotification = (notification: AppNotification) => {
+    if (notification.objectId) {
+      onNavigate({ screen: 'object', objectId: notification.objectId });
+    }
+  };
+
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-[#F5F7FA]">
       <Sidebar
@@ -59,6 +70,7 @@ export default function App() {
         onNavigate={(screen) => onNavigate({ screen })}
         user={session.user}
         onLogout={handleLogout}
+        onOpenNotification={handleOpenNotification}
       />
 
       <main className="flex-1 min-w-0 h-screen overflow-hidden flex flex-col">

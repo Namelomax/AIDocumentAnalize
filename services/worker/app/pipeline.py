@@ -13,6 +13,7 @@ db and storage are passed in rather than constructed here so the pipeline can
 be driven by fakes in tests without a real PostgreSQL or MinIO.
 """
 
+import asyncio
 import hashlib
 import logging
 import time
@@ -61,52 +62,110 @@ def _is_manifest_row(file_row, process) -> bool:
     return file_row.doc_stage is None and file_row.file_hash == process.input_manifest_hash
 
 
-async def _extract_document_pages(process_id: str, files, db, storage) -> None:
+def _extract_and_render_sync(raw: bytes) -> list[tuple[ExtractedPage, bytes]]:
+    """The CPU-bound half of one file's extraction: PyMuPDF text extraction
+    and page rendering, both synchronous. Run through asyncio.to_thread so
+    asyncio.wait_for's timeout (customer's ТЗ p.17: "Таймаут при обработке
+    файла") can actually cut it off - a synchronous call awaited directly
+    would block the event loop past any timeout instead.
+    """
+    pages = extract_pages(raw)
+    return [(page, render_page_png(raw, page.page_no)) for page in pages]
+
+
+async def _extract_one_file(record, db, storage, timeout_s: float) -> list[dict]:
+    """One attempt at reading a single PDF's text layer and rendering its
+    pages. Raises (TimeoutError on a timeout, whatever extract_pages/
+    render_page_png raise otherwise) rather than catching anything itself -
+    the retry loop in _extract_document_pages owns deciding when to give up.
+    """
+    raw = await storage.get_object(record.storage_key)
+    pairs = await asyncio.wait_for(asyncio.to_thread(_extract_and_render_sync, raw), timeout=timeout_s)
+    stored = []
+    for page, png in pairs:
+        image_key = f"pages/{record.id}/{page.page_no}.png"
+        await storage.put_object(image_key, png, "image/png")
+        stored.append({
+            "page_no": page.page_no,
+            "width_pt": page.width_pt,
+            "height_pt": page.height_pt,
+            "rotation": page.rotation,
+            "char_count": page.char_count,
+            "needs_ocr": page.needs_ocr,
+            "image_key": image_key,
+            "blocks": [
+                {"block_no": b.block_no, "line_no": line.line_no, "text": line.text,
+                 "x0": line.box.x0, "y0": line.box.y0,
+                 "x1": line.box.x1, "y1": line.box.y1}
+                for b in page.blocks
+                for line in b.lines
+            ],
+        })
+    await db.save_pages(record.id, stored)
+    return stored
+
+
+async def _extract_document_pages(process_id: str, files, db, storage, config) -> None:
     """Read the text layer of every PDF in the package.
 
-    One unreadable file must not cost the package its other documents, so a
-    failure here is recorded against that file and the rest continue.
+    One unreadable file must not cost the package its other documents: a
+    timeout or error here is retried up to config.processing_retries further
+    times (customer's ТЗ p.17: "Повторная попытка обработки (до 2 раз)"), and
+    only once every attempt has failed is it recorded against that file and
+    an admin notified - the rest of the package continues either way.
     """
+    attempts_allowed = 1 + max(config.processing_retries, 0)
     for record in files:
         if record.mime_type != "application/pdf":
             continue
-        try:
-            raw = await storage.get_object(record.storage_key)
-            pages = extract_pages(raw)
-            stored = []
-            for page in pages:
-                image_key = f"pages/{record.id}/{page.page_no}.png"
-                await storage.put_object(
-                    image_key, render_page_png(raw, page.page_no), "image/png"
-                )
-                stored.append({
-                    "page_no": page.page_no,
-                    "width_pt": page.width_pt,
-                    "height_pt": page.height_pt,
-                    "rotation": page.rotation,
-                    "char_count": page.char_count,
-                    "needs_ocr": page.needs_ocr,
-                    "image_key": image_key,
-                    "blocks": [
-                        {"block_no": b.block_no, "line_no": line.line_no, "text": line.text,
-                         "x0": line.box.x0, "y0": line.box.y0,
-                         "x1": line.box.x1, "y1": line.box.y1}
-                        for b in page.blocks
-                        for line in b.lines
-                    ],
+
+        last_exc: BaseException | None = None
+        for attempt in range(1, attempts_allowed + 1):
+            try:
+                stored = await _extract_one_file(record, db, storage, config.file_processing_timeout_s)
+                logger.info("pages extracted", extra={
+                    "process_id": process_id,
+                    "file_id": record.id,
+                    "pages": len(stored),
+                    "scans": sum(1 for p in stored if p["needs_ocr"]),
+                    "attempt": attempt,
                 })
-            await db.save_pages(record.id, stored)
-            logger.info("pages extracted", extra={
-                "process_id": process_id,
-                "file_id": record.id,
-                "pages": len(stored),
-                "scans": sum(1 for p in stored if p["needs_ocr"]),
+                last_exc = None
+                break
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - retried in-process, recorded once exhausted
+                last_exc = exc
+                logger.error("page extraction attempt failed", extra={
+                    "process_id": process_id,
+                    "file_id": record.id,
+                    "attempt": attempt,
+                    "attempts": attempts_allowed,
+                    "timeout": isinstance(exc, asyncio.TimeoutError),
+                    "error": str(exc) or exc.__class__.__name__,
+                })
+
+        if last_exc is None:
+            continue
+
+        message = (
+            f"Не удалось обработать файл «{record.file_name}» после "
+            f"{attempts_allowed} попыток: {last_exc}"
+        )
+        try:
+            await db.record_file_processing_error(record.id, message)
+        except Exception as exc:  # noqa: BLE001 - the package still continues without it
+            logger.error("recording file processing error failed", extra={
+                "process_id": process_id, "file_id": record.id, "error": str(exc),
             })
-        except Exception as exc:  # noqa: BLE001 - reported per file, never fatal
-            logger.error("page extraction failed", extra={
-                "process_id": process_id,
-                "file_id": record.id,
-                "error": str(exc),
+        try:
+            await db.notify_admins(
+                "FILE_PROCESSING_FAILED", "Не удалось обработать файл", message,
+                process_id=process_id, object_id=record.object_id,
+            )
+        except Exception as exc:  # noqa: BLE001 - a failed notification must not cost the package
+            logger.error("admin notification failed", extra={
+                "process_id": process_id, "file_id": record.id, "error": str(exc),
             })
 
 
@@ -541,7 +600,7 @@ def input_manifest_hash(process, files) -> str:
     return hashlib.sha256(joined.encode("utf-8")).hexdigest()
 
 
-async def process_start(process_id: str, db, storage, config) -> None:
+async def _process_start_once(process_id: str, db, storage, config) -> None:
     process = await db.get_process(process_id)
     if process is None:
         # A race with the API (task published before the row is visible, or
@@ -631,7 +690,7 @@ async def process_start(process_id: str, db, storage, config) -> None:
 
     # The registry row was already excluded from document_files above; it has
     # no text layer of its own and is not a document of the package.
-    await _extract_document_pages(process_id, document_files, db, storage)
+    await _extract_document_pages(process_id, document_files, db, storage, config)
 
     final_files = list(updated.values())
     metas = [
@@ -760,3 +819,67 @@ async def process_start(process_id: str, db, storage, config) -> None:
         "rd_completeness": by_stage["RD"].status,
         "id_completeness": by_stage["ID"].status,
     })
+
+    try:
+        # Customer's ТЗ p.19: "Инспектор получает уведомление о готовности
+        # протокола". A failure here is logged, not fatal - the process has
+        # already reached READY and must not be undone by a notification
+        # that could not be written.
+        await db.notify_process_owner(
+            process, "PROCESS_READY", "Протокол готов к проверке",
+            f"Протокол по процессу {process.id} готов к проверке.",
+        )
+    except Exception as exc:  # noqa: BLE001 - see comment above
+        logger.error("notifying process owner failed", extra={
+            "process_id": process_id, "error": str(exc),
+        })
+
+
+async def process_start(process_id: str, db, storage, config) -> None:
+    """Entry point routed from the queue (app.consumer.HANDLERS).
+
+    Retries the whole task in-process up to config.processing_retries
+    further times (customer's ТЗ p.17: "Повторная попытка обработки (до 2
+    раз)") before giving up. Every attempt re-reads the process and its
+    files from scratch (_process_start_once), so a transient failure (a
+    dropped DB connection, for instance) never carries stale state into the
+    next attempt. Once every attempt has failed, the process is moved to
+    FAILED with a short reason and the admins are notified - never left
+    stuck in PARSING with nothing to drive it out, and never raised back
+    into the consumer loop (app.consumer._consume_messages), which must keep
+    running whatever any one message does.
+    """
+    attempts_allowed = 1 + max(config.processing_retries, 0)
+    last_exc: BaseException | None = None
+    for attempt in range(1, attempts_allowed + 1):
+        try:
+            await _process_start_once(process_id, db, storage, config)
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - retried in-process, reported once exhausted
+            last_exc = exc
+            logger.error("process.start attempt failed", extra={
+                "process_id": process_id,
+                "attempt": attempt,
+                "attempts": attempts_allowed,
+                "error": str(exc) or exc.__class__.__name__,
+            })
+
+    message = f"Обработка пакета завершилась ошибкой: {last_exc}"
+    try:
+        await db.mark_process_failed(process_id, message)
+    except Exception as exc:  # noqa: BLE001 - never raised back into the consumer
+        logger.error("marking process failed did not succeed", extra={
+            "process_id": process_id, "error": str(exc),
+        })
+    try:
+        process = await db.get_process(process_id)
+        await db.notify_admins(
+            "PROCESS_FAILED", "Обработка пакета завершилась ошибкой", message,
+            process_id=process_id, object_id=process.object_id if process is not None else None,
+        )
+    except Exception as exc:  # noqa: BLE001 - see comment above
+        logger.error("admin notification failed", extra={
+            "process_id": process_id, "error": str(exc),
+        })

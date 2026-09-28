@@ -5,7 +5,7 @@ import {
 import Button from '../components/Button';
 import { api, ApiError } from '../api/client';
 import { toProgress, type ApiProgress, type ProcessProgress } from '../api/adapters';
-import { processStatusLabels } from '../labels';
+import { processStatusColor, processStatusLabels } from '../labels';
 
 interface Props {
   objectId?: string;
@@ -125,6 +125,7 @@ export default function ProcessingScreen({ objectId, processId, onBack, onComple
 
   const stages = useMemo(() => (progress ? buildStages(progress) : []), [progress]);
   const done = progress ? isParsingDone(progress.status) : false;
+  const failed = progress?.status === 'FAILED';
 
   if (!processId) {
     return (
@@ -227,15 +228,18 @@ export default function ProcessingScreen({ objectId, processId, onBack, onComple
             <div className="bg-white border border-[#E2E8F0] rounded-lg p-5">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-[13px] text-[#475569]">Общий прогресс</span>
-                <span className="text-[16px] font-semibold text-[#0F172A]">
+                <span
+                  className="text-[16px] font-semibold text-[#0F172A]"
+                  style={{ color: progress ? processStatusColor(progress.status) : undefined }}
+                >
                   {progress ? (processStatusLabels[progress.status] ?? progress.status) : '—'}
                 </span>
               </div>
               <div className="h-2 w-full bg-[#EDF1F7] rounded-full overflow-hidden">
                 <div
                   className={[
-                    'h-full bg-[#1B4E9B] transition-all duration-300',
-                    done ? 'w-full' : 'w-2/3 animate-pulse'
+                    'h-full transition-all duration-300',
+                    failed ? 'bg-[#B42318] w-full' : done ? 'bg-[#1B4E9B] w-full' : 'bg-[#1B4E9B] w-2/3 animate-pulse'
                   ].join(' ')}
                   role="progressbar"
                   aria-valuenow={done ? 100 : undefined}
@@ -246,9 +250,11 @@ export default function ProcessingScreen({ objectId, processId, onBack, onComple
               <div className="mt-2 text-[12px] text-[#475569]">
                 {!progress
                   ? 'Получение хода обработки…'
-                  : done
-                    ? 'Обработка завершена. Протокол готов к верификации.'
-                    : `Файлов: ${progress.filesTotal} (PDF: ${progress.filesPdf}) · Страниц распознано: ${progress.pagesExtracted} · Проверок: ${progress.checksTotal}`}
+                  : failed
+                    ? 'Обработка завершилась ошибкой. Обратитесь к администратору.'
+                    : done
+                      ? 'Обработка завершена. Протокол готов к верификации.'
+                      : `Файлов: ${progress.filesTotal} (PDF: ${progress.filesPdf}) · Страниц распознано: ${progress.pagesExtracted} · Проверок: ${progress.checksTotal}`}
               </div>
             </div>
 
@@ -273,7 +279,7 @@ export default function ProcessingScreen({ objectId, processId, onBack, onComple
                 icon={<ArrowRight size={14} />}
                 onClick={() => progress?.protocolId && onComplete(progress.protocolId)}
               >
-                {done ? 'Открыть протокол' : 'Обработка…'}
+                {failed ? 'Ошибка обработки' : done ? 'Открыть протокол' : 'Обработка…'}
               </Button>
             </div>
           </div>
@@ -313,7 +319,9 @@ export default function ProcessingScreen({ objectId, processId, onBack, onComple
                   </div>
                   <div className="px-4 py-2.5 flex items-center justify-between">
                     <span>Статус процесса</span>
-                    <span className="text-[#0F172A]">{processStatusLabels[progress.status] ?? progress.status}</span>
+                    <span className="text-[#0F172A]" style={{ color: processStatusColor(progress.status) }}>
+                      {processStatusLabels[progress.status] ?? progress.status}
+                    </span>
                   </div>
                 </div>
               )}

@@ -8,13 +8,15 @@ import http.server
 import json
 import logging
 import threading
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from pathlib import Path
 
 import pymupdf
 import pytest
 
+from app import pipeline as pipeline_module
 from app.config import Config
 from app.db import FileRow, ProcessRow
 from app.pipeline import input_manifest_hash, process_start
@@ -163,6 +165,7 @@ def mk_process(**overrides):
         manifest_uploaded=False,
         input_manifest_hash=None,
         updated_at=datetime(2026, 1, 1),
+        started_by=None,
     )
     defaults.update(overrides)
     return ProcessRow(**defaults)
@@ -217,8 +220,14 @@ class FakeDb:
         self.saved_checks: list[dict] | None = None
         self.protocol_calls: list[dict] = []
         self._protocol_versions: dict[str, int] = {}
+        self.file_errors: dict[str, str] = {}
+        self.admin_notifications: list[dict] = []
+        self.owner_notifications: list[dict] = []
+        self.failed: dict | None = None
+        self.get_process_calls = 0
 
     async def get_process(self, process_id):
+        self.get_process_calls += 1
         return self._process
 
     async def get_files(self, process_id):
@@ -264,6 +273,24 @@ class FakeDb:
             "version": version,
         })
         return version
+
+    async def record_file_processing_error(self, file_id, error_message):
+        self.file_errors[file_id] = error_message
+
+    async def notify_admins(self, kind, title, body, *, process_id=None, object_id=None):
+        self.admin_notifications.append({
+            "kind": kind, "title": title, "body": body,
+            "process_id": process_id, "object_id": object_id,
+        })
+
+    async def notify_process_owner(self, process, kind, title, body):
+        self.owner_notifications.append({
+            "kind": kind, "title": title, "body": body,
+            "process_id": process.id, "started_by": process.started_by,
+        })
+
+    async def mark_process_failed(self, process_id, error_message):
+        self.failed = {"process_id": process_id, "error_message": error_message}
 
 
 class FakeStorage:
@@ -808,3 +835,132 @@ def test_input_manifest_hash_is_order_independent_without_a_registry():
 
     assert forward == backward
     assert len(forward) == 64
+
+
+# ─────────── Retries, timeouts, FAILED, notifications (customer's ТЗ p.17/p.19) ───────────
+
+@pytest.mark.asyncio
+async def test_file_extraction_timeout_retries_then_notifies_admin(monkeypatch):
+    """A file whose extraction hangs past FILE_PROCESSING_TIMEOUT_S is tried
+    1 + PROCESSING_RETRIES times; once every attempt has timed out, the
+    failure is recorded on the file, an admin is notified, and the rest of
+    the package still processes normally.
+    """
+    process = mk_process(manifest_uploaded=False)
+    slow = mk_file(id="f-slow", file_name="slow.pdf", storage_key="key-slow",
+                    mime_type="application/pdf")
+    good = mk_file(id="f-good", file_name="good.pdf", storage_key="key-good",
+                    mime_type="application/pdf")
+    db = FakeDb(process, [slow, good])
+    storage = FakeStorage({"key-slow": b"SLOW-MARKER", "key-good": _one_page_pdf("текст")})
+
+    original = pipeline_module._extract_and_render_sync
+
+    def slow_or_normal(raw: bytes):
+        if raw == b"SLOW-MARKER":
+            time.sleep(0.3)
+            return []
+        return original(raw)
+
+    monkeypatch.setattr(pipeline_module, "_extract_and_render_sync", slow_or_normal)
+    config = replace(CONFIG, file_processing_timeout_s=0.05, processing_retries=2)
+
+    await process_start("p1", db, storage, config)
+
+    assert db.saved["status"] == "READY"
+    # The other file in the package is unaffected by the slow one.
+    assert "f-good" in db.saved_pages
+    assert "f-slow" not in db.saved_pages
+
+    assert "f-slow" in db.file_errors
+    assert "3 попыток" in db.file_errors["f-slow"]
+    assert "slow.pdf" in db.file_errors["f-slow"]
+
+    assert len(db.admin_notifications) == 1
+    notification = db.admin_notifications[0]
+    assert notification["kind"] == "FILE_PROCESSING_FAILED"
+    assert notification["process_id"] == "p1"
+    assert "slow.pdf" in notification["body"]
+
+
+@pytest.mark.asyncio
+async def test_file_extraction_transient_failure_then_success_no_notification(monkeypatch):
+    """A failure on the first attempt that succeeds on a retry is not a
+    failure the file ever needed reporting for - no error is recorded, and
+    no admin is notified."""
+    process = mk_process(manifest_uploaded=False)
+    flaky = mk_file(id="f-flaky", file_name="flaky.pdf", storage_key="key-flaky",
+                     mime_type="application/pdf")
+    db = FakeDb(process, [flaky])
+    storage = FakeStorage({"key-flaky": _one_page_pdf("текст")})
+
+    original = pipeline_module._extract_and_render_sync
+    state = {"calls": 0}
+
+    def flaky_extract(raw: bytes):
+        state["calls"] += 1
+        if state["calls"] == 1:
+            raise RuntimeError("transient failure")
+        return original(raw)
+
+    monkeypatch.setattr(pipeline_module, "_extract_and_render_sync", flaky_extract)
+
+    await process_start("p1", db, storage, CONFIG)  # default PROCESSING_RETRIES
+
+    assert state["calls"] == 2
+    assert "f-flaky" in db.saved_pages
+    assert db.file_errors == {}
+    assert db.admin_notifications == []
+    assert db.saved["status"] == "READY"
+
+
+@pytest.mark.asyncio
+async def test_process_start_exhausts_retries_then_fails_and_notifies_admin(caplog):
+    """A process.start that keeps raising (here, the database itself is
+    unreachable) is retried the configured number of times, then moves the
+    process to FAILED with a short reason and notifies the admins - and,
+    crucially, process_start itself never raises back out."""
+    process = mk_process(manifest_uploaded=False, object_id="o1")
+
+    class AlwaysBrokenDb(FakeDb):
+        async def get_files(self, process_id):
+            raise RuntimeError("database unreachable")
+
+    db = AlwaysBrokenDb(process, [])
+    storage = FakeStorage({})
+    config = replace(CONFIG, processing_retries=1)
+
+    with caplog.at_level(logging.ERROR, logger="app.pipeline"):
+        await process_start("p1", db, storage, config)  # must not raise
+
+    attempt_errors = [r for r in caplog.records if r.msg == "process.start attempt failed"]
+    assert len(attempt_errors) == 2  # 1 + processing_retries
+
+    assert db.failed is not None
+    assert db.failed["process_id"] == "p1"
+    assert "database unreachable" in db.failed["error_message"]
+
+    assert len(db.admin_notifications) == 1
+    notification = db.admin_notifications[0]
+    assert notification["kind"] == "PROCESS_FAILED"
+    assert notification["process_id"] == "p1"
+    assert notification["object_id"] == "o1"
+
+
+@pytest.mark.asyncio
+async def test_ready_notifies_the_process_owner():
+    """Customer's ТЗ p.19: the inspector who started the process is notified
+    once the protocol reaches READY."""
+    process = mk_process(manifest_uploaded=False, started_by="user-42")
+    doc = mk_file(id="f-doc", file_name="a.pdf", storage_key="key-doc")
+    db = FakeDb(process, [doc])
+    storage = FakeStorage({"key-doc": _one_page_pdf("текст")})
+
+    await process_start("p1", db, storage, CONFIG)
+
+    assert db.saved["status"] == "READY"
+    assert len(db.owner_notifications) == 1
+    notification = db.owner_notifications[0]
+    assert notification["kind"] == "PROCESS_READY"
+    assert notification["started_by"] == "user-42"
+    assert notification["title"] == "Протокол готов к проверке"

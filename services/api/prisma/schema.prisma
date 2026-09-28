@@ -28,6 +28,10 @@ enum ProcessStatus {
   VERIFYING
   COMPLETED
   FINALIZED
+  // Customer's ТЗ p.17, "Обработка ошибок при загрузке": a process.start task
+  // that still fails after its retries (services/worker/app/pipeline.py) ends
+  // here instead of staying in PARSING forever with nothing to drive it out.
+  FAILED
 }
 
 enum FindingStatus {
@@ -91,7 +95,35 @@ model User {
   role         UserRole @default(INSPECTOR)
   createdAt    DateTime @default(now()) @map("created_at")
 
+  notifications Notification[]
+
   @@map("users")
+}
+
+// In-app notifications (customer's ТЗ p.17 "уведомление администратора" and
+// p.19 "Инспектор получает уведомление о готовности протокола"). Written by
+// the worker (services/worker/app/db.py) and the API alike; a role-targeted
+// notification (every ADMIN, or every INSPECTOR when a process has no
+// recorded owner) fans out to one row per user at creation time - the
+// simplest shape for GET /notifications to read a per-user list and unread
+// count from. process_id/object_id are plain ids, not foreign keys, the same
+// way AuditLog.objectId is: a notification must survive whatever the process
+// or object it refers to does later, including deletion.
+model Notification {
+  id        String    @id @default(uuid())
+  userId    String    @map("user_id")
+  kind      String    @db.VarChar(30)
+  title     String
+  body      String
+  processId String?   @map("process_id")
+  objectId  String?   @map("object_id")
+  createdAt DateTime  @default(now()) @map("created_at")
+  readAt    DateTime? @map("read_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt])
+  @@map("notifications")
 }
 
 model ConstructionObject {
@@ -130,6 +162,11 @@ model FileRecord {
   pageCount       Int?           @map("page_count")
   fromManifest    Boolean        @default(false) @map("from_manifest")
   uploadedAt      DateTime       @default(now()) @map("uploaded_at")
+  // Set by the worker once every retry of this file's extraction has failed
+  // (customer's ТЗ p.17); null while the file has never failed, or was never
+  // processed yet. Not a violation - a statement about this one file's own
+  // processing, same spirit as approvalStatus/signatureStatus above.
+  processingError String?        @map("processing_error")
 
   object      ConstructionObject @relation(fields: [objectId], references: [id])
   process     Process?           @relation(fields: [processId], references: [id])
@@ -153,6 +190,14 @@ model Process {
   idCompleteness    StageCompleteness? @map("id_completeness")
   manifestUploaded  Boolean            @default(false) @map("manifest_uploaded")
   inputManifestHash String?            @map("input_manifest_hash") @db.Char(64)
+  // Who started this process (set by POST /processes/:id/start from the
+  // auth context) - the READY notification (customer's ТЗ p.19) goes to
+  // this user; null falls back to every INSPECTOR (services/worker's
+  // notify_process_owner) for a process started before this column existed.
+  startedBy         String?            @map("started_by")
+  // A short reason set when the process ends FAILED (see ProcessStatus);
+  // null otherwise.
+  errorMessage      String?            @map("error_message")
   createdAt         DateTime           @default(now()) @map("created_at")
   updatedAt         DateTime           @updatedAt @map("updated_at")
 

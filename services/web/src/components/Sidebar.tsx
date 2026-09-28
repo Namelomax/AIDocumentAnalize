@@ -1,12 +1,15 @@
 import { Building2, FileText, Lightbulb, LogOut, ScrollText } from 'lucide-react';
 import type { ScreenId } from '../App';
 import type { SessionUser } from '../api/client';
+import type { AppNotification } from '../types';
+import NotificationBell from './NotificationBell';
 
 interface Props {
   activeSection: ScreenId;
   onNavigate: (screen: ScreenId) => void;
   user: SessionUser;
   onLogout: () => void;
+  onOpenNotification: (notification: AppNotification) => void;
 }
 
 // "СА" from "Смирнов А.В.", "И" from a bare login with no full name — the
@@ -26,7 +29,7 @@ const items: { id: ScreenId; icon: typeof Building2; label: string }[] = [
   { id:'finalization', icon: ScrollText, label:'Журнал аудита' }
 ];
 
-export default function Sidebar({ activeSection, onNavigate, user, onLogout }: Props) {
+export default function Sidebar({ activeSection, onNavigate, user, onLogout, onOpenNotification }: Props) {
   return (
     <aside className="w-14 shrink-0 h-screen border-r border-[#E2E8F0] bg-white flex flex-col items-center py-3 gap-1">
       <button
@@ -62,19 +65,23 @@ export default function Sidebar({ activeSection, onNavigate, user, onLogout }: P
         })}
       </nav>
 
-      {/* User + logout — the interface had no way to sign out before this;
-          an icon-sized avatar matches the rest of this sidebar rather than
-          adding a name/role panel the icon-only layout has no room for. */}
-      <button
-        type="button"
-        onClick={onLogout}
-        title={`${user.fullName || user.login} · ${user.role} · Выйти`}
-        aria-label={`Выйти (${user.fullName || user.login})`}
-        className="mt-auto w-9 h-9 rounded-full bg-[#EDF1F7] text-[#475569] flex items-center justify-center font-semibold text-[12px] hover:bg-[#FEF3F2] hover:text-[#B42318] group relative"
-      >
-        <span className="group-hover:hidden">{initials(user)}</span>
-        <LogOut size={16} className="hidden group-hover:block" aria-hidden />
-      </button>
+      <div className="mt-auto flex flex-col items-center gap-1">
+        <NotificationBell onOpen={onOpenNotification} />
+
+        {/* User + logout — the interface had no way to sign out before this;
+            an icon-sized avatar matches the rest of this sidebar rather than
+            adding a name/role panel the icon-only layout has no room for. */}
+        <button
+          type="button"
+          onClick={onLogout}
+          title={`${user.fullName || user.login} · ${user.role} · Выйти`}
+          aria-label={`Выйти (${user.fullName || user.login})`}
+          className="w-9 h-9 rounded-full bg-[#EDF1F7] text-[#475569] flex items-center justify-center font-semibold text-[12px] hover:bg-[#FEF3F2] hover:text-[#B42318] group relative"
+        >
+          <span className="group-hover:hidden">{initials(user)}</span>
+          <LogOut size={16} className="hidden group-hover:block" aria-hidden />
+        </button>
+      </div>
     </aside>
   );
 }

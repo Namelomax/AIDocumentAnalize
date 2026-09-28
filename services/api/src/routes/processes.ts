@@ -25,6 +25,9 @@ export async function processRoutes(app: FastifyInstance) {
       scenario: process.scenario,
       files_count: process._count.files,
       updated_at: process.updatedAt,
+      // Set only when status is FAILED (customer's ТЗ p.17) - the short
+      // reason the worker recorded once its own retries were exhausted.
+      error_message: process.errorMessage,
     };
   });
 
@@ -51,7 +54,10 @@ export async function processRoutes(app: FastifyInstance) {
 
     await prisma.process.update({
       where: { id: process.id },
-      data: { status: 'PARSING' },
+      // Recorded so the worker knows who to notify once the protocol
+      // reaches READY (customer's ТЗ p.19) - request.user is always set
+      // here, since every route but health/login requires a token.
+      data: { status: 'PARSING', startedBy: request.user.id },
     });
 
     // The status flip above and the publish below aren't one transaction:

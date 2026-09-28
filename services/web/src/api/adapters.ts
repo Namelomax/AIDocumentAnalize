@@ -5,6 +5,7 @@
 // No screen or component should read an API field name directly; everything
 // goes through a function here.
 import type {
+  AppNotification,
   ApprovalStatus,
   CompletenessRowStatus,
   CompletenessStatus,
@@ -229,6 +230,24 @@ function formatDateTime(iso: string): string {
   if (Number.isNaN(d.getTime())) return iso;
   const p = (n: number) => String(n).padStart(2, '0');
   return `${p(d.getDate())}.${p(d.getMonth() + 1)}.${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+// "только что" / "N мин назад" / ... — a notification almost always reads
+// naturally this way; falls back to the absolute timestamp once it is old
+// enough that "N дн назад" stops being useful. `now` is a parameter rather
+// than always `new Date()` so this is deterministic to test.
+export function formatRelativeTime(iso: string, now: Date = new Date()): string {
+  const then = new Date(iso);
+  if (Number.isNaN(then.getTime())) return iso;
+  const diffMs = now.getTime() - then.getTime();
+  const diffMin = Math.floor(diffMs / 60_000);
+  if (diffMin < 1) return 'только что';
+  if (diffMin < 60) return `${diffMin} мин назад`;
+  const diffHours = Math.floor(diffMin / 60);
+  if (diffHours < 24) return `${diffHours} ч назад`;
+  const diffDays = Math.floor(diffHours / 24);
+  if (diffDays < 7) return `${diffDays} дн назад`;
+  return formatDateTime(iso);
 }
 
 // StageCompleteness values (services/worker/app/domain/completeness.py):
@@ -522,6 +541,38 @@ export function toCompletenessRow(api: ApiCompletenessRow): ProtocolCompleteness
     parameterName: api.parameter_name ?? api.param_code,
     status: api.completeness_status as CompletenessRowStatus,
     rationale: api.rationale ?? '',
+  };
+}
+
+/* ─────────── Уведомления ─────────── */
+
+// GET /api/v1/notifications (services/api/src/routes/notifications.ts).
+export interface ApiNotification {
+  id: string;
+  kind: string;
+  title: string;
+  body: string;
+  process_id: string | null;
+  object_id: string | null;
+  created_at: string;
+  read_at: string | null;
+}
+
+export interface ApiNotificationsResponse {
+  items: ApiNotification[];
+  unread_count: number;
+}
+
+export function toNotification(api: ApiNotification): AppNotification {
+  return {
+    id: api.id,
+    kind: api.kind,
+    title: api.title,
+    body: api.body,
+    processId: api.process_id,
+    objectId: api.object_id,
+    createdAt: api.created_at,
+    read: api.read_at !== null,
   };
 }
 

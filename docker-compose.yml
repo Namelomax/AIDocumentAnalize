@@ -126,6 +126,12 @@ services:
       LLM_BASE_URL: ${LLM_BASE_URL:-}
       LLM_MODEL: ${LLM_MODEL:-}
       LLM_TIMEOUT_S: ${LLM_TIMEOUT_S:-60}
+      # Customer's ТЗ p.17, "Обработка ошибок при загрузке": a file whose
+      # processing hangs past this timeout is retried, and a whole
+      # process.start task is retried the same number of times before the
+      # process is moved to FAILED (services/worker/app/pipeline.py).
+      FILE_PROCESSING_TIMEOUT_S: ${FILE_PROCESSING_TIMEOUT_S:-300}
+      PROCESSING_RETRIES: ${PROCESSING_RETRIES:-2}
     depends_on:
       postgres: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }

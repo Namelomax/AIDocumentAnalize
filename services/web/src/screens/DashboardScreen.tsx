@@ -6,7 +6,7 @@ import Button from '../components/Button';
 import EmptyState from '../components/EmptyState';
 import { SkeletonTable } from '../components/Skeleton';
 import { useToast } from '../components/Toast';
-import { processStatusLabels } from '../labels';
+import { processStatusColor, processStatusLabels } from '../labels';
 import { api, ApiError } from '../api/client';
 import { toDashboardSummary, toProjectObject, type ApiDashboardSummary, type ApiObjectListItem } from '../api/adapters';
 import type { CompletenessStatus, ProcessStatus, ProjectObject } from '../types';
@@ -190,6 +190,7 @@ export default function DashboardScreen({ onOpenObject }: Props) {
             <option value="VERIFYING">Верификация</option>
             <option value="COMPLETED">Завершён</option>
             <option value="FINALIZED">Финализирован</option>
+            <option value="FAILED">Ошибка обработки</option>
           </select>
           <select
             value={priorityFilter}
@@ -293,7 +294,9 @@ export default function DashboardScreen({ onOpenObject }: Props) {
                         <StageBadge stage="ID" active={o.completeness.ID === 'full' || o.completeness.ID === 'partial'} />
                       </div>
                     </td>
-                    <td className="px-3 text-[#475569]">{processStatusLabels[o.processStatus]}</td>
+                    <td className="px-3 text-[#475569]" style={{ color: processStatusColor(o.processStatus) }}>
+                      {processStatusLabels[o.processStatus]}
+                    </td>
                     <td className="px-3 text-right num text-[#0F172A]">{o.candidates}</td>
                     <td className="px-3 text-right num text-[#0F172A]">{o.confirmed}</td>
                     <td className="px-3 text-[#475569] mono text-[12px]">{o.updatedAt}</td>

@@ -20,8 +20,19 @@ export const processStatusLabels: Record<string, string> = {
   READY:     'Готов к верификации',
   VERIFYING: 'Верификация',
   COMPLETED: 'Завершён',
-  FINALIZED: 'Финализирован'
+  FINALIZED: 'Финализирован',
+  // Customer's ТЗ p.17: a process.start task that still fails after its
+  // retries (services/worker/app/pipeline.py) - never reached by editing a
+  // process's own decisions, only by the worker itself.
+  FAILED:    'Ошибка обработки'
 };
+
+// FAILED is shown in red wherever a process status chip appears
+// (DashboardScreen, ObjectScreen, ProcessingScreen); every other status
+// keeps its default text colour.
+export function processStatusColor(status: string): string | undefined {
+  return status === 'FAILED' ? '#B42318' : undefined;
+}
 
 export const approvalLabels: Record<string, string> = {
   DRAFT: 'Черновик',

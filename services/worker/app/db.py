@@ -24,6 +24,12 @@ class ProcessRow:
     manifest_uploaded: bool
     input_manifest_hash: str | None
     updated_at: datetime
+    # Who started this process (services/api's /processes/:id/start route),
+    # null for a process started before this column existed. READY's own
+    # notification (customer's ТЗ p.19) goes to this user; with no owner
+    # recorded, notify_process_owner falls back to every INSPECTOR instead of
+    # guessing who to tell.
+    started_by: str | None = None
 
 
 @dataclass
@@ -74,6 +80,7 @@ def _process_row(record: asyncpg.Record) -> ProcessRow:
         manifest_uploaded=record["manifest_uploaded"],
         input_manifest_hash=record["input_manifest_hash"],
         updated_at=record["updated_at"],
+        started_by=record["started_by"],
     )
 
 
@@ -132,7 +139,7 @@ class Database:
             """
             SELECT id, object_id, status, scenario, pd_completeness,
                    rd_completeness, id_completeness, manifest_uploaded,
-                   input_manifest_hash, updated_at
+                   input_manifest_hash, updated_at, started_by
             FROM processes
             WHERE id = $1
             """,
@@ -224,6 +231,87 @@ class Database:
             scenario,
             status,
         )
+
+    async def mark_process_failed(self, process_id: str, error_message: str) -> None:
+        """The whole-task retry (app.pipeline.process_start) exhausted every
+        attempt: the process is moved to FAILED with a short reason, instead
+        of staying in PARSING forever with nothing left to drive it out.
+        """
+        await self._pool.execute(
+            """
+            UPDATE processes
+            SET status = 'FAILED'::"ProcessStatus",
+                error_message = $2,
+                updated_at = now()
+            WHERE id = $1
+            """,
+            process_id,
+            error_message,
+        )
+
+    async def record_file_processing_error(self, file_id: str, error_message: str) -> None:
+        """One file's extraction failed after every retry (customer's ТЗ,
+        "Обработка ошибок при загрузке"). The rest of the package keeps
+        going - this only marks the one file that could not be read.
+        """
+        await self._pool.execute(
+            "UPDATE files SET processing_error = $2 WHERE id = $1",
+            file_id,
+            error_message,
+        )
+
+    async def _insert_notifications(
+        self, connection, user_ids: list[str], kind: str, title: str, body: str,
+        process_id: str | None, object_id: str | None,
+    ) -> None:
+        # Role-targeted notifications fan out to one row per user at creation
+        # time - simplest shape for the API to read a per-user list and
+        # unread count from later.
+        if not user_ids:
+            return
+        await connection.executemany(
+            """
+            INSERT INTO notifications (id, user_id, kind, title, body, process_id, object_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            """,
+            [
+                (str(uuid.uuid4()), user_id, kind, title, body, process_id, object_id)
+                for user_id in user_ids
+            ],
+        )
+
+    async def notify_admins(
+        self, kind: str, title: str, body: str,
+        *, process_id: str | None = None, object_id: str | None = None,
+    ) -> None:
+        """A processing failure an administrator needs to act on (customer's
+        ТЗ p.17: "При неудаче - уведомление администратора"), never routed
+        through a role no one is watching.
+        """
+        async with self._pool.acquire() as connection:
+            async with connection.transaction():
+                admins = await connection.fetch("SELECT id FROM users WHERE role = 'ADMIN'")
+                await self._insert_notifications(
+                    connection, [row["id"] for row in admins], kind, title, body, process_id, object_id,
+                )
+
+    async def notify_process_owner(self, process: ProcessRow, kind: str, title: str, body: str) -> None:
+        """The protocol reached READY (customer's ТЗ p.19: "Инспектор
+        получает уведомление о готовности протокола") - notify whoever
+        started this process. With no owner recorded (started_by is null,
+        e.g. a process started before this column existed), every INSPECTOR
+        is notified instead of guessing which one to tell.
+        """
+        async with self._pool.acquire() as connection:
+            async with connection.transaction():
+                if process.started_by:
+                    user_ids = [process.started_by]
+                else:
+                    inspectors = await connection.fetch("SELECT id FROM users WHERE role = 'INSPECTOR'")
+                    user_ids = [row["id"] for row in inspectors]
+                await self._insert_notifications(
+                    connection, user_ids, kind, title, body, process.id, process.object_id,
+                )
 
     async def save_pages(self, file_id: str, pages: list[dict]) -> None:
         """Replace the pages recorded for a file.

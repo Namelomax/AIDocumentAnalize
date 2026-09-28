@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  formatRelativeTime,
   toCompletenessRow,
   toDashboardSummary,
   toEvidenceFragment,
   toFinding,
+  toNotification,
   toProgress,
   toProjectObject,
   toProtocol,
@@ -13,6 +15,7 @@ import {
   type ApiCompletenessRow,
   type ApiEvidence,
   type ApiFinding,
+  type ApiNotification,
   type ApiObjectListItem,
   type ApiProgress,
   type ApiProtocol,
@@ -460,5 +463,63 @@ describe('toProgress', () => {
     const progress = toProgress({ ...progressFixture, status: 'READY', protocol_id: 'protocol-1' });
     expect(progress.status).toBe('READY');
     expect(progress.protocolId).toBe('protocol-1');
+  });
+});
+
+describe('toNotification', () => {
+  const notificationFixture: ApiNotification = {
+    id: 'notification-1',
+    kind: 'PROCESS_READY',
+    title: 'Протокол готов к проверке',
+    body: 'Протокол по процессу p1 готов к проверке.',
+    process_id: 'process-1',
+    object_id: 'object-1',
+    created_at: '2026-09-28T09:00:00.000Z',
+    read_at: null,
+  };
+
+  it('maps every field to camelCase and read to a boolean', () => {
+    expect(toNotification(notificationFixture)).toEqual({
+      id: 'notification-1',
+      kind: 'PROCESS_READY',
+      title: 'Протокол готов к проверке',
+      body: 'Протокол по процессу p1 готов к проверке.',
+      processId: 'process-1',
+      objectId: 'object-1',
+      createdAt: '2026-09-28T09:00:00.000Z',
+      read: false,
+    });
+  });
+
+  it('reads read_at as read: true once it is set', () => {
+    const read = toNotification({ ...notificationFixture, read_at: '2026-09-28T09:05:00.000Z' });
+    expect(read.read).toBe(true);
+  });
+});
+
+describe('formatRelativeTime', () => {
+  const now = new Date('2026-09-28T12:00:00.000Z');
+
+  it('reads a moment old as "только что"', () => {
+    expect(formatRelativeTime('2026-09-28T11:59:40.000Z', now)).toBe('только что');
+  });
+
+  it('reads minutes old in minutes', () => {
+    expect(formatRelativeTime('2026-09-28T11:45:00.000Z', now)).toBe('15 мин назад');
+  });
+
+  it('reads hours old in hours', () => {
+    expect(formatRelativeTime('2026-09-28T09:00:00.000Z', now)).toBe('3 ч назад');
+  });
+
+  it('reads days old in days', () => {
+    expect(formatRelativeTime('2026-09-25T12:00:00.000Z', now)).toBe('3 дн назад');
+  });
+
+  it('falls back to the absolute timestamp once it is a week old or more', () => {
+    // The exact hour:minute depends on the machine's local timezone (the
+    // same way formatDateTime always has), so only the date portion and the
+    // overall "dd.mm.yyyy hh:mm" shape are pinned here.
+    expect(formatRelativeTime('2026-09-18T10:22:00.000Z', now)).toMatch(/^18\.09\.2026 \d{2}:\d{2}$/);
   });
 });

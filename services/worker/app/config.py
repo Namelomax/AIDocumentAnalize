@@ -25,6 +25,16 @@ class Config:
     llm_base_url: str
     llm_model: str
     llm_timeout_s: float
+    # Customer's ТЗ, "Обработка ошибок при загрузке" (p.17): a file whose
+    # extraction times out or errors is retried up to this many further times
+    # before the failure is recorded and an admin is notified; a whole
+    # process.start task that keeps raising is retried the same number of
+    # times before the process is moved to FAILED. Defaulted here too (not
+    # just in load_config) so existing call sites that build a Config without
+    # naming these two fields - every test fixture predating this task - keep
+    # working unchanged.
+    file_processing_timeout_s: float = 300.0
+    processing_retries: int = 2
 
 
 def load_config() -> Config:
@@ -41,4 +51,6 @@ def load_config() -> Config:
         llm_base_url=os.environ.get("LLM_BASE_URL", ""),
         llm_model=os.environ.get("LLM_MODEL", ""),
         llm_timeout_s=float(os.environ.get("LLM_TIMEOUT_S", "60")),
+        file_processing_timeout_s=float(os.environ.get("FILE_PROCESSING_TIMEOUT_S", "300")),
+        processing_retries=int(os.environ.get("PROCESSING_RETRIES", "2")),
     )

@@ -22,9 +22,12 @@ class FakeStorage:
 class FakeConfig:
     """Stands in for app.config.Config: these tests never reach the branch
     that reads model_version/dataset_version (get_process returns None), so
-    a minimal stand-in is enough."""
+    a minimal stand-in is enough. processing_retries is read by
+    app.pipeline.process_start's own retry wrapper before it ever calls
+    get_process, so it is still needed here."""
     model_version = "rules-2026.09"
     dataset_version = "none"
+    processing_retries = 2
 
 
 def test_routes_process_start_to_the_pipeline_handler():

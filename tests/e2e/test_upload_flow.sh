@@ -130,6 +130,19 @@ done
 
 curl -fsS "$API/processes/$PROCESS2" "${AUTH[@]}" | grep -q '"scenario":"PD_RD_ONLY"'
 
+echo "10a. the inspector who started it has a notification that the protocol is ready"
+# Customer's ТЗ p.19: "Инспектор получает уведомление о готовности протокола".
+# Decoded explicitly as UTF-8 from raw bytes (not through sys.stdin's text
+# mode), the same care step 3's object.json takes - the title is Cyrillic,
+# and the console's own codepage on Windows is not UTF-8.
+NOTIFIED=$(curl -fsS "$API/notifications" "${AUTH[@]}" | python -c "
+import sys, json
+body = json.loads(sys.stdin.buffer.read().decode('utf-8'))
+found = any(n.get('process_id') == '$PROCESS2' and n.get('kind') == 'PROCESS_READY' for n in body['items'])
+print('yes' if found else 'no')
+")
+[ "$NOTIFIED" = "yes" ] || { echo "FAIL: inspector has no PROCESS_READY notification for process $PROCESS2" >&2; exit 1; }
+
 echo "11. pages with text are recorded for the uploaded documents"
 PAGES=$(docker compose exec -T postgres psql -U inspector -d inspector -tA \
   -c "SELECT count(*) FROM pages p JOIN files f ON f.id = p.file_id WHERE f.process_id = '$PROCESS2';")

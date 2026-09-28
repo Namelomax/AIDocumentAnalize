@@ -9,7 +9,7 @@ export type FindingStatus =
   | 'SUSPICION';
 
 export type ProcessStatus =
-  | 'PENDING' | 'PARSING' | 'READY' | 'VERIFYING' | 'COMPLETED' | 'FINALIZED';
+  | 'PENDING' | 'PARSING' | 'READY' | 'VERIFYING' | 'COMPLETED' | 'FINALIZED' | 'FAILED';
 
 export type DocStage = 'PD' | 'RD' | 'ID';
 
@@ -214,3 +214,19 @@ export interface ClarificationConflict {
 }
 
 export type DetectionMethod = 'logical' | 'semantic' | 'normative' | 'ml';
+
+// In-app notification (customer's ТЗ p.17 "уведомление администратора" and
+// p.19 "Инспектор получает уведомление о готовности протокола"). kind is the
+// worker/API's own vocabulary (PROCESS_READY, FILE_PROCESSING_FAILED,
+// PROCESS_FAILED) - the interface only ever reads title/body, never
+// branches on kind itself.
+export interface AppNotification {
+  id: string;
+  kind: string;
+  title: string;
+  body: string;
+  processId: string | null;
+  objectId: string | null;
+  createdAt: string; // ISO timestamp - formatted at render time (relative)
+  read: boolean;
+}
