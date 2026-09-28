@@ -478,6 +478,54 @@ model Check {
   @@map("checks")
 }
 
+// Customer's ТЗ p.31, "Проверка целостности данных: ежедневная проверка
+// контрольных сумм (хешей) файлов в хранилище для выявления повреждений
+// или несанкционированных изменений". One row per sweep (daily, from
+// integrity.ts's own scheduler, or on demand via
+// POST /admin/integrity-check); its own mismatched/missing files live in
+// IntegrityFailure below rather than inline JSON, so listing runs never has
+// to read a blob sized by how many files failed.
+model IntegrityRun {
+  id           String    @id @default(uuid())
+  startedAt    DateTime  @default(now()) @map("started_at")
+  finishedAt   DateTime? @map("finished_at")
+  filesChecked Int       @default(0) @map("files_checked")
+  mismatches   Int       @default(0)
+  missing      Int       @default(0)
+  // RUNNING while the sweep is still going (briefly - only visible to a
+  // concurrent request); OK once every file's hash matched; FAILURES once
+  // it finished with at least one mismatch or missing object. A run that
+  // never reaches OK/FAILURES (the process crashed mid-sweep) leaves no row
+  // at all - see integrity.ts, the whole sweep is one Postgres transaction.
+  status       String    @db.VarChar(20)
+  // Which admin asked for an on-demand run (POST /admin/integrity-check);
+  // null for the daily scheduled one - nobody to name.
+  triggeredBy  String?   @map("triggered_by")
+
+  failures IntegrityFailure[]
+
+  @@index([startedAt])
+  @@map("integrity_runs")
+}
+
+model IntegrityFailure {
+  id           String   @id @default(uuid())
+  runId        String   @map("run_id")
+  fileId       String   @map("file_id")
+  // 'mismatch' - the recomputed sha256 differs from files.file_hash;
+  // 'missing' - the storage object itself was not found in MinIO.
+  kind         String   @db.VarChar(10)
+  expectedHash String   @map("expected_hash") @db.Char(64)
+  // Null for 'missing': there is nothing to have recomputed.
+  actualHash   String?  @map("actual_hash") @db.Char(64)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  run IntegrityRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId])
+  @@map("integrity_failures")
+}
+
 model EvidenceFragment {
   id              String         @id @default(uuid())
   checkId         String         @map("check_id")

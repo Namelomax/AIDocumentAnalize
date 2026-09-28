@@ -66,13 +66,18 @@ export function megabytes(bytes: number): string {
 
 export type RejectionReason =
   | 'UNSUPPORTED_FORMAT' | 'FILE_TOO_LARGE' | 'CORRUPTED_FILE' | 'DUPLICATE'
-  | 'MULTIPLE_MANIFESTS' | 'INTERNAL_ERROR';
+  | 'MULTIPLE_MANIFESTS' | 'INTERNAL_ERROR'
+  // Customer's ТЗ p.29, "Антивирусная защита" (documents/ingest.ts scans
+  // every accepted file with clamd right before storing it). INFECTED's
+  // `signature` argument is clamd's own name for what it found; unavailable
+  // has none - clamd was never reached at all.
+  | 'INFECTED' | 'ANTIVIRUS_UNAVAILABLE';
 
 // Section 9.1's error handling table: an unsupported format names the formats
 // that are supported, an oversized file names the limit it crossed, and a
 // corrupted file tells the inspector to try again rather than leaving them to
 // guess why nothing was stored.
-export function rejection(fileName: string, reason: RejectionReason) {
+export function rejection(fileName: string, reason: RejectionReason, signature?: string) {
   switch (reason) {
     case 'UNSUPPORTED_FORMAT':
       return {
@@ -91,6 +96,13 @@ export function rejection(fileName: string, reason: RejectionReason) {
       return { file_name: fileName, reason, message: 'Такой файл уже загружен по этому объекту' };
     case 'MULTIPLE_MANIFESTS':
       return { file_name: fileName, reason, message: 'В пакете может быть только один реестр' };
+    case 'INFECTED':
+      return {
+        file_name: fileName, reason, signature: signature ?? 'unknown',
+        message: `Файл отклонён антивирусной проверкой: ${signature ?? 'unknown'}`,
+      };
+    case 'ANTIVIRUS_UNAVAILABLE':
+      return { file_name: fileName, reason, message: 'Антивирусная проверка недоступна, повторите загрузку позже' };
     default:
       return { file_name: fileName, reason, message: 'Файл не сохранён из-за внутренней ошибки. Повторите загрузку' };
   }

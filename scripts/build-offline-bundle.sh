@@ -22,6 +22,10 @@ THIRD_PARTY_IMAGES=(
   "nginx@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10"
   "prom/prometheus@sha256:565ee86501224ebbb98fc10b332fa54440b100469924003359edf49cbce374bd"
   "grafana/grafana-oss@sha256:147620479985b5780600dea24223c71eb8525e01727cce7fcd4bba8896d66d60"
+  # Customer's ТЗ p.29, "Антивирусная защита": ships its virus database
+  # baked in, so no freshclam/network call is needed to scan on the offline
+  # stand (see docker-compose.yml's clamav service).
+  "clamav/clamav@sha256:ebec5bc138401b36ae987caa1a3fa3c3b2a21ed3d51f0bfa5852825e663e67b0"
 )
 
 # Images we build ourselves, tagged so "docker compose up" on the stand
@@ -45,7 +49,7 @@ mkdir -p dist
 
 BUNDLE_PATH="dist/inspector-images.tar"
 
-echo "Saving all eleven images to ${BUNDLE_PATH}..."
+echo "Saving all twelve images to ${BUNDLE_PATH}..."
 docker save -o "${BUNDLE_PATH}" "${THIRD_PARTY_IMAGES[@]}" "${OWN_IMAGES[@]}"
 
 BUNDLE_SIZE=$(du -h "${BUNDLE_PATH}" | cut -f1)

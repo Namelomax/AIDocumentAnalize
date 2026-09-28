@@ -173,7 +173,7 @@ export async function integrationRinRoutes(app: FastifyInstance) {
     }
 
     const { accepted, rejected: rejectedAll } = await ingestFiles(
-      process, pending as PendingFile[], rejected, request.log,
+      process, pending as PendingFile[], rejected, request.log, request.user?.id ?? null,
     );
 
     if (accepted.length === 0) {

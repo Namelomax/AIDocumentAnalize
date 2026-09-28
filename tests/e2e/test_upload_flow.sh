@@ -69,6 +69,81 @@ if [ "$SEEN" -ne 1 ]; then
   exit 1
 fi
 
+echo "8a. log in as admin for the integrity check"
+ADMIN_TOKEN=$(curl -fsS -X POST "$API/auth/login" \
+  -H 'Content-Type: application/json' \
+  -d '{"login":"admin","password":"admin123"}' \
+  | python -c 'import sys,json; print(json.load(sys.stdin)["token"])')
+ADMIN_AUTH=(-H "Authorization: Bearer $ADMIN_TOKEN")
+
+FILE_ID=$(echo "$RESPONSE" | python -c 'import sys,json; print(json.load(sys.stdin)["accepted"][0]["file_id"])')
+STORAGE_KEY=$(docker compose exec -T postgres psql -U inspector -d inspector -tA \
+  -c "SELECT storage_key FROM files WHERE id = '$FILE_ID';" | tr -d '[:space:]')
+
+echo "8b. customer's ТЗ p.31: on-demand integrity check is clean for the file just uploaded"
+CLEAN_RUN=$(curl -fsS -X POST "$API/admin/integrity-check" "${ADMIN_AUTH[@]}")
+echo "$CLEAN_RUN" | python -c "
+import sys, json
+body = json.loads(sys.stdin.buffer.read().decode('utf-8'))
+bad = [f for f in body['failures'] if f['file_id'] == '$FILE_ID']
+assert not bad, f'freshly uploaded file already reported as a failure: {bad}'
+print('ok')
+"
+
+echo "8c. tampering the object in MinIO makes the next run report exactly that file"
+printf 'TAMPERED BYTES FOR E2E INTEGRITY TEST' | docker compose exec -T minio sh -c \
+  'mc alias set e2e http://localhost:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null \
+   && mc pipe e2e/documents/'"$STORAGE_KEY"'' > /dev/null
+
+TAMPERED_RUN=$(curl -fsS -X POST "$API/admin/integrity-check" "${ADMIN_AUTH[@]}")
+echo "$TAMPERED_RUN" | python -c "
+import sys, json
+body = json.loads(sys.stdin.buffer.read().decode('utf-8'))
+assert body['status'] == 'FAILURES', body['status']
+matches = [f for f in body['failures'] if f['file_id'] == '$FILE_ID']
+assert len(matches) == 1, f'expected exactly one failure for file $FILE_ID, got {matches}'
+assert matches[0]['kind'] == 'mismatch', matches[0]
+print('ok')
+"
+
+echo "8d. the admin was notified about the integrity failure"
+NOTIFIED_COUNT=$(docker compose exec -T postgres psql -U inspector -d inspector -tA \
+  -c "SELECT count(*) FROM notifications WHERE kind = 'INTEGRITY_CHECK_FAILED' AND created_at > now() - interval '2 minutes';" \
+  | tr -d '[:space:]')
+[ "${NOTIFIED_COUNT:-0}" -ge 1 ] 2>/dev/null \
+  || { echo "FAIL: no INTEGRITY_CHECK_FAILED notification found for the tampered file" >&2; exit 1; }
+
+echo "8e. restoring the object clears the failure on the next run"
+docker compose exec -T minio sh -c \
+  'mc alias set e2e http://localhost:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null \
+   && mc pipe e2e/documents/'"$STORAGE_KEY"'' < .e2e-tmp/upload.pdf > /dev/null
+
+RESTORED_RUN=$(curl -fsS -X POST "$API/admin/integrity-check" "${ADMIN_AUTH[@]}")
+echo "$RESTORED_RUN" | python -c "
+import sys, json
+body = json.loads(sys.stdin.buffer.read().decode('utf-8'))
+bad = [f for f in body['failures'] if f['file_id'] == '$FILE_ID']
+assert not bad, f'file still reported as a failure after being restored: {bad}'
+print('ok')
+"
+
+echo "8f. an infected upload (EICAR test string) is rejected before it ever reaches storage"
+# The EICAR test string (https://www.eicar.org/) - not a real virus, every
+# antivirus engine (including ClamAV) is built to flag it on purpose. Piped
+# straight into curl's stdin (@-) rather than written to a file first: a real
+# desktop antivirus on the machine running this script (e.g. Windows
+# Defender) quarantines an EICAR file the instant it touches disk, which
+# broke the upload before it ever reached the api. Sent as a .csv registry,
+# which has no magic-byte corruption check
+# (services/api/src/documents/validate.ts), so it reaches the antivirus scan
+# in documents/ingest.ts instead of being turned away earlier as corrupted.
+EICAR_RESPONSE=$(printf 'X5O!P%%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*' \
+  | curl -sS -X POST "$API/documents/upload?object_id=$OBJECT_ID" \
+  "${AUTH[@]}" \
+  -F 'files=@-;filename=eicar.csv;type=text/csv')
+echo "$EICAR_RESPONSE" | grep -q '"reason":"INFECTED"'
+echo "$EICAR_RESPONSE" | grep -q 'Eicar-Test-Signature'
+
 echo "9. a package with a registry is parsed end to end"
 OBJECT2=$(curl -fsS -X POST "$API/objects" \
   "${AUTH[@]}" \

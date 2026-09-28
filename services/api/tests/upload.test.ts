@@ -7,6 +7,13 @@ import { config } from '../src/config.js';
 import { megabytes } from '../src/routes/documents.js';
 import { authHeaders } from './helpers/auth.js';
 
+// The EICAR test string (https://www.eicar.org/) - not a real virus, every
+// antivirus engine (including ClamAV) is built to flag it on purpose. Sent
+// as a .csv registry rather than a .pdf: a registry has no magic-byte
+// corruption check (documents/validate.ts), so it reaches the antivirus scan
+// in documents/ingest.ts instead of being turned away earlier as corrupted.
+const EICAR = Buffer.from('X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*');
+
 let objectId: string;
 
 beforeAll(async () => {
@@ -351,6 +358,62 @@ describe('POST /api/v1/documents/upload', () => {
     const process = await prisma.process.findUniqueOrThrow({ where: { id: res.json().process_id } });
     expect(process.manifestUploaded).toBe(false);
     expect(process.inputManifestHash).toBeNull();
+    await app.close();
+  });
+
+  it('rejects the EICAR test string as INFECTED, naming clamd\'s signature', async () => {
+    const app = await buildServer();
+    const { boundary, payload } = form([
+      { name: 'infected.csv', body: EICAR, type: 'text/csv' },
+    ]);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/documents/upload?object_id=${objectId}`,
+      headers: { ...(await authHeaders()), 'content-type': `multipart/form-data; boundary=${boundary}` },
+      payload,
+    });
+
+    expect(res.statusCode).toBe(422);
+    expect(res.json().rejected[0]).toMatchObject({
+      reason: 'INFECTED',
+      signature: 'Eicar-Test-Signature',
+      message: 'Файл отклонён антивирусной проверкой: Eicar-Test-Signature',
+    });
+
+    const notification = await prisma.notification.findFirst({
+      where: { kind: 'FILE_INFECTED' }, orderBy: { createdAt: 'desc' },
+    });
+    expect(notification).not.toBeNull();
+    expect(notification!.body).toContain('infected.csv');
+
+    const audit = await prisma.auditLog.findFirst({
+      where: { action: 'FILE_INFECTED', objectId }, orderBy: { timestamp: 'desc' },
+    });
+    expect(audit).not.toBeNull();
+    await app.close();
+  });
+
+  it('stores the clean files of a package and rejects only the infected one', async () => {
+    const app = await buildServer();
+    const { boundary, payload } = form([
+      { name: 'clean.pdf', body: Buffer.from('%PDF-1.7 a perfectly ordinary drawing'), type: 'application/pdf' },
+      { name: 'infected.csv', body: EICAR, type: 'text/csv' },
+    ]);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/documents/upload?object_id=${objectId}`,
+      headers: { ...(await authHeaders()), 'content-type': `multipart/form-data; boundary=${boundary}` },
+      payload,
+    });
+
+    expect(res.statusCode).toBe(201);
+    const body = res.json();
+    expect(body.accepted.map((f: { file_name: string }) => f.file_name)).toEqual(['clean.pdf']);
+    expect(body.rejected).toEqual([
+      expect.objectContaining({ file_name: 'infected.csv', reason: 'INFECTED' }),
+    ]);
     await app.close();
   });
 

@@ -45,3 +45,24 @@ export const finalizationsTotal = new client.Counter({
   help: 'Protocols finalized',
   registers: [registry],
 });
+
+// Customer's ТЗ p.31, "Проверка целостности данных" (integrity.ts). Files
+// that failed the most recent completed sweep - mismatched or missing -
+// read by deploy/monitoring/alert-rules.yml's IntegrityFailures. Set back to
+// 0 by a run that finds nothing wrong, not left at whatever an older failing
+// run last reported.
+export const integrityFailuresGauge = new client.Gauge({
+  name: 'inspector_integrity_failures',
+  help: 'Files that failed the most recently completed integrity check (mismatched or missing hash)',
+  registers: [registry],
+});
+
+// Unix seconds the most recent completed sweep finished - clean or not, this
+// is only about whether the job itself is still running at all
+// (IntegrityCheckStale reads it; IntegrityFailures above is what actually
+// reads whether files failed).
+export const integrityLastRunTimestamp = new client.Gauge({
+  name: 'inspector_integrity_last_run_timestamp',
+  help: 'Unix timestamp (seconds) the most recently completed integrity check finished',
+  registers: [registry],
+});

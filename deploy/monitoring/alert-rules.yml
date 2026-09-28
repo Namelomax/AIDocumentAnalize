@@ -70,3 +70,32 @@ groups:
           description: >-
             Цель {{ $labels.job }} ({{ $labels.instance }}) не отвечает на
             сбор метрик более 1 минуты.
+
+      # Customer's ТЗ p.31, "Проверка целостности данных": the daily sweep
+      # (services/api/src/integrity.ts) found at least one file whose hash no
+      # longer matches files.file_hash, or that is missing from storage
+      # outright.
+      - alert: IntegrityFailures
+        expr: inspector_integrity_failures > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Нарушена целостность хранилища документов"
+          description: >-
+            Последняя проверка целостности обнаружила {{ $value }} файл(ов) с
+            повреждённым или отсутствующим содержимым. См. GET
+            /api/v1/admin/integrity-runs.
+
+      # The sweep is a daily job; 26h (a day plus margin) without one
+      # completing means the scheduler itself has stopped, independently of
+      # whether the files it last checked were fine.
+      - alert: IntegrityCheckStale
+        expr: time() - inspector_integrity_last_run_timestamp > 26 * 3600
+        labels:
+          severity: warning
+        annotations:
+          summary: "Проверка целостности хранилища не выполнялась более суток"
+          description: >-
+            Ни одна проверка целостности (customer's ТЗ p.31) не завершилась
+            за последние 26 часов - плановая ежедневная проверка, похоже, не
+            выполняется.

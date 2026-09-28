@@ -134,5 +134,9 @@ export const uploadRejectionLabels: Record<string, string> = {
   DUPLICATE: 'Такой файл уже загружен по этому объекту',
   MULTIPLE_MANIFESTS: 'В пакете может быть только один реестр',
   PACKAGE_TOO_LARGE: 'Пакет больше допустимого объёма',
-  INTERNAL_ERROR: 'Файл не сохранён из-за внутренней ошибки'
+  INTERNAL_ERROR: 'Файл не сохранён из-за внутренней ошибки',
+  // Customer's ТЗ p.29, "Антивирусная защита" (services/api's
+  // documents/ingest.ts scans every file with clamd before storing it).
+  INFECTED: 'Файл отклонён антивирусной проверкой',
+  ANTIVIRUS_UNAVAILABLE: 'Антивирусная проверка недоступна, повторите загрузку позже'
 };

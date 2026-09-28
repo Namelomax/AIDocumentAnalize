@@ -52,6 +52,28 @@ const schema = z.object({
   // slow/offline ИАИС «РиН» cannot make Prisma abort the transaction before
   // this module's own request timeout even has a chance to fire.
   RIN_TRANSACTION_TIMEOUT_MS: z.coerce.number().default(20_000),
+  // Customer's ТЗ p.29, "Антивирусная защита": every uploaded file is
+  // scanned by clamd (deploy image clamav/clamav, docker-compose.yml's
+  // `clamav` service) over its own INSTREAM TCP protocol before storage
+  // (documents/ingest.ts). The default host is the compose service name;
+  // local test runs outside Docker override it to localhost (services/api/.env),
+  // the same way MINIO_ENDPOINT does.
+  CLAMAV_HOST: z.string().default('clamav'),
+  CLAMAV_PORT: z.coerce.number().default(3310),
+  CLAMAV_TIMEOUT_MS: z.coerce.number().default(15_000),
+  // true (default): clamd unreachable rejects the file (ANTIVIRUS_UNAVAILABLE)
+  // rather than storing something nobody scanned. false: accept the file
+  // unscanned and log a warning - an explicit operator choice, never the
+  // out-of-the-box behaviour.
+  ANTIVIRUS_REQUIRED: z.enum(['true', 'false']).default('true'),
+  // Customer's ТЗ p.31, "Проверка целостности данных": local hour (server
+  // time) the daily sweep (integrity.ts) fires at, absent a cron dependency.
+  INTEGRITY_CHECK_CRON_HOUR: z.coerce.number().min(0).max(23).default(3),
+  // Generous on purpose: the sweep streams every stored document's bytes
+  // through sha256 for the whole duration of one Postgres interactive
+  // transaction (same advisory-lock shape as RIN_TRANSACTION_TIMEOUT_MS
+  // above), and a check package can hold many 60 MiB files.
+  INTEGRITY_TRANSACTION_TIMEOUT_MS: z.coerce.number().default(1_800_000),
 });
 
 const parsed = schema.parse(process.env);
@@ -92,5 +114,15 @@ export const config = {
     schedulerIntervalMs: parsed.RIN_SCHEDULER_INTERVAL_MS,
     requestTimeoutMs: parsed.RIN_REQUEST_TIMEOUT_MS,
     transactionTimeoutMs: parsed.RIN_TRANSACTION_TIMEOUT_MS,
+  },
+  antivirus: {
+    host: parsed.CLAMAV_HOST,
+    port: parsed.CLAMAV_PORT,
+    timeoutMs: parsed.CLAMAV_TIMEOUT_MS,
+    required: parsed.ANTIVIRUS_REQUIRED === 'true',
+  },
+  integrity: {
+    cronHour: parsed.INTEGRITY_CHECK_CRON_HOUR,
+    transactionTimeoutMs: parsed.INTEGRITY_TRANSACTION_TIMEOUT_MS,
   },
 };

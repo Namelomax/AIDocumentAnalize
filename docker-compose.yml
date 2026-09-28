@@ -58,6 +58,30 @@ services:
       retries: 20
     restart: unless-stopped
 
+  # Customer's ТЗ p.29, "Антивирусная защита": every file the api accepts is
+  # scanned by clamd (services/api/src/antivirus.ts) before it is stored. The
+  # official image ships its virus database baked in at build time (verified
+  # against /var/lib/clamav/*.cvd), so CLAMAV_NO_FRESHCLAMD=true is enough to
+  # start and serve scans with no network at all - freshclam's own periodic
+  # updates are simply never attempted on an offline stand that could not
+  # reach them anyway.
+  clamav:
+    image: clamav/clamav@sha256:ebec5bc138401b36ae987caa1a3fa3c3b2a21ed3d51f0bfa5852825e663e67b0
+    environment:
+      CLAMAV_NO_FRESHCLAMD: "true"
+    ports:
+      - "3310:3310"
+    healthcheck:
+      # clamd's own health probe (baked into the image): asks clamd itself
+      # over the same TCP port the api scans through, rather than a socket
+      # file that can exist slightly before clamd is actually ready.
+      test: ["CMD", "/usr/local/bin/clamdcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    restart: unless-stopped
+
   api:
     image: inspector-api:1.0.0
     build: ./services/api
@@ -98,6 +122,13 @@ services:
       RIN_INBOUND_TOKEN: ${RIN_INBOUND_TOKEN:-change-me-rin-token}
       RIN_SCHEDULER_INTERVAL_MS: ${RIN_SCHEDULER_INTERVAL_MS:-15000}
       RIN_REQUEST_TIMEOUT_MS: ${RIN_REQUEST_TIMEOUT_MS:-10000}
+      # Customer's ТЗ p.29, "Антивирусная защита" - see the clamav service
+      # above and services/api/src/antivirus.ts.
+      CLAMAV_HOST: ${CLAMAV_HOST:-clamav}
+      CLAMAV_PORT: ${CLAMAV_PORT:-3310}
+      ANTIVIRUS_REQUIRED: ${ANTIVIRUS_REQUIRED:-true}
+      # Customer's ТЗ p.31, "Проверка целостности данных" (services/api/src/integrity.ts).
+      INTEGRITY_CHECK_CRON_HOUR: ${INTEGRITY_CHECK_CRON_HOUR:-3}
     ports:
       - "3000:3000"
     depends_on:
@@ -106,6 +137,7 @@ services:
       rabbitmq: { condition: service_healthy }
       minio: { condition: service_healthy }
       rin-mock: { condition: service_healthy }
+      clamav: { condition: service_healthy }
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://localhost:3000/api/v1/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
       interval: 10s

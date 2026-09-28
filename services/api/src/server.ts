@@ -20,12 +20,14 @@ import { suspicionRoutes } from './routes/suspicions.js';
 import { exportRoutes } from './routes/export.js';
 import { notificationRoutes } from './routes/notifications.js';
 import { integrationRinRoutes } from './routes/integrationRin.js';
+import { adminRoutes } from './routes/admin.js';
 import { ensureBucket } from './storage.js';
 import { seedDemoUsers } from './auth/seed.js';
 import { authPlugin } from './auth/plugin.js';
 import { enterRequestContext, setCurrentUser } from './auth/context.js';
 import { httpRequestDuration } from './metrics.js';
 import { startRinScheduler } from './integration/transfers.js';
+import { startIntegrityScheduler } from './integrity.js';
 
 export interface BuildServerOptions {
   logStream?: NodeJS.WritableStream;
@@ -97,6 +99,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
   await app.register(exportRoutes);
   await app.register(notificationRoutes);
   await app.register(integrationRinRoutes);
+  await app.register(adminRoutes);
   return app;
 }
 
@@ -114,5 +117,9 @@ if (isEntry) {
   // is due. Started here, not in buildServer(), so the test suite (which
   // calls buildServer() many times) never accumulates intervals.
   startRinScheduler();
+  // Customer's ТЗ p.31: picks up the daily integrity sweep at
+  // INTEGRITY_CHECK_CRON_HOUR (default 3, local time). Same reasoning as
+  // startRinScheduler above for why this lives here and not in buildServer().
+  startIntegrityScheduler();
   await app.listen({ port: config.port, host: '0.0.0.0' });
 }
