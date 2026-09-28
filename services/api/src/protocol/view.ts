@@ -134,12 +134,26 @@ function normReference(param: ParamForView | undefined): string | null {
   return parts.length > 0 ? parts.join('; ') : null;
 }
 
+// The check's subject is a worker-authored key (`room X`, `floor total`,
+// `function X`, …) baked into evidence_group_id, so it must stay exactly as
+// stored - only the finding title translates it for the inspector to read.
+// Anything the worker didn't emit one of these three shapes for is shown
+// as-is rather than guessed at.
+function subjectLabel(subject: string): string {
+  const room = subject.match(/^room (.+)$/);
+  if (room) return `помещение ${room[1]}`;
+  if (subject === 'floor total') return 'итог по этажу';
+  const fn = subject.match(/^function (.+)$/);
+  if (fn) return `назначение помещения ${fn[1]}`;
+  return subject;
+}
+
 // The parameter's name and the check's subject (a room, a floor total, …)
 // joined with a dash, so the inspector reads what within the parameter this
 // finding is about without opening the evidence card.
 function findingTitle(check: Check, param: ParamForView | undefined): string {
   const name = param?.parameterName ?? check.paramCode;
-  return check.subject ? `${name} — ${check.subject}` : name;
+  return check.subject ? `${name} — ${subjectLabel(check.subject)}` : name;
 }
 
 function decisionView(

@@ -87,7 +87,7 @@ beforeAll(async () => {
   const negative = await prisma.check.create({
     data: {
       processId, objectId, paramCode: param.code, evidenceGroupId: `${processId}:negative`,
-      subject: 'этаж 1', completenessStatus: 'COMPLETE', findingStatus: 'NEGATIVE_VERIFIED',
+      subject: 'floor total', completenessStatus: 'COMPLETE', findingStatus: 'NEGATIVE_VERIFIED',
       engineStatus: 'NEGATIVE_VERIFIED', reviewPriority: 'LOW', matrixVersion: '1.1',
     },
   });
@@ -234,7 +234,7 @@ describe('GET /api/v1/protocols/:protocol_id', () => {
       actual_value: 'Склад ГСМ',
     });
     // The shape of a finding: title, evidence and a (null, undecided) decision.
-    expect(suspicion.title).toBe('SEM-ROOM-FN — function 1.109');
+    expect(suspicion.title).toBe('SEM-ROOM-FN — назначение помещения 1.109');
     expect(suspicion.decision).toBeNull();
     await app.close();
   });
@@ -248,7 +248,7 @@ describe('GET /api/v1/protocols/:protocol_id', () => {
 
     const candidate = body.findings.find((f: { id: string }) => f.id === candidateCheckId);
     expect(candidate).toBeTruthy();
-    expect(candidate.title).toBe(`${param.parameterName} — room 1.109`);
+    expect(candidate.title).toBe(`${param.parameterName} — помещение 1.109`);
     expect(candidate.evidence).toHaveLength(1);
     expect(candidate.evidence[0].bbox).toEqual([0.1, 0.2, 0.3, 0.4]);
     expect(candidate.evidence[0].image_url).toBe(`/api/v1/files/${fileId}/pages/1/image`);
@@ -257,6 +257,21 @@ describe('GET /api/v1/protocols/:protocol_id', () => {
       .join('; ') || null;
     expect(candidate.norm_reference).toBe(expectedNormReference);
     expect(candidate.decision).toBeNull();
+    await app.close();
+  });
+
+  it('translates the worker-authored subject into a Russian finding title', async () => {
+    const app = await buildServer();
+    const res = await app.inject({
+      method: 'GET', url: `/api/v1/protocols/${protocolId}`, headers: await authHeaders(),
+    });
+    const body = res.json();
+
+    // The subject stored on the check ('floor total') must stay untouched -
+    // it is baked into evidence_group_id - only the displayed title translates it.
+    const negative = body.findings.find((f: { id: string }) => f.id === negativeCheckId);
+    expect(negative).toBeTruthy();
+    expect(negative.title).toBe(`${param.parameterName} — итог по этажу`);
     await app.close();
   });
 });

@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ZoomIn, ZoomOut, ExternalLink } from 'lucide-react';
 import StageBadge from './StageBadge';
 import { approvalLabels } from '../labels';
 import { apiBlob, ApiError } from '../api/client';
 import type { EvidenceFragment } from '../types';
+import { bboxToRect, fitContain } from './evidenceGeometry';
 
 interface Props {
   fragment: EvidenceFragment;
@@ -17,14 +18,36 @@ const ACCENT: Record<'expected' | 'actual', string> = {
 
 export default function EvidencePanel({ fragment, accent }: Props) {
   const color = ACCENT[accent];
-  const [x1, y1, x2, y2] = fragment.bbox;
-  const left   = `${x1 * 100}%`;
-  const top    = `${y1 * 100}%`;
-  const width  = `${(x2 - x1) * 100}%`;
-  const height = `${(y2 - y1) * 100}%`;
+  const { left, top, width, height } = bboxToRect(fragment.bbox);
 
   const [imageSrc, setImageSrc] = useState<string | null>(null);
   const [imageError, setImageError] = useState<string | null>(null);
+  // The rendered image's own pixel size, learned from onLoad.
+  const [naturalSize, setNaturalSize] = useState<{ width: number; height: number } | null>(null);
+  // The viewing area's own pixel size. A wrapper sized purely in CSS
+  // (aspect-ratio + max-width/max-height, no explicit width/height)
+  // collapses to 0x0 the moment none of its children contribute an
+  // intrinsic size — every child here (the image is absolutely positioned,
+  // as are the bbox overlay and the value label) does exactly that. Tracking
+  // the panel's pixel size and computing the wrapper's size with it
+  // (fitContain) keeps the wrapper — and the image inside it — non-zero.
+  const [panelSize, setPanelSize] = useState<{ width: number; height: number } | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const node = panelRef.current;
+    if (!node) return;
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      const { width, height } = entry.contentRect;
+      setPanelSize({ width, height });
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+
+  const wrapperSize = naturalSize && panelSize ? fitContain(panelSize, naturalSize) : null;
 
   useEffect(() => {
     // A plain <img src> cannot carry the bearer token the page image route
@@ -32,6 +55,7 @@ export default function EvidencePanel({ fragment, accent }: Props) {
     // <img> as an object URL instead (Plan 7, Task 5).
     setImageSrc(null);
     setImageError(null);
+    setNaturalSize(null);
     if (!fragment.imageUrl) return;
 
     let cancelled = false;
@@ -73,15 +97,66 @@ export default function EvidencePanel({ fragment, accent }: Props) {
       </div>
 
       {/* Область просмотра */}
-      <div className="relative flex-1 bg-[#F8FAFC] min-h-[180px]">
+      <div
+        ref={panelRef}
+        className="relative flex-1 bg-[#F8FAFC] min-h-[180px] flex items-center justify-center overflow-hidden"
+      >
         {imageSrc ? (
-          <img
-            src={imageSrc}
-            alt={`Страница ${fragment.sheetPage} документа ${fragment.documentCode}`}
-            className="absolute inset-0 w-full h-full object-contain"
-          />
+          // The wrapper gets the exact pixel box `object-fit: contain` would
+          // give the image (fitContain, from the panel's and the image's own
+          // pixel sizes) — a real element the bbox overlay and the value
+          // label can share, positioned by the flex parent's centering.
+          // Until both sizes are known (onLoad hasn't fired yet, or the
+          // ResizeObserver hasn't reported the panel's size yet), it falls
+          // back to filling the panel outright, same as the placeholder grid
+          // shown below in that same instant.
+          <div
+            className="relative"
+            style={
+              wrapperSize
+                ? { width: `${wrapperSize.width}px`, height: `${wrapperSize.height}px` }
+                : { position: 'absolute' as const, inset: 0 }
+            }
+          >
+            <img
+              src={imageSrc}
+              alt={`Страница ${fragment.sheetPage} документа ${fragment.documentCode}`}
+              className="absolute inset-0 w-full h-full object-contain"
+              onLoad={(event) => {
+                const { naturalWidth, naturalHeight } = event.currentTarget;
+                setNaturalSize({ width: naturalWidth, height: naturalHeight });
+              }}
+            />
+
+            {/* Оверлей bbox в процентах — относительно изображения, не панели */}
+            <div
+              className="absolute border-2 rounded-[2px] pointer-events-none"
+              style={{
+                left, top, width, height,
+                borderColor: color,
+                background: color,
+                opacity: 1,
+                // заливка 8% — отдельным слоем, чтобы рамка осталась 100%
+                backgroundColor: 'transparent',
+                boxShadow: `inset 0 0 0 1000px ${color}14`
+              }}
+              aria-label={`Область подсветки: ${fragment.extractedValue}`}
+            />
+
+            {/* Значение внутри оверлея — подпись */}
+            <div
+              className="absolute pointer-events-none text-[11px] mono px-1.5 py-0.5 rounded"
+              style={{
+                left, top: `calc(${top} - 20px)`,
+                color: '#FFFFFF',
+                background: color
+              }}
+            >
+              {fragment.extractedValue}
+            </div>
+          </div>
         ) : (
-          <>
+          <div className="absolute inset-0">
             {/* Сетка-подложка, пока изображение грузится или недоступно */}
             <svg className="absolute inset-0 w-full h-full" aria-hidden>
               <defs>
@@ -94,35 +169,8 @@ export default function EvidencePanel({ fragment, accent }: Props) {
             <div className="absolute top-2 left-2 text-[10px] mono text-[#94A3B8] bg-white/80 px-1.5 py-0.5 rounded">
               {imageError ? imageError : fragment.imageUrl ? 'Загрузка страницы…' : 'Нет изображения страницы'}
             </div>
-          </>
+          </div>
         )}
-
-        {/* Оверлей bbox в процентах */}
-        <div
-          className="absolute border-2 rounded-[2px] pointer-events-none"
-          style={{
-            left, top, width, height,
-            borderColor: color,
-            background: color,
-            opacity: 1,
-            // заливка 8% — отдельным слоем, чтобы рамка осталась 100%
-            backgroundColor: 'transparent',
-            boxShadow: `inset 0 0 0 1000px ${color}14`
-          }}
-          aria-label={`Область подсветки: ${fragment.extractedValue}`}
-        />
-
-        {/* Значение внутри оверлея — подпись */}
-        <div
-          className="absolute pointer-events-none text-[11px] mono px-1.5 py-0.5 rounded"
-          style={{
-            left, top: `calc(${top} - 20px)`,
-            color: '#FFFFFF',
-            background: color
-          }}
-        >
-          {fragment.extractedValue}
-        </div>
 
         {/* Зум-контролы */}
         <div className="absolute bottom-2 right-2 flex items-center bg-white border border-[#E2E8F0] rounded-md overflow-hidden shadow-sm">
