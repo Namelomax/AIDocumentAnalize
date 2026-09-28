@@ -74,6 +74,11 @@ const schema = z.object({
   // transaction (same advisory-lock shape as RIN_TRANSACTION_TIMEOUT_MS
   // above), and a check package can hold many 60 MiB files.
   INTEGRITY_TRANSACTION_TIMEOUT_MS: z.coerce.number().default(1_800_000),
+  // Customer's ТЗ feature table item 10, "Еженедельный отчёт по
+  // дообучению": local hour (server time) the weekly report (quality/reports.ts)
+  // fires at on Monday, absent a cron dependency - same reasoning as
+  // INTEGRITY_CHECK_CRON_HOUR above.
+  QUALITY_REPORT_CRON_HOUR: z.coerce.number().min(0).max(23).default(6),
 });
 
 const parsed = schema.parse(process.env);
@@ -124,5 +129,8 @@ export const config = {
   integrity: {
     cronHour: parsed.INTEGRITY_CHECK_CRON_HOUR,
     transactionTimeoutMs: parsed.INTEGRITY_TRANSACTION_TIMEOUT_MS,
+  },
+  quality: {
+    reportCronHour: parsed.QUALITY_REPORT_CRON_HOUR,
   },
 };

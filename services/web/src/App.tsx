@@ -10,6 +10,7 @@ import ProtocolScreen from './screens/ProtocolScreen';
 import VerificationScreen from './screens/VerificationScreen';
 import FinalizationScreen from './screens/FinalizationScreen';
 import HypothesesScreen from './screens/HypothesesScreen';
+import QualityScreen from './screens/QualityScreen';
 import { clearSession, getSession, onUnauthorized, type Session } from './api/client';
 import type { AppNotification } from './types';
 
@@ -22,7 +23,8 @@ export type ScreenId =
   | 'protocol'
   | 'verification'
   | 'finalization'
-  | 'hypotheses';
+  | 'hypotheses'
+  | 'quality';
 
 export interface NavState {
   screen: ScreenId;
@@ -175,6 +177,8 @@ export default function App() {
             )}
           />
         )}
+
+        {nav.screen === 'quality' && <QualityScreen />}
       </main>
     </div>
   );

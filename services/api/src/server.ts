@@ -21,6 +21,7 @@ import { exportRoutes } from './routes/export.js';
 import { notificationRoutes } from './routes/notifications.js';
 import { integrationRinRoutes } from './routes/integrationRin.js';
 import { adminRoutes } from './routes/admin.js';
+import { qualityRoutes } from './routes/quality.js';
 import { ensureBucket } from './storage.js';
 import { seedDemoUsers } from './auth/seed.js';
 import { authPlugin } from './auth/plugin.js';
@@ -28,6 +29,7 @@ import { enterRequestContext, setCurrentUser } from './auth/context.js';
 import { httpRequestDuration } from './metrics.js';
 import { startRinScheduler } from './integration/transfers.js';
 import { startIntegrityScheduler } from './integrity.js';
+import { startQualityReportScheduler } from './quality/reports.js';
 
 export interface BuildServerOptions {
   logStream?: NodeJS.WritableStream;
@@ -100,6 +102,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
   await app.register(notificationRoutes);
   await app.register(integrationRinRoutes);
   await app.register(adminRoutes);
+  await app.register(qualityRoutes);
   return app;
 }
 
@@ -121,5 +124,10 @@ if (isEntry) {
   // INTEGRITY_CHECK_CRON_HOUR (default 3, local time). Same reasoning as
   // startRinScheduler above for why this lives here and not in buildServer().
   startIntegrityScheduler();
+  // Customer's ТЗ feature table, item 10: picks up the weekly quality report
+  // at Monday config.quality.reportCronHour (default 6, local time). Same
+  // reasoning as startRinScheduler/startIntegrityScheduler above for why
+  // this lives here and not in buildServer().
+  startQualityReportScheduler();
   await app.listen({ port: config.port, host: '0.0.0.0' });
 }

@@ -66,3 +66,33 @@ export const integrityLastRunTimestamp = new client.Gauge({
   help: 'Unix timestamp (seconds) the most recently completed integrity check finished',
   registers: [registry],
 });
+
+// Section 14.3's acceptance metrics (quality/metrics.ts), set on every
+// GET /api/v1/quality/metrics call and by the weekly report job (which
+// always runs unfiltered - see quality/reports.ts). Labelled "all" for an
+// unfiltered read, or the modality that was asked for - never every
+// (param_code, detection_method) combination this codebase can produce,
+// which would make these gauges as unusable as labelling a histogram by raw
+// URL (see httpRequestDuration's own comment above).
+export const qualityPrecisionGauge = new client.Gauge({
+  name: 'inspector_quality_precision',
+  help: 'Precision of confirmed violations vs engine candidates (section 14.3), by modality',
+  labelNames: ['modality'],
+  registers: [registry],
+});
+
+export const qualityRecallGauge = new client.Gauge({
+  name: 'inspector_quality_recall',
+  help: 'Recall of confirmed violations vs engine candidates (section 14.3), by modality',
+  labelNames: ['modality'],
+  registers: [registry],
+});
+
+// Section 14.3: "Ложные срабатывания... ≤ 0,10" - deploy/monitoring/alert-rules.yml's
+// QualityHighFalsePositiveRate reads this.
+export const qualityFprGauge = new client.Gauge({
+  name: 'inspector_quality_false_positive_rate',
+  help: 'False positive rate on NEGATIVE_VERIFIED gold labels (section 14.3), by modality',
+  labelNames: ['modality'],
+  registers: [registry],
+});

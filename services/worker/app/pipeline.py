@@ -195,6 +195,7 @@ async def _ocr_stored_pages(raw: bytes, stored: list[dict], config, *,
             result = await ocr_page(
                 raw, page["page_no"], provider,
                 dpi=config.ocr_dpi, strip_height_px=config.ocr_strip_height_px,
+                line_mode=config.ocr_line_mode, concurrency=config.ocr_concurrency,
             )
         except Exception as exc:  # noqa: BLE001 - a page's own OCR failure degrades, it does not fail the file
             logger.error("ocr failed for page", extra={
@@ -1220,9 +1221,13 @@ async def _process_start_once(process_id: str, db, storage, config, *, cache=Non
         # carrying the matrix/model/dataset versions and input fingerprint
         # section 14.2 requires. A failure here is logged, not fatal: the
         # process must still reach READY so an inspector is not blocked by it.
+        # dataset_version is section 9.4's curator-released tag (the DB is
+        # the source of truth once a first version exists); config.dataset_version
+        # (the env var, "none" by default) is only the fallback before that.
+        dataset_version = await db.latest_dataset_version() or config.dataset_version
         protocol_version = await db.create_protocol(
             process.id, process.object_id, specs.version, config.model_version,
-            config.dataset_version, input_manifest_hash(process, final_files),
+            dataset_version, input_manifest_hash(process, final_files),
         )
         logger.info("protocol created", extra={
             "process_id": process_id,
@@ -1368,9 +1373,12 @@ async def _process_update_once(process_id: str, new_file_ids: set[str], db, stor
     try:
         superseded_version = await db.snapshot_and_supersede_protocol(process_id)
         await db.apply_merge_plan(process_id, process.object_id, plan)
+        # See the first create_protocol call above: the released dataset
+        # version (if any) wins over the env fallback here too.
+        dataset_version = await db.latest_dataset_version() or config.dataset_version
         protocol_version = await db.create_protocol(
             process.id, process.object_id, specs.version, config.model_version,
-            config.dataset_version, input_manifest_hash(process, final_files),
+            dataset_version, input_manifest_hash(process, final_files),
             status=new_status,
         )
         logger.info("protocol superseded and reissued", extra={

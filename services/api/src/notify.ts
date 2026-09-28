@@ -5,7 +5,7 @@
 // the ИАИС «РиН» integration (section 9.6): a transfer that exhausted its
 // retries needs an administrator, and an automatic дозагрузка landing on an
 // already-finalized protocol needs the inspector who owns the process.
-import type { Prisma, PrismaClient } from '@prisma/client';
+import type { Prisma, PrismaClient, UserRole } from '@prisma/client';
 import { prisma } from './db.js';
 
 // Accepts either the module-level client or a `tx` handed out by
@@ -51,6 +51,23 @@ export async function notifyAdmins(
 ): Promise<void> {
   const admins = await db.user.findMany({ where: { role: 'ADMIN' }, select: { id: true } });
   await insertNotifications(db, admins.map((a) => a.id), kind, title, body, target);
+}
+
+// Section "Еженедельный отчёт по дообучению" (customer's ТЗ feature table,
+// item 10): "автоматическая генерация отчёта для ML-инженеров" - every user
+// of the given roles, a generalization of notifyAdmins above for the weekly
+// quality report (quality/reports.ts), which goes to ADMIN and ML_ENGINEER
+// alike rather than only ADMIN.
+export async function notifyRoles(
+  roles: UserRole[],
+  kind: string,
+  title: string,
+  body: string,
+  target: NotifyTarget = {},
+  db: Db = prisma,
+): Promise<void> {
+  const users = await db.user.findMany({ where: { role: { in: roles } }, select: { id: true } });
+  await insertNotifications(db, users.map((u) => u.id), kind, title, body, target);
 }
 
 // Section 9.6 "Блокировка автоматической дозагрузки при финализированном

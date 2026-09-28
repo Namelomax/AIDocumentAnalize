@@ -99,3 +99,19 @@ groups:
             Ни одна проверка целостности (customer's ТЗ p.31) не завершилась
             за последние 26 часов - плановая ежедневная проверка, похоже, не
             выполняется.
+
+      # Section 14.3: "Ложные срабатывания... False Positive Rate ...
+      # ≤ 0,10" - services/api's quality/metrics.ts sets this gauge on every
+      # GET /api/v1/quality/metrics call and on every weekly report run
+      # (quality/reports.ts).
+      - alert: QualityHighFalsePositiveRate
+        expr: inspector_quality_false_positive_rate > 0.10
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Превышен приёмочный порог ложных срабатываний: {{ $labels.modality }}"
+          description: >-
+            False Positive Rate по модальности {{ $labels.modality }} составляет
+            {{ $value | humanizePercentage }}, что выше приёмочного порога 10%
+            (раздел 14.3 ТЗ). См. GET /api/v1/quality/metrics.

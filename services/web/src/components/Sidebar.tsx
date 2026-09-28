@@ -1,4 +1,4 @@
-import { Building2, FileText, Lightbulb, LogOut, ScrollText } from 'lucide-react';
+import { Building2, FileText, Lightbulb, LogOut, ScrollText, BarChart3 } from 'lucide-react';
 import type { ScreenId } from '../App';
 import type { SessionUser } from '../api/client';
 import type { AppNotification } from '../types';
@@ -29,7 +29,16 @@ const items: { id: ScreenId; icon: typeof Building2; label: string }[] = [
   { id:'finalization', icon: ScrollText, label:'Журнал аудита' }
 ];
 
+// Section 9.4/14: the "Качество" screen (dataset_version releases,
+// acceptance metrics, weekly reports) is for whoever curates data or
+// oversees the retraining loop - not every inspector's daily tool, the same
+// reasoning routes/quality.ts's own requireRole list follows.
+const QUALITY_ROLES = new Set(['ADMIN', 'ML_ENGINEER', 'SUPERVISOR']);
+
 export default function Sidebar({ activeSection, onNavigate, user, onLogout, onOpenNotification }: Props) {
+  const visibleItems = QUALITY_ROLES.has(user.role)
+    ? [...items, { id: 'quality' as ScreenId, icon: BarChart3, label: 'Качество' }]
+    : items;
   return (
     <aside className="w-14 shrink-0 h-screen border-r border-[#E2E8F0] bg-white flex flex-col items-center py-3 gap-1">
       <button
@@ -42,7 +51,7 @@ export default function Sidebar({ activeSection, onNavigate, user, onLogout, onO
       </button>
 
       <nav className="mt-4 flex flex-col gap-1" aria-label="Основная навигация">
-        {items.map(({ id, icon: Icon, label }) => {
+        {visibleItems.map(({ id, icon: Icon, label }) => {
           const active = activeSection === id;
           return (
             <button

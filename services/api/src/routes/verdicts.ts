@@ -11,6 +11,7 @@ import {
   paramsByCode, inspectorsById, atomsByParent, pageQualityByFragment, loadProtocolResponse,
 } from './protocols.js';
 import { enqueueTransfer, cancelPendingTransfer } from '../integration/transfers.js';
+import { createGoldLabelsForProtocol, removeGoldLabelsForProtocol } from '../quality/goldLabels.js';
 
 const checkParamsSchema = z.object({ check_id: z.string().uuid() });
 const protocolParamsSchema = z.object({ protocol_id: z.string().uuid() });
@@ -343,6 +344,9 @@ export async function verdictRoutes(app: FastifyInstance) {
         });
         await tx.process.update({ where: { id: protocol.processId }, data: { status: 'FINALIZED' } });
         await enqueueTransfer(protocol.id, tx);
+        // Section 9.4/14.1: finalization is what turns a decided check into
+        // a GOLD label - see quality/goldLabels.ts for exactly which ones.
+        await createGoldLabelsForProtocol(tx, protocol);
       });
 
       finalizationsTotal.inc();
@@ -389,6 +393,10 @@ export async function verdictRoutes(app: FastifyInstance) {
         // transfer" - a transfer already SENT/FAILED is untouched, it is
         // history rather than something this action can undo.
         await cancelPendingTransfer(protocol.id, tx);
+        // Section 9.3: an unfinalized protocol's decisions are no longer
+        // final - its GOLD labels (section 9.4) are removed along with them;
+        // a later re-finalize recomputes them fresh.
+        await removeGoldLabelsForProtocol(tx, protocol.id);
       });
 
       await audit(request, 'PROTOCOL_UNFINALIZED', protocol.objectId, {

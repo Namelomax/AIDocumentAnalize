@@ -286,6 +286,14 @@ class FakeDb:
         self.user_names: dict[str, str] = {}
         self.marked_files_version: dict[str, int] = {}
         self.superseded_versions: list[int] = []
+        # None by default - mirrors a fresh stand with no released dataset
+        # version yet, so create_protocol's own tests (which assert against
+        # CONFIG.dataset_version) keep seeing the env fallback unless a test
+        # sets this explicitly.
+        self._latest_dataset_version: str | None = None
+
+    async def latest_dataset_version(self):
+        return self._latest_dataset_version
 
     async def get_process(self, process_id):
         self.get_process_calls += 1
@@ -1162,6 +1170,25 @@ async def test_process_start_issues_a_protocol_with_matrix_model_and_hash():
     # A registry was uploaded: its own hash is the fingerprint, not a
     # recomputation over the package's files.
     assert call["input_manifest_hash"] == "manifest-hash"
+
+
+@pytest.mark.asyncio
+async def test_protocol_uses_the_released_dataset_version_over_the_env_fallback():
+    """Section 9.4: services/api's POST /api/v1/quality/datasets is the
+    curator's own release - once one exists, new protocols carry its tag
+    rather than the DATASET_VERSION env var (CONFIG.dataset_version), which
+    is only the pre-release fallback (see app.db.Database.latest_dataset_version)."""
+    process = mk_process(manifest_uploaded=False)
+    doc = mk_file(id="f-doc", file_name="a.pdf", storage_key="key-doc",
+                  mime_type="application/pdf", doc_stage="PD", approval_status="APPROVED")
+    db = FakeDb(process, [doc])
+    db._latest_dataset_version = "gold-2026.09.29"
+    storage = FakeStorage({"key-doc": _one_page_pdf("текст")})
+
+    await process_start("p1", db, storage, CONFIG)
+
+    assert len(db.protocol_calls) == 1
+    assert db.protocol_calls[0]["dataset_version"] == "gold-2026.09.29"
 
 
 @pytest.mark.asyncio

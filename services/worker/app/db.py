@@ -703,6 +703,20 @@ class Database:
                 )
                 return protocol["version"]
 
+    async def latest_dataset_version(self) -> str | None:
+        """The tag of the most recently released dataset (services/api's
+        POST /api/v1/quality/datasets, section 9.4's "куратор данных").
+
+        None when no version has ever been released - app.pipeline falls
+        back to config.dataset_version (the DATASET_VERSION env var) exactly
+        as it did before dataset_versions existed, so a fresh stand with no
+        released dataset yet still issues honest protocols.
+        """
+        async with self._pool.acquire() as connection:
+            return await connection.fetchval(
+                "SELECT version_tag FROM dataset_versions ORDER BY released_at DESC LIMIT 1"
+            )
+
     async def create_protocol(
         self,
         process_id: str,

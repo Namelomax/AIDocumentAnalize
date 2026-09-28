@@ -484,6 +484,7 @@ model Check {
   process    Process            @relation(fields: [processId], references: [id], onDelete: Cascade)
   fragments  EvidenceFragment[]
   rejections RejectionLog[]
+  goldLabels GoldLabel[]
   parent     Check?             @relation("CompositeSplit", fields: [parentCheckId], references: [id], onDelete: Cascade)
   atoms      Check[]            @relation("CompositeSplit")
 
@@ -539,6 +540,141 @@ model IntegrityFailure {
 
   @@index([runId])
   @@map("integrity_failures")
+}
+
+// Section 14.1's GOLD unit, one row per decided evidence_group of a
+// finalized protocol (section 9.4/10, table Dataset_Items). Positive only
+// for CONFIRMED_VIOLATION (inspector-only, enforced upstream by the
+// confirmed_requires_inspector constraint on checks); negative for
+// NEGATIVE_VERIFIED of either origin - the engine's own comparison result
+// (never touched by an inspector) or an inspector's rejection of a
+// CANDIDATE - because section 9's own status table calls NEGATIVE_VERIFIED
+// itself "обязательный отрицательный пример для оценки ложных срабатываний",
+// not something only an inspector-reviewed rejection can be. Everything else
+// (CANDIDATE, CLARIFICATION_REQUIRED, SUSPICION, completeness-only
+// outcomes) never becomes a label - see quality/goldLabels.ts.
+//
+// Written when a protocol is finalized (POST .../finalize) and deleted in
+// full when that same protocol is unfinalized - a label from a protocol
+// version that is no longer the finalized truth was never a final decision
+// to begin with (section 9.3's own unfinalize semantics). Re-finalizing
+// recomputes and re-inserts, so a decision changed in between is reflected
+// exactly once.
+model GoldLabel {
+  id              String   @id @default(uuid())
+  checkId         String   @map("check_id")
+  protocolId      String   @map("protocol_id")
+  objectId        String   @map("object_id")
+  processId       String   @map("process_id")
+  evidenceGroupId String   @map("evidence_group_id")
+  paramCode       String   @map("param_code") @db.VarChar(20)
+  // Param.modality at label time (scalar_text/doc_presence/drawing_entity/
+  // drawing_measure) - null only for a hypothesis check with no matrix
+  // param behind it (paramId is null on those too, see Check.paramId).
+  modality        String?  @map("modality") @db.VarChar(20)
+  // LOGICAL/SEMANTIC/NORMATIVE/ML for a free-search hypothesis the
+  // inspector promoted then confirmed/rejected (section 9.5); null for an
+  // ordinary matrix check.
+  detectionMethod String?  @map("detection_method") @db.VarChar(20)
+  // POSITIVE | NEGATIVE - see the model comment above for what earns each.
+  label           String   @db.VarChar(10)
+  // What the engine said before the inspector's decision (Check.engineStatus)
+  // - CANDIDATE, NEGATIVE_VERIFIED or SUSPICION (a promoted hypothesis).
+  // Null only if a check somehow reached CONFIRMED_VIOLATION/NEGATIVE_VERIFIED
+  // with no engineStatus recorded, which should not happen post-migration.
+  engineStatus    String?  @map("engine_status") @db.VarChar(30)
+  // CONFIRMED_VIOLATION | NEGATIVE_VERIFIED - the check's own findingStatus
+  // at finalization, kept alongside `label` so a reader never has to invert
+  // the POSITIVE/NEGATIVE mapping to know the underlying status.
+  finalStatus     String   @map("final_status") @db.VarChar(30)
+  reasonCode      String?  @map("reason_code") @db.VarChar(30)
+  // Who decided it (Check.verifiedBy) - null for the engine's own
+  // NEGATIVE_VERIFIED that no inspector ever touched.
+  expertId        String?  @map("expert_id")
+  decidedAt       DateTime? @map("decided_at")
+  matrixVersion   String   @map("matrix_version") @db.VarChar(20)
+  modelVersion    String   @map("model_version") @db.VarChar(40)
+  // Evidence fragments at label time, denormalized (file id/sha256, page,
+  // bbox, role) so a dataset export never has to join evidence_fragments
+  // rows that a later merge could since have changed.
+  evidence        Json
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  // A real FK (onDelete: Cascade), unlike protocolId/objectId/processId
+  // above which stay plain ids - the same convention rejection_log's own
+  // checkId follows. A check is never hard-deleted in production (only its
+  // process cascading away, which tests do and production never does), so
+  // this exists for referential integrity and test cleanup, not because
+  // production ever deletes a finalized check out from under its label.
+  check    Check                 @relation(fields: [checkId], references: [id], onDelete: Cascade)
+  releases DatasetVersionLabel[]
+
+  @@unique([protocolId, checkId])
+  @@index([objectId])
+  @@index([paramCode])
+  @@index([label])
+  @@map("gold_labels")
+}
+
+// Section 9.4's dataset_version: a curator-released, frozen set of GOLD
+// labels (POST /api/v1/quality/datasets, ML_ENGINEER/ADMIN only - the ТЗ's
+// own "куратор данных"). Releasing is the curator review step section 9.4
+// requires before a rejection's draft entry ever counts toward training -
+// gold_labels themselves are the full ledger, this table is what a training
+// run is actually allowed to read.
+model DatasetVersion {
+  id           String   @id @default(uuid())
+  versionTag   String   @unique @map("version_tag") @db.VarChar(40)
+  notes        String?
+  // SHA-256 over the sorted, frozen label ids - lets a later export or audit
+  // confirm the set has not silently changed since release.
+  manifestHash String   @map("manifest_hash") @db.Char(64)
+  labelCount   Int      @map("label_count")
+  releasedBy   String   @map("released_by")
+  releasedAt   DateTime @default(now()) @map("released_at")
+
+  labels DatasetVersionLabel[]
+
+  @@map("dataset_versions")
+}
+
+// The frozen membership itself - a join table rather than an array column,
+// so a label's own releases (and a release's own labels) are both ordinary
+// queries. A label may belong to more than one release: a later version
+// typically carries forward everything an earlier one already froze plus
+// whatever newly qualified since.
+model DatasetVersionLabel {
+  datasetVersionId String @map("dataset_version_id")
+  goldLabelId      String @map("gold_label_id")
+
+  datasetVersion DatasetVersion @relation(fields: [datasetVersionId], references: [id], onDelete: Cascade)
+  goldLabel      GoldLabel      @relation(fields: [goldLabelId], references: [id], onDelete: Cascade)
+
+  @@id([datasetVersionId, goldLabelId])
+  @@index([goldLabelId])
+  @@map("dataset_version_labels")
+}
+
+// Section "Еженедельный отчёт по дообучению" (customer's ТЗ table of
+// features, item 10): a scheduled (Monday 06:00 local) or on-demand
+// (POST /api/v1/quality/reports) snapshot of section 14.3's acceptance
+// metrics over the past week, the trend against the week before, and a
+// rejection-reason breakdown for ML engineers to act on. Rendered to
+// PDF/DOCX/JSON on demand from `payload` (GET .../:id/download) rather than
+// storing rendered bytes - the same choice routes/export.ts makes for a
+// protocol export.
+model QualityReport {
+  id          String   @id @default(uuid())
+  periodStart DateTime @map("period_start")
+  periodEnd   DateTime @map("period_end")
+  // { metrics, previous_metrics, trend, rejection_reasons, recommendations }
+  // - see quality/reports.ts's own ReportPayload for the exact shape.
+  payload     Json
+  generatedBy String?  @map("generated_by")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([periodStart])
+  @@map("quality_reports")
 }
 
 model EvidenceFragment {
