@@ -98,6 +98,10 @@ _SYSTEM_PROMPT = """\
 - «Кладовая» и «Санузел» - была кладовая, стал санузел;
 - «Актовый зал» и «Серверная» - было место собраний, стало серверной.
 
+Если в названии есть сокращение, принятое в экспликациях, в полях
+pd_expanded и rd_expanded дана его расшифровка - опирайся на неё, а не
+угадывай значение сокращения.
+
 Отвечай строго JSON-массивом и ничем больше, без пояснений вне JSON. Один
 элемент массива на каждую переданную пару, с тем же key:
 [{"key": "<ключ пары>", "same_function": true|false, "confidence": <число от 0 до 1>, "reason": "<одно предложение по-русски, объясняющее вывод>"}]
@@ -105,7 +109,18 @@ _SYSTEM_PROMPT = """\
 
 
 def _build_user_prompt(pairs: list[NamePair]) -> str:
-    payload = [{"key": p.key, "pd_name": p.pd_name, "rd_name": p.rd_name} for p in pairs]
+    # The model guesses at trade abbreviations and gets them wrong: live, it
+    # read "ПУИ" as a control point rather than a cleaning-supplies room and
+    # wrote that into the reason the inspector sees. The expansion the
+    # normalizer already knows is handed over beside the original name.
+    payload = []
+    for p in pairs:
+        item = {"key": p.key, "pd_name": p.pd_name, "rd_name": p.rd_name}
+        for field, name in (("pd_expanded", p.pd_name), ("rd_expanded", p.rd_name)):
+            expanded = normalize_room_name(name)
+            if expanded != " ".join(name.lower().replace("ё", "е").split()):
+                item[field] = expanded
+        payload.append(item)
     return (
         "Сравни назначения следующих пар помещений и верни JSON-массив "
         "вердиктов, как описано в инструкции:\n"

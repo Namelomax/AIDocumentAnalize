@@ -165,3 +165,15 @@ async def test_live_llm_tells_a_changed_function_from_a_reworded_name():
     assert "same-case" not in by_key
     assert by_key["changed-1"].same_function is False
     assert by_key["changed-2"].same_function is False
+
+
+def test_the_model_is_given_the_expansion_of_a_trade_abbreviation():
+    """Live, the model read "ПУИ" as a control point instead of a room for
+    cleaning supplies and wrote that into the inspector's reason."""
+    from app.explication.functions import _build_user_prompt
+
+    prompt = _build_user_prompt([NamePair(key="p1", pd_name="Санузел", rd_name="ПУИ")])
+
+    assert "помещение уборочного инвентаря" in prompt
+    assert "rd_expanded" in prompt
+    assert "pd_expanded" not in prompt
