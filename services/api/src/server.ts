@@ -7,6 +7,7 @@ import { loggerOptions } from './logger.js';
 import { healthRoutes } from './routes/health.js';
 import { metricsRoutes } from './routes/metrics.js';
 import { documentRoutes } from './routes/documents.js';
+import { processDocumentRoutes } from './routes/processDocuments.js';
 import { objectRoutes } from './routes/objects.js';
 import { processRoutes } from './routes/processes.js';
 import { dashboardRoutes } from './routes/dashboard.js';
@@ -81,6 +82,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
   await app.register(healthRoutes);
   await app.register(metricsRoutes);
   await app.register(documentRoutes);
+  await app.register(processDocumentRoutes);
   await app.register(objectRoutes);
   await app.register(processRoutes);
   await app.register(dashboardRoutes);

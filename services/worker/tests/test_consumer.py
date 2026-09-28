@@ -3,8 +3,9 @@ import json
 import logging
 
 import pytest
+from app import consumer as consumer_module
 from app.consumer import _consume_messages, handle_task, UnknownTaskType
-from app.pipeline import process_start
+from app.pipeline import process_start, process_update
 
 
 class FakeDb:
@@ -33,6 +34,35 @@ class FakeConfig:
 def test_routes_process_start_to_the_pipeline_handler():
     payload = {"type": "process.start", "process_id": "p1", "object_id": "o1"}
     assert handle_task(payload) is process_start
+
+
+def test_routes_process_update_to_the_pipeline_handler():
+    # Customer's ТЗ "Дозагрузка файлов": services/api's routes/
+    # processDocuments.ts publishes this task type instead of process.start
+    # once a process already has a protocol.
+    payload = {"type": "process.update", "process_id": "p1", "object_id": "o1", "file_ids": ["f1"]}
+    assert handle_task(payload) is process_update
+
+
+@pytest.mark.asyncio
+async def test_process_update_message_threads_file_ids_through(monkeypatch):
+    """process_update is the only handler that takes file_ids - proves
+    _process_message actually forwards the payload's own list to it, and
+    that process_start (which accepts no such keyword) never receives it."""
+    received = {}
+
+    async def fake_process_update(process_id, db, storage, config, *, cache=None, file_ids=None):
+        received["process_id"] = process_id
+        received["file_ids"] = file_ids
+
+    monkeypatch.setitem(consumer_module.HANDLERS, "process.update", fake_process_update)
+    payload = {"type": "process.update", "process_id": "p1", "object_id": "o1", "file_ids": ["f1", "f2"]}
+    message = FakeMessage(json.dumps(payload).encode())
+
+    await _consume_messages(_fake_messages(message), FakeDb(), FakeStorage(), FakeConfig())
+
+    assert received == {"process_id": "p1", "file_ids": ["f1", "f2"]}
+    assert message.acked is True
 
 
 def test_unknown_task_type_raises():

@@ -607,6 +607,7 @@ export function toProtocol(api: ApiProtocol): Protocol {
     // until export (a later plan) settles on the real format.
     number: api.id.slice(0, 8),
     objectId: api.object_id,
+    processId: api.process_id,
     createdAt: formatDateTime(api.created_at),
     version: api.version,
     status: api.status as ProtocolStatus,

@@ -5,11 +5,14 @@ Row shapes are plain dataclasses rather than raw asyncpg Records so the
 pipeline can be driven by hand-built fakes of the same shape in tests.
 """
 
+import json
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime
 
 import asyncpg
+
+from app.incremental import MergePlan
 
 
 @dataclass
@@ -95,6 +98,47 @@ def _page_line_row(record: asyncpg.Record) -> PageLineRow:
         x1=record["x1"],
         y1=record["y1"],
     )
+
+
+def _iso(value: datetime | None) -> str | None:
+    return value.isoformat() if value is not None else None
+
+
+# The shape services/api/src/routes/protocols.ts's SnapshotCheck/
+# SnapshotFragment expect inside protocols.snapshot - camelCase, matching
+# the Prisma field names the API's own view-building code
+# (protocol/view.ts's buildFinding et al.) already reads, not the snake_case
+# `checks`/`evidence_fragments` columns these two read from. Kept next to the
+# other _*_row helpers even though they build dicts, not dataclasses: same
+# job, turning a raw asyncpg.Record into the one shape a caller actually
+# wants.
+def _snapshot_fragment(record: asyncpg.Record) -> dict:
+    return {
+        "id": record["id"], "fileId": record["file_id"], "fileSha256": record["file_sha256"],
+        "stage": record["stage"], "documentCode": record["document_code"], "revision": record["revision"],
+        "approvalStatus": record["approval_status"], "sheetPage": record["sheet_page"],
+        "x0": record["x0"], "y0": record["y0"], "x1": record["x1"], "y1": record["y1"],
+        "extractedValue": record["extracted_value"], "role": record["role"],
+    }
+
+
+def _snapshot_check(record: asyncpg.Record, fragments: list[dict]) -> dict:
+    return {
+        "id": record["id"], "processId": record["process_id"], "objectId": record["object_id"],
+        "paramId": record["param_id"], "paramCode": record["param_code"],
+        "evidenceGroupId": record["evidence_group_id"], "subject": record["subject"],
+        "expectedValue": record["expected_value"], "actualValue": record["actual_value"],
+        "delta": record["delta"], "completenessStatus": record["completeness_status"],
+        "findingStatus": record["finding_status"], "reviewPriority": record["review_priority"],
+        "rationale": record["rationale"], "matrixVersion": record["matrix_version"],
+        "createdAt": _iso(record["created_at"]), "engineStatus": record["engine_status"],
+        "verifiedBy": record["verified_by"], "verifiedAt": _iso(record["verified_at"]),
+        "verdictReasonCode": record["verdict_reason_code"], "verdictComment": record["verdict_comment"],
+        "authoritativeFileId": record["authoritative_file_id"], "detectionMethod": record["detection_method"],
+        "confidence": record["confidence"], "parentCheckId": record["parent_check_id"],
+        "splitBy": record["split_by"], "splitAt": _iso(record["split_at"]),
+        "fragments": fragments,
+    }
 
 
 def _file_row(record: asyncpg.Record) -> FileRow:
@@ -468,6 +512,123 @@ class Database:
                     for atom in check.get("atoms") or []:
                         await self._insert_check(connection, process_id, object_id, atom, check_id)
 
+    async def get_checks_for_merge(self, process_id: str) -> list[dict]:
+        """Every check of a process, with its own fragments nested under it,
+        as plain snake_case dicts - the shape app.incremental.build_merge_plan
+        reads (composites and atoms alike; build_merge_plan is what tells
+        them apart, not this query). Read-only, called before a дозагрузка's
+        merge touches `checks` at all (app.pipeline._process_update_once).
+        """
+        async with self._pool.acquire() as connection:
+            check_rows = await connection.fetch("SELECT * FROM checks WHERE process_id = $1", process_id)
+            check_ids = [row["id"] for row in check_rows]
+            fragment_rows = (
+                await connection.fetch(
+                    "SELECT * FROM evidence_fragments WHERE check_id = ANY($1::text[])", check_ids,
+                )
+                if check_ids else []
+            )
+        fragments_by_check: dict[str, list[dict]] = {}
+        for fragment in fragment_rows:
+            fragments_by_check.setdefault(fragment["check_id"], []).append(dict(fragment))
+        return [{**dict(row), "fragments": fragments_by_check.get(row["id"], [])} for row in check_rows]
+
+    async def apply_merge_plan(self, process_id: str, object_id: str, plan: MergePlan) -> None:
+        """Execute a MergePlan (app.incremental.build_merge_plan) in one
+        transaction: touch only the rows the plan actually names, instead of
+        save_checks's delete-everything-and-reinsert - an untouched row
+        (including any inspector decision on it) is never even sent to the
+        database here.
+        """
+        async with self._pool.acquire() as connection:
+            async with connection.transaction():
+                for check_id, rationale in plan.rationale_updates:
+                    await connection.execute(
+                        "UPDATE checks SET rationale = $2 WHERE id = $1", check_id, rationale,
+                    )
+                if plan.delete_ids:
+                    await connection.execute(
+                        "DELETE FROM checks WHERE id = ANY($1::text[])", plan.delete_ids,
+                    )
+                for check in plan.insert:
+                    check_id = await self._insert_check(connection, process_id, object_id, check, None)
+                    for atom in check.get("atoms") or []:
+                        await self._insert_check(connection, process_id, object_id, atom, check_id)
+
+    async def get_user_names(self, user_ids: list[str]) -> dict[str, str]:
+        """Names for a merge's "previous decision by X" notes
+        (app.incremental._changed_note/_decision_label) - an id alone would
+        read like a database dump to the inspector reading the note."""
+        ids = [user_id for user_id in {*user_ids} if user_id]
+        if not ids:
+            return {}
+        rows = await self._pool.fetch("SELECT id, full_name FROM users WHERE id = ANY($1::text[])", ids)
+        return {row["id"]: row["full_name"] for row in rows}
+
+    async def mark_files_added_in_protocol(self, file_ids: list[str], version: int) -> None:
+        """Customer's ТЗ "Дозагрузка файлов": which protocol version a
+        дозагрузка's own files arrived with, for the document list to badge
+        them. Never called for a process's original package - those files
+        have nothing incremental to show and stay null."""
+        if not file_ids:
+            return
+        await self._pool.execute(
+            "UPDATE files SET added_in_protocol_version = $2 WHERE id = ANY($1::text[])",
+            file_ids, version,
+        )
+
+    async def snapshot_and_supersede_protocol(self, process_id: str) -> int | None:
+        """Freeze the process's current (non-SUPERSEDED) protocol exactly as
+        it stood right before a дозагрузка's merge changes `checks` - the
+        same rows services/api's routes/protocols.ts would otherwise have
+        read live for it (loadProtocolResponse), captured here because a
+        later merge may delete or replace any of them (customer's ТЗ:
+        "Предыдущая версия протокола сохраняется в истории").
+
+        Returns the superseded version number, or None if the process has no
+        protocol yet - process.update only ever reaches a process that has
+        already run process.start once (services/api's routes/
+        processDocuments.ts refuses a дозагрузка while PENDING), so this is
+        defensive rather than an expected path.
+        """
+        async with self._pool.acquire() as connection:
+            async with connection.transaction():
+                protocol = await connection.fetchrow(
+                    """
+                    SELECT id, version FROM protocols
+                    WHERE process_id = $1 AND status != 'SUPERSEDED'
+                    ORDER BY version DESC LIMIT 1
+                    """,
+                    process_id,
+                )
+                if protocol is None:
+                    return None
+
+                check_rows = await connection.fetch("SELECT * FROM checks WHERE process_id = $1", process_id)
+                check_ids = [row["id"] for row in check_rows]
+                fragment_rows = (
+                    await connection.fetch(
+                        "SELECT * FROM evidence_fragments WHERE check_id = ANY($1::text[])", check_ids,
+                    )
+                    if check_ids else []
+                )
+                fragments_by_check: dict[str, list[dict]] = {}
+                for fragment in fragment_rows:
+                    fragments_by_check.setdefault(fragment["check_id"], []).append(
+                        _snapshot_fragment(fragment),
+                    )
+                snapshot = {
+                    "checks": [
+                        _snapshot_check(row, fragments_by_check.get(row["id"], []))
+                        for row in check_rows
+                    ],
+                }
+                await connection.execute(
+                    "UPDATE protocols SET status = 'SUPERSEDED', snapshot = $2::jsonb WHERE id = $1",
+                    protocol["id"], json.dumps(snapshot),
+                )
+                return protocol["version"]
+
     async def create_protocol(
         self,
         process_id: str,
@@ -476,6 +637,16 @@ class Database:
         model_version: str,
         dataset_version: str,
         input_manifest_hash: str,
+        *,
+        # READY for a fresh run (app.pipeline._process_start_once); a
+        # дозагрузка's incremental update (app.pipeline._process_update_once)
+        # opens VERIFYING instead when a decision survived its merge - the
+        # new version already has an undecided candidate sitting next to a
+        # kept verdict, the same state a first run would never actually be
+        # in but VERIFYING already means exactly (section 9.3). Defaulted so
+        # every existing call site - every test fixture among them - keeps
+        # working unchanged.
+        status: str = "READY",
     ) -> int:
         """Add the next protocol version of the object.
 
@@ -498,10 +669,10 @@ class Database:
                     """
                     INSERT INTO protocols (id, object_id, process_id, version, matrix_version,
                                            model_version, dataset_version, input_manifest_hash, status)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'READY')
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                     """,
                     str(uuid.uuid4()), object_id, process_id, version, matrix_version,
-                    model_version, dataset_version, input_manifest_hash,
+                    model_version, dataset_version, input_manifest_hash, status,
                 )
                 return version
 

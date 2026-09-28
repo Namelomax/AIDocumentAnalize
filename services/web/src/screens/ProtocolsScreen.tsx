@@ -18,7 +18,13 @@ interface Props {
 // also how many more rows a "Показать ещё" click asks for.
 const PAGE_SIZE = 50;
 
-const STATUS_OPTIONS: ProtocolStatus[] = ['READY', 'VERIFYING', 'VERIFICATION_COMPLETED', 'PROTOCOL_FINALIZED'];
+// SUPERSEDED included: customer's ТЗ "Предыдущая версия протокола
+// сохраняется в истории" - the inspector must be able to filter down to
+// exactly the archived versions a дозагрузка replaced, not just find them
+// mixed into an unfiltered list.
+const STATUS_OPTIONS: ProtocolStatus[] = [
+  'READY', 'VERIFYING', 'VERIFICATION_COMPLETED', 'PROTOCOL_FINALIZED', 'SUPERSEDED',
+];
 
 type ExportFormat = 'pdf' | 'docx' | 'xml';
 

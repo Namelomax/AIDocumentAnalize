@@ -9,6 +9,7 @@ import json
 import logging
 import threading
 import time
+import uuid
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from pathlib import Path
@@ -201,6 +202,27 @@ def mk_file(**overrides):
     return FileRow(**defaults)
 
 
+def _fake_check_row(check_id: str, check: dict, parent_check_id: str | None) -> dict:
+    """A `checks` row in app.db.Database.get_checks_for_merge's own
+    snake_case shape, built from a check dict in the shape app.pipeline
+    itself produces (_compute_checks/_completeness_check/_room_finding_check
+    et al.) - what FakeDb's own in-memory table stores a row as."""
+    return {
+        "id": check_id, "parent_check_id": parent_check_id,
+        "param_code": check["param_code"], "evidence_group_id": check["evidence_group_id"],
+        "subject": check.get("subject"), "expected_value": check.get("expected_value"),
+        "actual_value": check.get("actual_value"), "delta": check.get("delta"),
+        "completeness_status": check["completeness_status"],
+        "finding_status": check.get("finding_status"), "engine_status": check.get("finding_status"),
+        "review_priority": check["review_priority"], "rationale": check.get("rationale"),
+        "matrix_version": check["matrix_version"], "detection_method": check.get("detection_method"),
+        "confidence": check.get("confidence"),
+        "verified_by": None, "verified_at": None, "verdict_reason_code": None, "verdict_comment": None,
+        "authoritative_file_id": None, "split_by": None, "split_at": None,
+        "fragments": [dict(f) for f in (check.get("fragments") or [])],
+    }
+
+
 @dataclass
 class _FakePageLine:
     page_no: int
@@ -228,6 +250,16 @@ class FakeDb:
         self.owner_notifications: list[dict] = []
         self.failed: dict | None = None
         self.get_process_calls = 0
+        # A persistent in-memory `checks` table (id -> row), kept alongside
+        # save_checks's own last-call-only self.saved_checks above (existing
+        # tests assert on that one directly) - the merge methods below
+        # (app.pipeline._process_update_once) need something that survives
+        # across calls the way the real `checks` table does.
+        self._checks: dict[str, dict] = {}
+        self.merge_plans: list = []
+        self.user_names: dict[str, str] = {}
+        self.marked_files_version: dict[str, int] = {}
+        self.superseded_versions: list[int] = []
 
     async def get_process(self, process_id):
         self.get_process_calls += 1
@@ -261,9 +293,52 @@ class FakeDb:
 
     async def save_checks(self, process_id, object_id, checks):
         self.saved_checks = checks
+        self._checks = {}
+        for check in checks:
+            check_id = str(uuid.uuid4())
+            self._checks[check_id] = _fake_check_row(check_id, check, None)
+            for atom in check.get("atoms") or []:
+                atom_id = str(uuid.uuid4())
+                self._checks[atom_id] = _fake_check_row(atom_id, atom, check_id)
+
+    async def get_checks_for_merge(self, process_id):
+        return [dict(row) for row in self._checks.values()]
+
+    async def apply_merge_plan(self, process_id, object_id, plan):
+        self.merge_plans.append(plan)
+        for check_id, rationale in plan.rationale_updates:
+            self._checks[check_id]["rationale"] = rationale
+        for check_id in plan.delete_ids:
+            self._checks.pop(check_id, None)
+        for check in plan.insert:
+            check_id = str(uuid.uuid4())
+            self._checks[check_id] = _fake_check_row(check_id, check, None)
+            for atom in check.get("atoms") or []:
+                atom_id = str(uuid.uuid4())
+                self._checks[atom_id] = _fake_check_row(atom_id, atom, check_id)
+
+    async def get_user_names(self, user_ids):
+        return {uid: self.user_names[uid] for uid in user_ids if uid in self.user_names}
+
+    async def mark_files_added_in_protocol(self, file_ids, version):
+        for file_id in file_ids:
+            self.marked_files_version[file_id] = version
+
+    async def snapshot_and_supersede_protocol(self, process_id):
+        # Mirrors the real method closely enough for tests: the last protocol
+        # created for this process becomes SUPERSEDED and its own version is
+        # returned, or None when none exists yet.
+        calls = [c for c in self.protocol_calls if c["process_id"] == process_id]
+        if not calls:
+            return None
+        last = calls[-1]
+        last["status"] = "SUPERSEDED"
+        self.superseded_versions.append(last["version"])
+        return last["version"]
 
     async def create_protocol(self, process_id, object_id, matrix_version,
-                               model_version, dataset_version, input_manifest_hash):
+                               model_version, dataset_version, input_manifest_hash,
+                               *, status="READY"):
         # Fake mirrors the real per-object counter (app.db.Database.create_protocol)
         # closely enough for tests that assert on the version number.
         version = self._protocol_versions.get(object_id, 0) + 1
@@ -273,7 +348,7 @@ class FakeDb:
             "matrix_version": matrix_version, "model_version": model_version,
             "dataset_version": dataset_version,
             "input_manifest_hash": input_manifest_hash,
-            "version": version,
+            "version": version, "status": status,
         })
         return version
 

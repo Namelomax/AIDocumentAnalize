@@ -303,6 +303,15 @@ export async function verdictRoutes(app: FastifyInstance) {
       if (protocol.status === 'PROTOCOL_FINALIZED') {
         return reply.code(409).send({ error: 'ALREADY_FINALIZED' });
       }
+      // A дозагрузка's merge superseded this version - a fresher one exists
+      // for the same process (services/worker's app.pipeline.process_update)
+      // and is what any decision belongs on now.
+      if (protocol.status === 'SUPERSEDED') {
+        return reply.code(409).send({
+          error: 'PROTOCOL_SUPERSEDED',
+          message: 'Архивная версия протокола — решения недоступны',
+        });
+      }
 
       // Section 9.3, algorithm step 4: finalization is refused while any
       // candidate is still undecided, and the inspector is told which ones.
@@ -346,6 +355,12 @@ export async function verdictRoutes(app: FastifyInstance) {
       const protocol = await prisma.protocol.findUnique({ where: { id: parsed.data.protocol_id } });
       if (!protocol) return reply.code(404).send({ error: 'PROTOCOL_NOT_FOUND' });
 
+      if (protocol.status === 'SUPERSEDED') {
+        return reply.code(409).send({
+          error: 'PROTOCOL_SUPERSEDED',
+          message: 'Архивная версия протокола — решения недоступны',
+        });
+      }
       if (protocol.status !== 'PROTOCOL_FINALIZED') {
         return reply.code(409).send({ error: 'NOT_FINALIZED' });
       }

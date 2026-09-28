@@ -9,7 +9,7 @@ import json
 import logging
 import os
 
-from app.pipeline import process_start
+from app.pipeline import process_start, process_update
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +24,12 @@ class UnknownTaskType(Exception):
 
 HANDLERS = {
     "process.start": process_start,
+    # Customer's ТЗ "Дозагрузка файлов": services/api's routes/
+    # processDocuments.ts publishes this instead of process.start once a
+    # process already has a protocol - process_update's extra `file_ids`
+    # keyword (which task_type below is what tells this loop to pass) is
+    # threaded through in _process_message, not here.
+    "process.update": process_update,
 }
 
 
@@ -47,7 +53,12 @@ async def _process_message(message, db, storage, config, *, cache=None) -> None:
     async with message.process():
         payload = json.loads(message.body.decode())
         handler = handle_task(payload)
-        await handler(payload["process_id"], db, storage, config, cache=cache)
+        # process.update is the only task type carrying file_ids (services/
+        # api's routes/processDocuments.ts) - process_start takes no such
+        # keyword at all, so it is only ever passed for the handler that
+        # actually declares it.
+        extra = {"file_ids": payload.get("file_ids", [])} if payload.get("type") == "process.update" else {}
+        await handler(payload["process_id"], db, storage, config, cache=cache, **extra)
 
 
 def _extract_process_id(message) -> str | None:

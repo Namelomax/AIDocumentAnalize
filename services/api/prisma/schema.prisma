@@ -167,6 +167,11 @@ model FileRecord {
   // processed yet. Not a violation - a statement about this one file's own
   // processing, same spirit as approvalStatus/signatureStatus above.
   processingError String?        @map("processing_error")
+  // Customer's ТЗ "Дозагрузка файлов": which protocol version this file
+  // arrived with, for the doc list to badge it as "added by дозагрузка".
+  // Null for a file that came with the process's original package - there is
+  // nothing incremental to show about it.
+  addedInProtocolVersion Int?     @map("added_in_protocol_version")
 
   object      ConstructionObject @relation(fields: [objectId], references: [id])
   process     Process?           @relation(fields: [processId], references: [id])
@@ -222,7 +227,13 @@ model Protocol {
   modelVersion      String    @map("model_version") @db.VarChar(40)
   inputManifestHash String    @map("input_manifest_hash") @db.Char(64)
   // READY -> VERIFYING -> VERIFICATION_COMPLETED -> PROTOCOL_FINALIZED
-  // (section 9.3); unfinalizing returns it to VERIFICATION_COMPLETED.
+  // (section 9.3); unfinalizing returns it to VERIFICATION_COMPLETED. A fifth
+  // value, SUPERSEDED, is set only by a дозагрузка's incremental update
+  // (services/worker's app.pipeline.process_update): the version being
+  // replaced is frozen there rather than deleted, so the protocol's history
+  // stays real (customer's ТЗ "Предыдущая версия протокола сохраняется в
+  // истории"). A SUPERSEDED protocol is read-only: no verdict, split or
+  // finalize action is accepted against it (services/api's routes/verdicts.ts).
   status            String    @db.VarChar(30)
   // PENDING_SYNC / SYNCED for the transfer to ИАИС «РиН» (section 9.6); null
   // until a transfer is attempted.
@@ -230,6 +241,13 @@ model Protocol {
   createdAt         DateTime  @default(now()) @map("created_at")
   finalizedAt       DateTime? @map("finalized_at")
   finalizedBy       String?   @map("finalized_by")
+  // Set only when status is SUPERSEDED: a frozen copy of the protocol view
+  // (the same shape GET /processes/:id/protocol returns - completeness,
+  // findings with their verdicts, suspicions) at the moment a дозагрузка
+  // replaced it. This is what makes the protocol's history real rather than
+  // a pointer to checks rows that a later merge may since have changed or
+  // deleted.
+  snapshot          Json?
 
   process Process @relation(fields: [processId], references: [id], onDelete: Cascade)
 

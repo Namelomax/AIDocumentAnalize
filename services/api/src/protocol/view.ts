@@ -341,6 +341,25 @@ export function buildSummary(checks: Check[]): ProtocolSummary {
   return summary;
 }
 
+// The pure half of routes/protocols.ts's atomsByParent: given the FULL row
+// set of a process (composites and their atoms alike - not the
+// visibility-filtered list buildProtocolResponse itself reads), groups every
+// atom under its parent's id. Used directly by a superseded protocol's
+// snapshot (routes/protocols.ts), which has no live `checks` rows left to
+// query atoms out of - the snapshot already carries every row it needs.
+export function groupAtomsByParent<T extends Check & { parentCheckId: string | null }>(
+  checks: T[],
+): Map<string, T[]> {
+  const byParent = new Map<string, T[]>();
+  for (const check of checks) {
+    if (check.parentCheckId === null) continue;
+    const list = byParent.get(check.parentCheckId) ?? [];
+    list.push(check);
+    byParent.set(check.parentCheckId, list);
+  }
+  return byParent;
+}
+
 export function buildProtocolResponse(
   protocol: Protocol,
   checks: CheckWithFragments[],

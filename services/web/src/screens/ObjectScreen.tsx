@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { ArrowLeft, FileText, UploadCloud } from 'lucide-react';
 import PageHeader from '../components/PageHeader';
 import StageBadge from '../components/StageBadge';
 import Button from '../components/Button';
 import EmptyState from '../components/EmptyState';
+import IncrementalUploadButton from '../components/IncrementalUploadButton';
 import { SkeletonText } from '../components/Skeleton';
 import { completenessLabels, processStatusColor, processStatusLabels } from '../labels';
 import { api, ApiError } from '../api/client';
@@ -30,24 +31,24 @@ export default function ObjectScreen({ objectId, onBack, onOpenUpload, onOpenPro
   const [loadError, setLoadError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabKey>('docs');
 
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
+  const loadObject = useCallback(async (showSpinner: boolean) => {
+    if (showSpinner) setLoading(true);
     setLoadError(null);
+    try {
+      const detail = await api<ApiObjectDetail>(`/api/v1/objects/${objectId}`);
+      setObject(toProjectObject(detail));
+      setProcesses(detail.processes.map(toObjectProcess));
+    } catch (err) {
+      setLoadError(err instanceof ApiError ? err.message : 'Не удалось загрузить объект');
+    } finally {
+      if (showSpinner) setLoading(false);
+    }
+  }, [objectId]);
+
+  useEffect(() => {
     setActiveTab('docs');
-    (async () => {
-      try {
-        const detail = await api<ApiObjectDetail>(`/api/v1/objects/${objectId}`);
-        if (cancelled) return;
-        setObject(toProjectObject(detail));
-        setProcesses(detail.processes.map(toObjectProcess));
-      } catch (err) {
-        if (!cancelled) setLoadError(err instanceof ApiError ? err.message : 'Не удалось загрузить объект');
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => { cancelled = true; };
+    void loadObject(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [objectId]);
 
   if (loading) {
@@ -85,6 +86,19 @@ export default function ObjectScreen({ objectId, onBack, onOpenUpload, onOpenPro
   }
 
   const latestProcess = processes[0] ?? null;
+  // Customer's ТЗ "Дозагрузка файлов": offered only once a process actually
+  // exists to дозагрузить into, and never while it is already PARSING or
+  // has been finalized - services/api's routes/processDocuments.ts refuses
+  // both server-side either way, this only saves the inspector the trip.
+  const uploadDisabled = !latestProcess
+    || latestProcess.status === 'PARSING' || latestProcess.status === 'FINALIZED';
+  const uploadDisabledReason = !latestProcess
+    ? 'Сначала загрузите документы'
+    : latestProcess.status === 'PARSING'
+      ? 'Идёт обработка пакета — дозагрузка станет доступна после её завершения'
+      : latestProcess.status === 'FINALIZED'
+        ? 'Протокол финализирован — дозагрузка невозможна'
+        : undefined;
 
   return (
     <div className="h-full flex flex-col overflow-hidden bg-[#F5F7FA]">
@@ -99,6 +113,15 @@ export default function ObjectScreen({ objectId, onBack, onOpenUpload, onOpenPro
             <Button variant="primary" icon={<UploadCloud size={14} />} onClick={() => onOpenUpload(objectId)}>
               Документы и загрузка
             </Button>
+            {latestProcess && (
+              <IncrementalUploadButton
+                processId={latestProcess.processId}
+                disabled={uploadDisabled}
+                disabledReason={uploadDisabledReason}
+                label="Дозагрузить документы"
+                onUpdated={() => { void loadObject(false); }}
+              />
+            )}
           </>
         }
       />

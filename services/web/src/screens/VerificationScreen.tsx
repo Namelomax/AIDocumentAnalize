@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  ArrowLeft, Check, Save, FileWarning, UploadCloud, Layers, GitCompare
+  ArrowLeft, Check, Save, FileWarning, Layers, GitCompare
 } from 'lucide-react';
 import EmptyState from '../components/EmptyState';
 import Button from '../components/Button';
@@ -8,6 +8,7 @@ import PriorityIndicator from '../components/PriorityIndicator';
 import StatusBadge from '../components/StatusBadge';
 import StageBadge from '../components/StageBadge';
 import EvidencePanel from '../components/EvidencePanel';
+import IncrementalUploadButton from '../components/IncrementalUploadButton';
 import { SkeletonQueue, SkeletonEvidencePanel } from '../components/Skeleton';
 import { useToast } from '../components/Toast';
 import { reasonCodes, reasonLabels, approvalLabels } from '../labels';
@@ -73,6 +74,12 @@ function RevisionCardView({
 export default function VerificationScreen({ protocolId, onBack, onFinish }: Props) {
   const { push } = useToast();
 
+  // Customer's ТЗ "Дозагрузка файлов": the process a дозагрузка uploads
+  // into, and the protocol's own status to decide whether the button below
+  // is even offered - fetched once alongside the candidate queue itself.
+  const [processId, setProcessId] = useState<string | null>(null);
+  const [protocolStatus, setProtocolStatus] = useState<string | null>(null);
+
   const [candidates, setCandidates] = useState<Finding[]>([]);
   // Findings the server has confirmed a decision for, keyed by id — the
   // response from POST .../verdict replaces the finding here directly; this
@@ -112,6 +119,17 @@ export default function VerificationScreen({ protocolId, onBack, onFinish }: Pro
     (async () => {
       const ok = await loadCandidates();
       if (!cancelled && ok) setIndex(0);
+      // Best-effort only - the дозагрузка button below simply stays hidden
+      // if this fails, the candidate queue itself already loaded.
+      try {
+        const protocol = await api<{ process_id: string; status: string }>(`/api/v1/protocols/${protocolId}`);
+        if (!cancelled) {
+          setProcessId(protocol.process_id);
+          setProtocolStatus(protocol.status);
+        }
+      } catch {
+        // Ignored — see comment above.
+      }
       if (!cancelled) setLoading(false);
     })();
     return () => { cancelled = true; };
@@ -760,15 +778,26 @@ export default function VerificationScreen({ protocolId, onBack, onFinish }: Pro
                   {saving ? 'Сохранение…' : 'Сохранить решение'}
                 </Button>
 
-                <div className="mt-3 pt-3 border-t border-[#E2E8F0] flex items-start gap-2 text-[12px] text-[#475569]">
-                  <FileWarning size={14} className="mt-0.5 shrink-0 text-[#B54708]" aria-hidden />
-                  <div className="flex-1">
-                    Нет нужной стадии?
-                    <button type="button" className="ml-1 text-[#1B4E9B] hover:underline inline-flex items-center gap-1">
-                      <UploadCloud size={11} /> Дозагрузить документ
-                    </button>
+                {processId && (
+                  <div className="mt-3 pt-3 border-t border-[#E2E8F0] flex items-start gap-2 text-[12px] text-[#475569]">
+                    <FileWarning size={14} className="mt-0.5 shrink-0 text-[#B54708]" aria-hidden />
+                    <div className="flex-1">
+                      Нет нужной стадии?{' '}
+                      <IncrementalUploadButton
+                        processId={processId}
+                        variant="link"
+                        label="Дозагрузить документ"
+                        disabled={protocolStatus === 'PROTOCOL_FINALIZED' || protocolStatus === 'SUPERSEDED'}
+                        disabledReason={
+                          protocolStatus === 'PROTOCOL_FINALIZED'
+                            ? 'Протокол финализирован — дозагрузка невозможна'
+                            : 'Архивная версия протокола — решения недоступны'
+                        }
+                        onUpdated={() => { void loadCandidates(); }}
+                      />
+                    </div>
                   </div>
-                </div>
+                )}
               </>
             )}
           </div>

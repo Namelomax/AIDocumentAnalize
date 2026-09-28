@@ -26,3 +26,21 @@ export const visibleCheckWhere: Prisma.CheckWhereInput = {
     { parentCheckId: { not: null }, parent: { splitAt: { not: null } } },
   ],
 };
+
+// The same rule as visibleCheckWhere above, applied in memory to an already
+// fetched array instead of the live table - for a superseded protocol's
+// snapshot (routes/protocols.ts), whose checks no longer exist in `checks`
+// by the time anyone reads them back. Takes the FULL row set of the process
+// at snapshot time (composites and their atoms alike), not a pre-filtered
+// one - an atom's visibility depends on its parent's own splitAt, which must
+// still be in the list to look up.
+export function filterVisibleChecks<T extends { id: string; parentCheckId: string | null; splitAt: Date | null }>(
+  checks: T[],
+): T[] {
+  const splitAtById = new Map(checks.map((check) => [check.id, check.splitAt]));
+  return checks.filter((check) => {
+    if (check.parentCheckId === null) return check.splitAt === null;
+    const parentSplitAt = splitAtById.get(check.parentCheckId);
+    return parentSplitAt !== undefined && parentSplitAt !== null;
+  });
+}

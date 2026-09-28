@@ -234,17 +234,51 @@ export interface UploadResult {
   rejected: Array<{ file_name: string; reason: string; message: string }>;
 }
 
+// The response-reading half of an upload XHR, pulled out as a pure function
+// so it can be tested directly (Plan: uploadPackage/uploadToProcess's own
+// XMLHttpRequest wiring is not - see this file's own test, and the same
+// precedent uploadPackage set before дозагрузка existed). `successStatuses`
+// is the one thing that differs between a fresh upload (201) and a
+// дозагрузка (202) - both still answer with the same {accepted, rejected}
+// shape on a package that was entirely rejected (422), which is why 422 is
+// always a success here too: it is a result to read, not a transport failure.
+export function parseUploadOutcome(
+  status: number,
+  responseText: string,
+  successStatuses: readonly number[],
+): { ok: true; body: UploadResult } | { ok: false; status: number; message: string; code?: string } {
+  let body: unknown = {};
+  try {
+    body = responseText ? JSON.parse(responseText) : {};
+  } catch {
+    // Falls through with an empty body; the status check below still
+    // reports something useful to the caller.
+  }
+  if (successStatuses.includes(status) || status === 422) {
+    return { ok: true, body: body as UploadResult };
+  }
+  const errorBody = body as { error?: string; message?: string };
+  return {
+    ok: false, status,
+    message: errorBody.message ?? `Ошибка загрузки (${status})`,
+    code: errorBody.error,
+  };
+}
+
 // XMLHttpRequest, not fetch: it is the only one of the two that reports
 // upload progress, needed for the package-size indicator on the upload
-// screen while a large package is in flight.
-export function uploadPackage(
-  objectId: string,
+// screen while a large package is in flight. Shared by uploadPackage (a
+// fresh process) and uploadToProcess (a дозагрузка into an existing one) -
+// the two differ only in the URL and which status means "created".
+function xhrUpload(
+  url: string,
   files: File[],
+  successStatuses: readonly number[],
   onProgress?: (loaded: number, total: number) => void,
 ): Promise<UploadResult> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open('POST', `/api/v1/documents/upload?object_id=${encodeURIComponent(objectId)}`);
+    xhr.open('POST', url);
     const session = getSession();
     if (session) xhr.setRequestHeader('Authorization', `Bearer ${session.token}`);
 
@@ -258,27 +292,12 @@ export function uploadPackage(
         reject(new ApiError(401, 'Сессия истекла, войдите снова', 'UNAUTHORIZED'));
         return;
       }
-      let body: unknown = {};
-      try {
-        body = xhr.responseText ? JSON.parse(xhr.responseText) : {};
-      } catch {
-        // Falls through with an empty body; the status check below still
-        // reports something useful to the caller.
-      }
-      // 201: at least one file was stored. 422: the whole package was
-      // rejected, but documents.ts still answers with the same
-      // { accepted, rejected } shape — both are results to read, not just
-      // the 201 case.
-      if (xhr.status === 201 || xhr.status === 422) {
-        resolve(body as UploadResult);
+      const outcome = parseUploadOutcome(xhr.status, xhr.responseText, successStatuses);
+      if (outcome.ok) {
+        resolve(outcome.body);
         return;
       }
-      const errorBody = body as { error?: string; message?: string };
-      reject(new ApiError(
-        xhr.status,
-        errorBody.message ?? `Ошибка загрузки (${xhr.status})`,
-        errorBody.error,
-      ));
+      reject(new ApiError(outcome.status, outcome.message, outcome.code));
     };
 
     xhr.onerror = () => reject(new ApiError(0, 'Не удалось связаться с сервером'));
@@ -287,4 +306,34 @@ export function uploadPackage(
     for (const file of files) form.append('files', file, file.name);
     xhr.send(form);
   });
+}
+
+const UPLOAD_SUCCESS_STATUSES = [201] as const;
+const INCREMENTAL_UPLOAD_SUCCESS_STATUSES = [202] as const;
+
+export function uploadPackage(
+  objectId: string,
+  files: File[],
+  onProgress?: (loaded: number, total: number) => void,
+): Promise<UploadResult> {
+  return xhrUpload(
+    `/api/v1/documents/upload?object_id=${encodeURIComponent(objectId)}`,
+    files, UPLOAD_SUCCESS_STATUSES, onProgress,
+  );
+}
+
+// Customer's ТЗ "Дозагрузка файлов": incremental upload into an existing
+// process (services/api's routes/processDocuments.ts). Same shape as
+// uploadPackage - the caller reads the same {accepted, rejected} result and
+// shows it the same way (Task spec: "show the accepted/rejected result with
+// Russian reasons as the existing upload screen does").
+export function uploadToProcess(
+  processId: string,
+  files: File[],
+  onProgress?: (loaded: number, total: number) => void,
+): Promise<UploadResult> {
+  return xhrUpload(
+    `/api/v1/processes/${encodeURIComponent(processId)}/documents`,
+    files, INCREMENTAL_UPLOAD_SUCCESS_STATUSES, onProgress,
+  );
 }

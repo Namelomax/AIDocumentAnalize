@@ -29,7 +29,11 @@ export type ReviewPriority = 'HIGH' | 'MEDIUM' | 'LOW';
 // PROTOCOL_FINALIZED never apply to a process. Kept as its own union rather
 // than folded into ProcessStatus, which the mock model used to do (see
 // adapters.ts, toProtocol).
-export type ProtocolStatus = 'READY' | 'VERIFYING' | 'VERIFICATION_COMPLETED' | 'PROTOCOL_FINALIZED';
+// SUPERSEDED is set only by a дозагрузка's incremental update (customer's
+// ТЗ "Предыдущая версия протокола сохраняется в истории") - the version a
+// merge replaced, never reached by any action the interface itself takes.
+export type ProtocolStatus =
+  | 'READY' | 'VERIFYING' | 'VERIFICATION_COMPLETED' | 'PROTOCOL_FINALIZED' | 'SUPERSEDED';
 
 // Transfer to ИАИС «РиН» (section 9.6) is a stub on the server — this only
 // reflects what protocols.sync_status already reports, never invented here.
@@ -163,6 +167,10 @@ export interface Protocol {
   id: string;
   number: string;
   objectId: string;
+  // Customer's ТЗ "Дозагрузка файлов": the process a дозагрузка button on
+  // this protocol's own screen uploads into (services/web's
+  // IncrementalUploadButton).
+  processId: string;
   createdAt: string;
   version: number;
   status: ProtocolStatus;

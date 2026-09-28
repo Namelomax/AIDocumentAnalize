@@ -257,4 +257,136 @@ assert items[0]['object_name'], 'object_name missing on the listed protocol'
 print('ok')
 "
 
+echo "20. дозагрузка: upload only the PD half of a design/working pair"
+# Customer's ТЗ "Дозагрузка файлов": a package missing its working
+# documentation still reaches READY, with M-003 stating why it could not be
+# compared - the whole point of дозагрузка is completing exactly this later
+# without restarting the check.
+printf '%s' '{"name":"Дозагрузка: только ПД школы"}' > .e2e-tmp/incremental-object.json
+OBJECT4=$(curl -fsS -X POST "$API/objects" \
+  "${AUTH[@]}" \
+  -H 'Content-Type: application/json; charset=utf-8' \
+  --data-binary @.e2e-tmp/incremental-object.json \
+  | python -c 'import sys,json; print(json.load(sys.stdin)["id"])')
+
+printf 'object_id,file_name,doc_stage,discipline,document_code,revision,approval_status\n%s,sosh-pd.pdf,PD,АР,SOSH25-000214,1,APPROVED\n' \
+  "$OBJECT4" > .e2e-tmp/incremental-reestr-pd-only.csv
+
+RESPONSE4=$(curl -fsS -X POST "$API/documents/upload?object_id=$OBJECT4" \
+  "${AUTH[@]}" \
+  -F 'files=@.e2e-tmp/reference/sosh-pd.pdf;type=application/pdf' \
+  -F 'files=@.e2e-tmp/incremental-reestr-pd-only.csv;type=text/csv')
+echo "$RESPONSE4" | grep -q '"process_id"'
+PROCESS4=$(echo "$RESPONSE4" | python -c 'import sys,json; print(json.load(sys.stdin)["process_id"])')
+
+curl -fsS -X POST "$API/processes/$PROCESS4/start" "${AUTH[@]}" > /dev/null
+
+echo "21. the PD-only package reaches READY with a MISSING_EVIDENCE explanation"
+for _ in $(seq 1 60); do
+  STATUS=$(curl -fsS "$API/processes/$PROCESS4" "${AUTH[@]}" | python -c 'import sys,json; print(json.load(sys.stdin)["status"])')
+  [ "$STATUS" = "READY" ] && break
+  sleep 1
+done
+[ "$STATUS" = "READY" ] || { echo "FAIL: PD-only process stayed in $STATUS" >&2; exit 1; }
+
+assert_at_least "MISSING_EVIDENCE naming the missing ПД/РД source" \
+  "SELECT count(*) FROM checks WHERE process_id = '$PROCESS4' AND param_code = 'M-003' AND completeness_status = 'MISSING_EVIDENCE' AND rationale LIKE '%нет актуального файла ПД или РД%';" \
+  1
+
+PROTOCOL4_V1=$(curl -fsS "$API/processes/$PROCESS4/protocol" "${AUTH[@]}" | python -c 'import sys,json; b=json.load(sys.stdin); print(b["id"]); assert b["version"] == 1, b')
+
+echo "22. дозагрузка of the missing RD half completes the comparison"
+START_UPDATE=$(date +%s)
+RESPONSE4B=$(curl -fsS -X POST "$API/processes/$PROCESS4/documents" \
+  "${AUTH[@]}" \
+  -F 'files=@.e2e-tmp/reference/sosh-rd.pdf;type=application/pdf' \
+  -F 'files=@.e2e-tmp/reference/reestr.csv;type=text/csv')
+echo "$RESPONSE4B" | grep -q '"accepted"'
+
+for _ in $(seq 1 60); do
+  STATUS=$(curl -fsS "$API/processes/$PROCESS4" "${AUTH[@]}" | python -c 'import sys,json; print(json.load(sys.stdin)["status"])')
+  [ "$STATUS" != "PARSING" ] && break
+  sleep 1
+done
+END_UPDATE=$(date +%s)
+INCREMENTAL_DURATION=$((END_UPDATE - START_UPDATE))
+[ "$STATUS" = "READY" ] || [ "$STATUS" = "VERIFYING" ] || { echo "FAIL: дозагрузка left process in $STATUS" >&2; exit 1; }
+echo "    incremental update took ${INCREMENTAL_DURATION}s"
+
+echo "23. the protocol version incremented and room 1.109 is now a CANDIDATE"
+PROTOCOL4_V2=$(curl -fsS "$API/processes/$PROCESS4/protocol" "${AUTH[@]}" | python -c 'import sys,json; b=json.load(sys.stdin); print(b["id"]); assert b["version"] == 2, b')
+[ "$PROTOCOL4_V2" != "$PROTOCOL4_V1" ] || { echo "FAIL: protocol id did not change after дозагрузка" >&2; exit 1; }
+
+assert_at_least "room 1.109 is a CANDIDATE after the дозагрузка" \
+  "SELECT count(*) FROM checks WHERE process_id = '$PROCESS4' AND subject = 'room 1.109' AND finding_status = 'CANDIDATE';" \
+  1
+
+echo "24. the superseded version kept its own snapshot"
+curl -fsS "$API/protocols/$PROTOCOL4_V1" "${AUTH[@]}" | python -c "
+import sys, json
+body = json.loads(sys.stdin.buffer.read().decode('utf-8'))
+assert body['status'] == 'SUPERSEDED', body['status']
+assert any('нет актуального файла ПД или РД' in (c.get('rationale') or '') for c in body['completeness']), 'snapshot lost the MISSING_EVIDENCE row'
+print('ok')
+"
+
+echo "25. the inspector confirms the new candidate"
+CHECK_ID=$(docker compose exec -T postgres psql -U inspector -d inspector -tA \
+  -c "SELECT id FROM checks WHERE process_id = '$PROCESS4' AND subject = 'room 1.109' AND finding_status = 'CANDIDATE' LIMIT 1;" | tr -d '[:space:]')
+[ -n "$CHECK_ID" ] || { echo "FAIL: no candidate check id found for room 1.109" >&2; exit 1; }
+
+printf '%s' '{"decision":"CONFIRMED_VIOLATION"}' > .e2e-tmp/verdict.json
+curl -fsS -X POST "$API/findings/$CHECK_ID/verdict" \
+  "${AUTH[@]}" \
+  -H 'Content-Type: application/json; charset=utf-8' \
+  --data-binary @.e2e-tmp/verdict.json | grep -q '"finding_status":"CONFIRMED_VIOLATION"'
+
+echo "26. a second, unrelated дозагрузка leaves that decision untouched"
+# Polyarnaya's room numbers never collide with the school's (step 12's own
+# comment), so this new pair is added without touching room 1.109's group at
+# all - exactly the "без сброса верификации" guarantee a дозагрузка exists for.
+printf 'object_id,file_name,doc_stage,discipline,document_code,revision,approval_status\n%s,pol17-pd.pdf,PD,АР,POL17-000031,1,APPROVED\n%s,pol17-rd.pdf,RD,АР,POL17-000096,1,FOR_CONSTRUCTION\n' \
+  "$OBJECT4" "$OBJECT4" > .e2e-tmp/incremental-reestr-pol17.csv
+
+curl -fsS -X POST "$API/processes/$PROCESS4/documents" \
+  "${AUTH[@]}" \
+  -F 'files=@.e2e-tmp/reference/pol17-pd.pdf;type=application/pdf' \
+  -F 'files=@.e2e-tmp/reference/pol17-rd.pdf;type=application/pdf' \
+  -F 'files=@.e2e-tmp/incremental-reestr-pol17.csv;type=text/csv' > /dev/null
+
+for _ in $(seq 1 60); do
+  STATUS=$(curl -fsS "$API/processes/$PROCESS4" "${AUTH[@]}" | python -c 'import sys,json; print(json.load(sys.stdin)["status"])')
+  [ "$STATUS" != "PARSING" ] && break
+  sleep 1
+done
+[ "$STATUS" = "READY" ] || [ "$STATUS" = "VERIFYING" ] || { echo "FAIL: second дозагрузка left process in $STATUS" >&2; exit 1; }
+
+PROTOCOL4_V3=$(curl -fsS "$API/processes/$PROCESS4/protocol" "${AUTH[@]}" | python -c 'import sys,json; b=json.load(sys.stdin); print(b["id"]); assert b["version"] == 3, b')
+[ "$PROTOCOL4_V3" != "$PROTOCOL4_V2" ] || { echo "FAIL: protocol id did not change after the second дозагрузка" >&2; exit 1; }
+
+curl -fsS "$API/findings/$CHECK_ID" "${AUTH[@]}" | python -c "
+import sys, json
+body = json.loads(sys.stdin.buffer.read().decode('utf-8'))
+assert body['id'] == '$CHECK_ID', body
+assert body['finding_status'] == 'CONFIRMED_VIOLATION', body['finding_status']
+assert body['decision'] is not None, 'the earlier decision was lost'
+print('ok')
+"
+
+echo "27. дозагрузка after finalization is refused"
+# What this step checks is the дозагрузка endpoint's own refusal once a
+# protocol IS finalized (services/api's routes/processDocuments.ts) - not
+# finalize itself (which would still refuse here, since M-002 through M-131
+# were never actually reviewed on this package), so the status is forced
+# directly rather than routed through every remaining candidate first.
+docker compose exec -T postgres psql -U inspector -d inspector -tA \
+  -c "UPDATE protocols SET status = 'PROTOCOL_FINALIZED' WHERE id = '$PROTOCOL4_V3';" > /dev/null
+docker compose exec -T postgres psql -U inspector -d inspector -tA \
+  -c "UPDATE processes SET status = 'FINALIZED' WHERE id = '$PROCESS4';" > /dev/null
+
+FINALIZED_RESPONSE=$(curl -sS -X POST "$API/processes/$PROCESS4/documents" \
+  "${AUTH[@]}" \
+  -F 'files=@.e2e-tmp/upload.pdf;type=application/pdf')
+echo "$FINALIZED_RESPONSE" | grep -q '"error":"PROTOCOL_FINALIZED"'
+
 echo "PASS"

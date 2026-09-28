@@ -42,7 +42,11 @@ export const protocolStatusLabels: Record<string, string> = {
   READY:                  'Готов к верификации',
   VERIFYING:               'Верификация',
   VERIFICATION_COMPLETED:  'Верификация завершена',
-  PROTOCOL_FINALIZED:      'Протокол финализирован'
+  PROTOCOL_FINALIZED:      'Протокол финализирован',
+  // Customer's ТЗ "Инкрементальное обновление при дозагрузке": the version a
+  // дозагрузка's merge replaced - kept in the history, never the process's
+  // current protocol (services/api's GET /processes/:id/protocol skips it).
+  SUPERSEDED:              'Заменён новой версией'
 };
 
 // Same colour a protocol's status dot already used on ProtocolScreen -
@@ -51,9 +55,16 @@ export function protocolStatusColor(status: string): string {
   switch (status) {
     case 'READY': return '#B54708';
     case 'VERIFYING': return '#1B4E9B';
+    case 'SUPERSEDED': return '#64748B';
     default: return '#027A48'; // VERIFICATION_COMPLETED / PROTOCOL_FINALIZED
   }
 }
+
+// Shown at the top of an archived (SUPERSEDED) protocol version - the
+// screen renders it read-only regardless (no decision route ever accepts an
+// action against one, services/api's routes/verdicts.ts), this only tells
+// the inspector why.
+export const ARCHIVED_PROTOCOL_BANNER = 'Архивная версия протокола — решения недоступны';
 
 export const approvalLabels: Record<string, string> = {
   DRAFT: 'Черновик',

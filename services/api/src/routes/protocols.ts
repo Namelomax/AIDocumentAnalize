@@ -2,10 +2,11 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Check, Prisma, Protocol } from '@prisma/client';
 import { prisma } from '../db.js';
-import { visibleCheckWhere } from '../checks/visibility.js';
+import { visibleCheckWhere, filterVisibleChecks } from '../checks/visibility.js';
 import {
   buildFinding,
   buildProtocolResponse,
+  groupAtomsByParent,
   type CheckWithFragments,
   type InspectorForView,
   type ParamForView,
@@ -17,8 +18,50 @@ const checkParamsSchema = z.object({ check_id: z.string().uuid() });
 
 // Protocol.status is a plain varchar (schema.prisma), like finding_status
 // above - the lifecycle from the same comment: READY -> VERIFYING ->
-// VERIFICATION_COMPLETED -> PROTOCOL_FINALIZED.
-const PROTOCOL_STATUSES = ['READY', 'VERIFYING', 'VERIFICATION_COMPLETED', 'PROTOCOL_FINALIZED'] as const;
+// VERIFICATION_COMPLETED -> PROTOCOL_FINALIZED. SUPERSEDED is a fifth value,
+// set only by a дозагрузка's incremental update (services/worker's
+// app.pipeline.process_update) on the version it replaces - never reached by
+// any action this file's own routes take.
+const PROTOCOL_STATUSES = [
+  'READY', 'VERIFYING', 'VERIFICATION_COMPLETED', 'PROTOCOL_FINALIZED', 'SUPERSEDED',
+] as const;
+
+// The shape services/worker's app.db.Database.snapshot_and_supersede_protocol
+// writes into protocols.snapshot: every check of the process at the moment a
+// дозагрузка superseded this version, with its fragments - the same rows
+// loadProtocolResponse below would otherwise read live from `checks`, frozen
+// so a later merge changing or deleting those rows cannot rewrite history
+// out from under an inspector re-reading an old version.
+interface SnapshotFragment {
+  id: string; fileId: string; fileSha256: string; stage: string; documentCode: string | null;
+  revision: string | null; approvalStatus: string; sheetPage: number;
+  x0: number; y0: number; x1: number; y1: number; extractedValue: string | null; role: string;
+}
+interface SnapshotCheck {
+  id: string; processId: string; objectId: string; paramId: number | null; paramCode: string;
+  evidenceGroupId: string; subject: string | null; expectedValue: string | null; actualValue: string | null;
+  delta: string | null; completenessStatus: string; findingStatus: string | null; reviewPriority: string;
+  rationale: string | null; matrixVersion: string; createdAt: string; engineStatus: string | null;
+  verifiedBy: string | null; verifiedAt: string | null; verdictReasonCode: string | null;
+  verdictComment: string | null; authoritativeFileId: string | null; detectionMethod: string | null;
+  confidence: number | null; parentCheckId: string | null; splitBy: string | null; splitAt: string | null;
+  fragments: SnapshotFragment[];
+}
+
+// Dates travel through JSONB as ISO strings; buildProtocolResponse's own
+// types (Prisma's Check) expect Date objects for the three timestamp fields
+// it can read (createdAt is unused by it today, but kept faithful anyway) -
+// revived here once instead of leaving every caller to remember to.
+function reviveSnapshotChecks(snapshot: Prisma.JsonValue | null): CheckWithFragments[] {
+  const payload = snapshot as { checks?: SnapshotCheck[] } | null;
+  if (!payload?.checks) return [];
+  return payload.checks.map((check) => ({
+    ...check,
+    createdAt: new Date(check.createdAt),
+    verifiedAt: check.verifiedAt ? new Date(check.verifiedAt) : null,
+    splitAt: check.splitAt ? new Date(check.splitAt) : null,
+  })) as unknown as CheckWithFragments[];
+}
 
 const protocolsQuerySchema = z.object({
   status: z.enum(PROTOCOL_STATUSES).optional(),
@@ -135,7 +178,26 @@ async function listCountsByProcess(processIds: string[]): Promise<Map<string, Pr
   return result;
 }
 
+// A superseded protocol's checks no longer exist in `checks` by the time
+// anyone reads them - a later дозагрузка's merge may have changed or deleted
+// every one of them. Its snapshot (see SnapshotCheck above) stands in for
+// that live query instead, read-only: services/api's routes/verdicts.ts
+// never resolves "the process's latest protocol" to a SUPERSEDED row (a new,
+// higher version always exists alongside it), so no verdict/split/finalize
+// path reaches this function believing it can still write to one.
+async function loadSnapshotProtocolResponse(protocol: Protocol) {
+  const allChecks = reviveSnapshotChecks(protocol.snapshot);
+  const visible = filterVisibleChecks(allChecks);
+  const atoms = groupAtomsByParent(allChecks);
+  const [params, inspectors] = await Promise.all([paramsByCode(visible), inspectorsById(visible)]);
+  return buildProtocolResponse(protocol, visible, params, inspectors, atoms);
+}
+
 export async function loadProtocolResponse(protocol: Protocol) {
+  if (protocol.status === 'SUPERSEDED' && protocol.snapshot) {
+    return loadSnapshotProtocolResponse(protocol);
+  }
+
   const checks = (await prisma.check.findMany({
     where: { processId: protocol.processId, ...visibleCheckWhere },
     include: { fragments: true },
@@ -224,9 +286,13 @@ export async function protocolRoutes(app: FastifyInstance) {
 
     // A process gets one protocol row per run (worker's create_protocol);
     // the highest version stands in for "the process's protocol" if more
-    // than one was ever written for it.
+    // than one was ever written for it. SUPERSEDED rows are excluded - a
+    // дозагрузка's merge always creates a fresh, higher version alongside
+    // superseding the old one (services/worker's app.db.Database's
+    // snapshot_and_supersede_protocol/create_protocol), so this is never the
+    // *only* row for a process, just never "the" current one either.
     const protocol = await prisma.protocol.findFirst({
-      where: { processId: parsed.data.process_id },
+      where: { processId: parsed.data.process_id, status: { not: 'SUPERSEDED' } },
       orderBy: { version: 'desc' },
     });
     if (!protocol) return reply.code(404).send({ error: 'PROTOCOL_NOT_FOUND' });
@@ -252,6 +318,20 @@ export async function protocolRoutes(app: FastifyInstance) {
 
     const protocol = await prisma.protocol.findUnique({ where: { id: paramsParsed.data.protocol_id } });
     if (!protocol) return reply.code(404).send({ error: 'PROTOCOL_NOT_FOUND' });
+
+    if (protocol.status === 'SUPERSEDED' && protocol.snapshot) {
+      const allChecks = reviveSnapshotChecks(protocol.snapshot);
+      const visible = filterVisibleChecks(allChecks)
+        .filter((check) => (queryParsed.data.status ? check.findingStatus === queryParsed.data.status
+          : check.findingStatus !== null));
+      const atoms = groupAtomsByParent(allChecks);
+      const [params, inspectors] = await Promise.all([paramsByCode(visible), inspectorsById(visible)]);
+      return {
+        items: visible.map((check) => buildFinding(
+          check, params.get(check.paramCode), inspectors, atoms.get(check.id),
+        )),
+      };
+    }
 
     const checks = (await prisma.check.findMany({
       where: {

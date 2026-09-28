@@ -1,16 +1,17 @@
-import { useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, FileText, FileType, FileCode, CheckCircle2, Clock } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Archive, ArrowLeft, FileText, FileType, FileCode, CheckCircle2, Clock } from 'lucide-react';
 import PageHeader from '../components/PageHeader';
 import StatusBadge from '../components/StatusBadge';
 import PriorityIndicator from '../components/PriorityIndicator';
 import StageBadge from '../components/StageBadge';
 import Button from '../components/Button';
 import EmptyState from '../components/EmptyState';
+import IncrementalUploadButton from '../components/IncrementalUploadButton';
 import { SkeletonTable } from '../components/Skeleton';
 import { useToast } from '../components/Toast';
 import { api, apiBlob, saveBlob, ApiError } from '../api/client';
 import { toProtocol, type ApiProtocol } from '../api/adapters';
-import { protocolStatusColor, protocolStatusLabels } from '../labels';
+import { ARCHIVED_PROTOCOL_BANNER, protocolStatusColor, protocolStatusLabels } from '../labels';
 import type { DocStage, FindingStatus, Protocol, ReviewPriority } from '../types';
 
 interface Props {
@@ -78,37 +79,46 @@ export default function ProtocolScreen({
     }
   };
 
+  const loadProtocol = useCallback(async (showSpinner: boolean) => {
+    if (showSpinner) setLoading(true);
+    setLoadError(null);
+    try {
+      const data = await api<ApiProtocol>(`/api/v1/protocols/${protocolId}`);
+      const mapped = toProtocol(data);
+      setProtocol(mapped);
+      // Best-effort only — the breadcrumb falls back to a generic label
+      // if this second call fails, the protocol itself already loaded.
+      try {
+        const objectDetail = await api<{ name: string }>(`/api/v1/objects/${mapped.objectId}`);
+        setObjectName(objectDetail.name);
+      } catch {
+        // Ignored — see comment above.
+      }
+    } catch (err) {
+      setLoadError(err instanceof ApiError ? err.message : 'Не удалось загрузить протокол');
+    } finally {
+      if (showSpinner) setLoading(false);
+    }
+  }, [protocolId]);
+
   useEffect(() => {
     if (!protocolId) {
       setLoading(false);
       setLoadError('Протокол не выбран');
       return;
     }
-    let cancelled = false;
-    setLoading(true);
-    setLoadError(null);
-    (async () => {
-      try {
-        const data = await api<ApiProtocol>(`/api/v1/protocols/${protocolId}`);
-        if (cancelled) return;
-        const mapped = toProtocol(data);
-        setProtocol(mapped);
-        // Best-effort only — the breadcrumb falls back to a generic label
-        // if this second call fails, the protocol itself already loaded.
-        try {
-          const objectDetail = await api<{ name: string }>(`/api/v1/objects/${mapped.objectId}`);
-          if (!cancelled) setObjectName(objectDetail.name);
-        } catch {
-          // Ignored — see comment above.
-        }
-      } catch (err) {
-        if (!cancelled) setLoadError(err instanceof ApiError ? err.message : 'Не удалось загрузить протокол');
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => { cancelled = true; };
+    void loadProtocol(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [protocolId]);
+
+  // Customer's ТЗ "Дозагрузка файлов": once the worker's incremental update
+  // finishes, this screen's own protocol id (unlike ObjectScreen's, which
+  // points at the object) may now be a SUPERSEDED version - the freshly
+  // created one is a different id entirely, which only a real navigation
+  // (not a re-fetch of protocolId) can follow. A re-fetch here still shows
+  // the inspector the accurate (now archived) state of what they had open,
+  // with the banner below explaining why nothing on it is actionable anymore.
+  const handleIncrementalUpdate = useCallback(() => { void loadProtocol(false); }, [loadProtocol]);
 
   const counts = useMemo<Record<TabKey, number>>(() => {
     if (!protocol) return { completeness: 0, candidates: 0, confirmed: 0, verified: 0, hypotheses: 0 };
@@ -136,6 +146,17 @@ export default function ProtocolScreen({
 
   const completenessRows = protocol?.completeness ?? [];
   const candidatesCount = protocol?.findings.filter((f) => f.status === 'CANDIDATE').length ?? 0;
+
+  // Customer's ТЗ "Дозагрузка файлов": allowed up to finalization, and never
+  // on an already-archived (SUPERSEDED) version - the same two statuses
+  // services/api's routes/processDocuments.ts itself refuses (PARSING is
+  // covered by the process's own status, which this screen does not poll;
+  // the endpoint still refuses it server-side either way).
+  const isArchived = protocol?.status === 'SUPERSEDED';
+  const uploadDisabled = !protocol || protocol.status === 'PROTOCOL_FINALIZED' || isArchived;
+  const uploadDisabledReason = protocol?.status === 'PROTOCOL_FINALIZED'
+    ? 'Протокол финализирован — дозагрузка невозможна'
+    : isArchived ? ARCHIVED_PROTOCOL_BANNER : undefined;
 
   // "Тип проверки" is derived from the stages the protocol's own findings
   // actually cite, not a hardcoded label — a protocol with only PD+RD
@@ -197,6 +218,13 @@ export default function ProtocolScreen({
             <Button variant="ghost" icon={<ArrowLeft size={14} />} onClick={onBack}>
               Назад
             </Button>
+            <IncrementalUploadButton
+              processId={protocol.processId}
+              disabled={uploadDisabled}
+              disabledReason={uploadDisabledReason}
+              label="Дозагрузить документы"
+              onUpdated={handleIncrementalUpdate}
+            />
             <Button
               variant="secondary"
               icon={<FileText size={14} />}
@@ -226,10 +254,12 @@ export default function ProtocolScreen({
             </Button>
             <Button
               variant="primary"
-              disabled={candidatesCount > 0}
-              title={candidatesCount > 0
-                ? `Остались необработанные кандидаты: ${candidatesCount}`
-                : 'Завершить верификацию'}
+              disabled={candidatesCount > 0 || isArchived}
+              title={isArchived
+                ? ARCHIVED_PROTOCOL_BANNER
+                : candidatesCount > 0
+                  ? `Остались необработанные кандидаты: ${candidatesCount}`
+                  : 'Завершить верификацию'}
               onClick={() => onOpenVerification(protocolId)}
             >
               Завершить верификацию
@@ -237,6 +267,13 @@ export default function ProtocolScreen({
           </>
         }
       />
+
+      {isArchived && (
+        <div className="mx-8 mt-4 flex items-center gap-2 bg-[#F1F5F9] border border-[#CBD5E1] rounded-lg px-4 py-2.5 text-[13px] text-[#475569]">
+          <Archive size={14} aria-hidden />
+          {ARCHIVED_PROTOCOL_BANNER}
+        </div>
+      )}
 
       <div className="flex-1 overflow-auto px-8 py-5">
         {/* Технические версии */}
@@ -356,7 +393,7 @@ export default function ProtocolScreen({
         )}
 
         {/* Плашка вкладки гипотез */}
-        {activeTab === 'hypotheses' && counts.hypotheses > 0 && (
+        {activeTab === 'hypotheses' && counts.hypotheses > 0 && !isArchived && (
           <div className="mb-3 flex items-center justify-between bg-[#EDF1F7] border border-[#E2E8F0] rounded-lg px-4 py-2.5">
             <span className="text-[13px] text-[#475569]">
               Гипотезы не входят в число нарушений и не используются для обучения модели.
@@ -450,7 +487,7 @@ export default function ProtocolScreen({
                     <td className="px-3"><PriorityIndicator priority={f.priority} /></td>
                     <td className="px-3"><StatusBadge status={f.status} /></td>
                     <td className="px-3 text-right">
-                      {f.status === 'CANDIDATE' ? (
+                      {isArchived ? null : f.status === 'CANDIDATE' ? (
                         <Button variant="primary" onClick={() => onOpenVerification(protocolId)}>
                           Проверить
                         </Button>

@@ -377,6 +377,7 @@ describe('toProtocol', () => {
 
   it('maps summary counters and findings', () => {
     const protocol = toProtocol(protocolFixture);
+    expect(protocol.processId).toBe('proc-1');
     expect(protocol.summary.checked).toBe(3);
     expect(protocol.summary.candidates).toBe(1);
     expect(protocol.summary.negative).toBe(1);

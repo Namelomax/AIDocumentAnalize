@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fetchNotifications, markAllNotificationsRead, markNotificationRead, splitComposite } from './client';
+import {
+  fetchNotifications, markAllNotificationsRead, markNotificationRead, parseUploadOutcome, splitComposite,
+} from './client';
 
 // api()/splitComposite() read the session through sessionStorage
 // (Plan 7, Task 4's own token layer) - stubbed here with a plain in-memory
@@ -65,6 +67,54 @@ describe('splitComposite', () => {
       code: 'NOT_A_COMPOSITE',
       message: 'Не является составным кандидатом',
     });
+  });
+});
+
+// The response-reading half of uploadPackage/uploadToProcess (Plan: their
+// own XMLHttpRequest wiring is not unit-tested here, same precedent
+// uploadPackage set before дозагрузка existed - no jsdom/XHR in this
+// project's vitest environment).
+describe('parseUploadOutcome', () => {
+  it('reads a 201 (fresh upload) as success', () => {
+    const body = { process_id: 'p-1', accepted: [{ file_id: 'f-1', file_name: 'a.pdf', sha256: 'x' }], rejected: [] };
+    const result = parseUploadOutcome(201, JSON.stringify(body), [201]);
+    expect(result).toEqual({ ok: true, body });
+  });
+
+  it('reads a 202 (дозагрузка accepted) as success', () => {
+    const body = { process_id: 'p-1', accepted: [{ file_id: 'f-1', file_name: 'a.pdf', sha256: 'x' }], rejected: [] };
+    const result = parseUploadOutcome(202, JSON.stringify(body), [202]);
+    expect(result).toEqual({ ok: true, body });
+  });
+
+  it('a 201 is not success for a дозагрузка scoped to 202', () => {
+    const result = parseUploadOutcome(201, '{}', [202]);
+    expect(result.ok).toBe(false);
+  });
+
+  it('reads a 422 (every file rejected) as success regardless of which statuses were asked for', () => {
+    const body = { accepted: [], rejected: [{ file_name: 'a.txt', reason: 'UNSUPPORTED_FORMAT', message: 'x' }] };
+    const result = parseUploadOutcome(422, JSON.stringify(body), [202]);
+    expect(result).toEqual({ ok: true, body });
+  });
+
+  it('reads a 409 as failure with the server message and code', () => {
+    const result = parseUploadOutcome(
+      409, JSON.stringify({ error: 'PROCESS_PARSING', message: 'Идёт обработка пакета' }), [202],
+    );
+    expect(result).toEqual({
+      ok: false, status: 409, message: 'Идёт обработка пакета', code: 'PROCESS_PARSING',
+    });
+  });
+
+  it('falls back to a generic message for a body with no message', () => {
+    const result = parseUploadOutcome(500, '', [202]);
+    expect(result).toEqual({ ok: false, status: 500, message: 'Ошибка загрузки (500)', code: undefined });
+  });
+
+  it('falls back to an empty body on unparseable JSON, still failing cleanly', () => {
+    const result = parseUploadOutcome(500, 'not json', [202]);
+    expect(result.ok).toBe(false);
   });
 });
 

@@ -28,10 +28,11 @@ from app.explication.compare import (
 )
 from app.explication.functions import NamePair, compare_room_functions, normalize_room_name
 from app.explication.parse import Room, find_floor_totals, find_rooms, room_key
+from app.incremental import build_merge_plan
 from app.llm.provider import LlmUnavailable, provider_from_config
 from app.metrics import (
     file_attempts_total, files_processed_total, findings_total,
-    process_duration_seconds, processes_total,
+    incremental_update_duration_seconds, process_duration_seconds, processes_total,
 )
 from app.params.engine import evaluate_all
 from app.params.specs import ParamSpec, load_specs
@@ -631,15 +632,70 @@ async def _room_function_checks(process_id: str, object_id: str, matrix_version:
     return checks
 
 
+def _sem_room_fn_pair_id(evidence_group_id: str, prefix: str) -> str | None:
+    """The sheet-pair id a SEM-ROOM-FN group belongs to, or None for a
+    package-wide informational row (no-provider/unavailable/error - see
+    _sem_room_fn_not_comparable) that no single pair produced. A pair id
+    always carries "~" (app.pipeline's own pair_id scheme, "file#page~
+    file#page"); an informational label never does.
+    """
+    if not evidence_group_id.startswith(prefix):
+        return None
+    rest = evidence_group_id[len(prefix):]
+    return rest.split(":", 1)[0] if "~" in rest else None
+
+
+async def _room_function_checks_incremental(
+    process_id: str, object_id: str, matrix_version: str,
+    pairs: list[tuple[SheetRooms, SheetRooms]], file_by_id: dict, provider,
+    new_file_ids: set[str], old_sem_checks_by_group: dict[str, dict],
+) -> list[dict]:
+    """_room_function_checks, but the model is only ever asked about sheet
+    pairs a new file is part of - customer's ТЗ's 1-minute budget for an
+    incremental update. Every pair that involves only files already in the
+    process before this дозагрузка keeps whatever SEM-ROOM-FN already said
+    about it: its input has not changed, so calling the model again could
+    only spend the budget without changing the answer.
+    """
+    touched, untouched = [], []
+    for pd_sheet, rd_sheet in pairs:
+        (touched if pd_sheet.file_id in new_file_ids or rd_sheet.file_id in new_file_ids
+         else untouched).append((pd_sheet, rd_sheet))
+
+    checks = await _room_function_checks(process_id, object_id, matrix_version, touched, file_by_id, provider)
+
+    untouched_pair_ids = {
+        f"{pd_sheet.file_id}#{pd_sheet.page_no}~{rd_sheet.file_id}#{rd_sheet.page_no}"
+        for pd_sheet, rd_sheet in untouched
+    }
+    prefix = f"{object_id}:{_SEM_ROOM_FN_CODE}:"
+    for group_id, old_check in old_sem_checks_by_group.items():
+        pair_id = _sem_room_fn_pair_id(group_id, prefix)
+        if pair_id is not None:
+            if pair_id in untouched_pair_ids:
+                checks.append(old_check)
+        elif not touched:
+            # A package-wide informational row: nothing SEM-ROOM-FN-relevant
+            # was touched at all, so nothing about it could have changed.
+            checks.append(old_check)
+    return checks
+
+
 async def _explication_checks(process_id: str, object_id: str, files, db,
                                m003: ParamSpec, matrix_version: str, provider,
-                               area_relative_threshold: float) -> list[dict]:
+                               area_relative_threshold: float, *,
+                               new_file_ids: set[str] | None = None,
+                               old_sem_checks_by_group: dict[str, dict] | None = None) -> list[dict]:
     """M-003: compare room explications between the current PD and RD sources.
 
     Every group that could not contribute a comparable file records its own
     completeness statement rather than being silently skipped, so a package
     that could not be compared still says why, instead of just having fewer
     checks than expected.
+
+    new_file_ids/old_sem_checks_by_group (both None for a fresh run) scope
+    SEM-ROOM-FN's own model call to sheet pairs a new file is part of - see
+    _room_function_checks_incremental.
     """
     pdf_files = [f for f in files if f.mime_type == "application/pdf"]
 
@@ -682,9 +738,15 @@ async def _explication_checks(process_id: str, object_id: str, files, db,
                 object_id, m003, matrix_version, pd_sheet, rd_sheet, finding, file_by_id,
             ))
 
-    checks.extend(await _room_function_checks(
-        process_id, object_id, matrix_version, pairs, file_by_id, provider,
-    ))
+    if new_file_ids is not None:
+        checks.extend(await _room_function_checks_incremental(
+            process_id, object_id, matrix_version, pairs, file_by_id, provider,
+            new_file_ids, old_sem_checks_by_group or {},
+        ))
+    else:
+        checks.extend(await _room_function_checks(
+            process_id, object_id, matrix_version, pairs, file_by_id, provider,
+        ))
 
     return checks
 
@@ -721,17 +783,94 @@ def input_manifest_hash(process, files) -> str:
     return hashlib.sha256(joined.encode("utf-8")).hexdigest()
 
 
-async def _process_start_once(process_id: str, db, storage, config, *, cache=None) -> None:
-    process = await db.get_process(process_id)
-    if process is None:
-        # A race with the API (task published before the row is visible, or
-        # the process was since deleted) is a data-quality statement about
-        # the queue, not a reason to crash the consumer over one message.
-        logger.error("process not found", extra={"process_id": process_id})
-        return
+async def _compute_checks(
+    process_id: str, object_id: str, final_files, db, config, *,
+    new_file_ids: set[str] | None = None,
+    old_sem_checks_by_group: dict[str, dict] | None = None,
+):
+    """The full candidate set for a package: M-003's explication comparison
+    (composites and SEM-ROOM-FN hypotheses included) plus a completeness
+    statement for every other matrix parameter.
 
-    files = await db.get_files(process_id)
+    Shared between a fresh run (_process_start_once) and a дозагрузка's
+    incremental update (_process_update_once) - the latter passes
+    new_file_ids/old_sem_checks_by_group so SEM-ROOM-FN's own LLM call only
+    ever covers sheet pairs a new file is part of (customer's ТЗ's 1-minute
+    budget for an incremental update, "Инкрементальное обновление протокола
+    (при дозагрузке) — не более 1 минуты"); every other comparison here reads
+    stored text and is cheap enough to simply recompute in full either way,
+    exactly as "recompute the full candidate set in memory" asks.
 
+    Returns (checks, specs) - specs.version is also what the caller's own
+    protocol records as matrix_version.
+    """
+    specs = load_specs()
+    m003 = next(spec for spec in specs.params if spec.code == "M-003")
+
+    # M-003's own room/floor-total area deltas reuse M-002's relative
+    # ceiling ("Дельта общей площади ... > 1%") rather than a threshold of
+    # their own - see app.explication.compare's module docstring. M-002 is
+    # looked up defensively, not with M-003's own next(...) that raises: a
+    # matrix missing this one spec must not cost the run every explication
+    # comparison over a threshold it can fall back on instead.
+    m002 = next((spec for spec in specs.params if spec.code == "M-002"), None)
+    area_relative_threshold = (
+        m002.compare_threshold
+        if m002 is not None and m002.compare_threshold is not None
+        else DEFAULT_AREA_RELATIVE_THRESHOLD
+    )
+
+    # None when LLM_BASE_URL is unset (see app.config's own docstring): every
+    # call downstream already treats that the same as LlmUnavailable, so no
+    # branch is needed here beyond building it once for the whole package.
+    provider = provider_from_config(config)
+
+    try:
+        checks = await _explication_checks(
+            process_id, object_id, final_files, db, m003, specs.version, provider,
+            area_relative_threshold, new_file_ids=new_file_ids,
+            old_sem_checks_by_group=old_sem_checks_by_group,
+        )
+    except Exception as exc:  # noqa: BLE001 - a failed comparison is one finding, not a lost package
+        logger.error("explication comparison failed", extra={
+            "process_id": process_id, "error": str(exc),
+        })
+        checks = [_completeness_check(
+            object_id, m003, specs.version, "error", "NOT_COMPARABLE",
+            f"сравнение экспликаций не выполнено: {exc}",
+        )]
+
+    # Every other parameter of the matrix has no extractor wired up yet
+    # (section 9.2: an honest refusal, not a guess). M-003 is excluded here
+    # because it was just answered above, by the comparison itself.
+    for outcome in evaluate_all(specs, {}):
+        if outcome.code == "M-003":
+            continue
+        spec = next(s for s in specs.params if s.code == outcome.code)
+        checks.append(_completeness_check(
+            object_id, spec, specs.version, "matrix", outcome.status, outcome.reason,
+        ))
+
+    return checks, specs
+
+
+async def _apply_manifest(process_id: str, process, files, db, storage):
+    """Parse the registry (if the package carries one) and apply its entries
+    to every document file's metadata.
+
+    Shared between a fresh run (_process_start_once) and a дозагрузка's
+    incremental update (_process_update_once) - both need the SAME metadata
+    recomputed over the FULL current file set, new files included, exactly
+    as customer's ТЗ "Инкрементальное обновление при дозагрузке" asks: the
+    worker "recomputes the full candidate set", not just the delta.
+
+    Returns (document_files, final_files, entries): document_files excludes
+    the registry row itself (not a document, has no text layer of its own);
+    final_files carries every document file with the manifest's own fields
+    applied in memory, the same values db.update_file_metadata just
+    persisted for it; entries is the registry's own parsed rows (empty
+    without one), for the caller's "expected per stage" count.
+    """
     manifest_row = None
     if process.manifest_uploaded:
         manifest_row = next((f for f in files if _is_manifest_row(f, process)), None)
@@ -809,11 +948,25 @@ async def _process_start_once(process_id: str, db, storage, config, *, cache=Non
             "unmatched_files": unmatched_files,
         })
 
+    return document_files, list(updated.values()), entries
+
+
+async def _process_start_once(process_id: str, db, storage, config, *, cache=None) -> None:
+    process = await db.get_process(process_id)
+    if process is None:
+        # A race with the API (task published before the row is visible, or
+        # the process was since deleted) is a data-quality statement about
+        # the queue, not a reason to crash the consumer over one message.
+        logger.error("process not found", extra={"process_id": process_id})
+        return
+
+    files = await db.get_files(process_id)
+    document_files, final_files, entries = await _apply_manifest(process_id, process, files, db, storage)
+
     # The registry row was already excluded from document_files above; it has
     # no text layer of its own and is not a document of the package.
     await _extract_document_pages(process_id, document_files, db, storage, config, cache=cache)
 
-    final_files = list(updated.values())
     metas = [
         FileMeta(
             file_id=f.id,
@@ -852,51 +1005,7 @@ async def _process_start_once(process_id: str, db, storage, config, *, cache=Non
         # and that absence is itself the finding, not a pipeline failure.
         scenario = None
 
-    specs = load_specs()
-    m003 = next(spec for spec in specs.params if spec.code == "M-003")
-
-    # M-003's own room/floor-total area deltas reuse M-002's relative
-    # ceiling ("Дельта общей площади ... > 1%") rather than a threshold of
-    # their own - see app.explication.compare's module docstring. M-002 is
-    # looked up defensively, not with M-003's own next(...) that raises: a
-    # matrix missing this one spec must not cost the run every explication
-    # comparison over a threshold it can fall back on instead.
-    m002 = next((spec for spec in specs.params if spec.code == "M-002"), None)
-    area_relative_threshold = (
-        m002.compare_threshold
-        if m002 is not None and m002.compare_threshold is not None
-        else DEFAULT_AREA_RELATIVE_THRESHOLD
-    )
-
-    # None when LLM_BASE_URL is unset (see app.config's own docstring): every
-    # call downstream already treats that the same as LlmUnavailable, so no
-    # branch is needed here beyond building it once for the whole package.
-    provider = provider_from_config(config)
-
-    try:
-        checks = await _explication_checks(
-            process_id, process.object_id, final_files, db, m003, specs.version, provider,
-            area_relative_threshold,
-        )
-    except Exception as exc:  # noqa: BLE001 - a failed comparison is one finding, not a lost package
-        logger.error("explication comparison failed", extra={
-            "process_id": process_id, "error": str(exc),
-        })
-        checks = [_completeness_check(
-            process.object_id, m003, specs.version, "error", "NOT_COMPARABLE",
-            f"сравнение экспликаций не выполнено: {exc}",
-        )]
-
-    # Every other parameter of the matrix has no extractor wired up yet
-    # (section 9.2: an honest refusal, not a guess). M-003 is excluded here
-    # because it was just answered above, by the comparison itself.
-    for outcome in evaluate_all(specs, {}):
-        if outcome.code == "M-003":
-            continue
-        spec = next(s for s in specs.params if s.code == outcome.code)
-        checks.append(_completeness_check(
-            process.object_id, spec, specs.version, "matrix", outcome.status, outcome.reason,
-        ))
+    checks, specs = await _compute_checks(process_id, process.object_id, final_files, db, config)
 
     _record_findings_metrics(checks)
 
@@ -954,6 +1063,232 @@ async def _process_start_once(process_id: str, db, storage, config, *, cache=Non
         )
     except Exception as exc:  # noqa: BLE001 - see comment above
         logger.error("notifying process owner failed", extra={
+            "process_id": process_id, "error": str(exc),
+        })
+
+
+def _old_row_to_check_dict(row: dict) -> dict:
+    """An OLD checks row (app.db.Database.get_checks_for_merge's own
+    snake_case shape) reduced to the "new check dict" shape
+    app.pipeline._compute_checks builds and app.db.Database.save_checks/
+    apply_merge_plan insert - so a reused SEM-ROOM-FN row (an untouched
+    pair's hypothesis, _room_function_checks_incremental) can sit in the
+    "new" candidate set exactly as if it had just been recomputed.
+
+    finding_status is the row's own engine_status when a verdict has since
+    overwritten finding_status, falling back to finding_status otherwise -
+    the engine's own original output, matching what a real recomputation
+    would have produced and what app.incremental._content_key expects on
+    the "new" side of a comparison.
+    """
+    return {
+        "param_code": row["param_code"], "evidence_group_id": row["evidence_group_id"],
+        "subject": row["subject"], "expected_value": row["expected_value"],
+        "actual_value": row["actual_value"], "delta": row["delta"],
+        "completeness_status": row["completeness_status"],
+        "finding_status": row["engine_status"] or row["finding_status"],
+        "detection_method": row["detection_method"], "confidence": row["confidence"],
+        "review_priority": row["review_priority"], "rationale": row["rationale"],
+        "matrix_version": row["matrix_version"],
+        "fragments": [
+            {
+                "file_id": f["file_id"], "file_sha256": f["file_sha256"], "stage": f["stage"],
+                "document_code": f["document_code"], "revision": f["revision"],
+                "approval_status": f["approval_status"], "sheet_page": f["sheet_page"],
+                "x0": f["x0"], "y0": f["y0"], "x1": f["x1"], "y1": f["y1"],
+                "extracted_value": f["extracted_value"], "role": f["role"],
+            }
+            for f in row.get("fragments") or []
+        ],
+    }
+
+
+async def _process_update_once(process_id: str, new_file_ids: set[str], db, storage, config, *, cache=None) -> None:
+    """A дозагрузка's incremental update (customer's ТЗ "Инкрементальное
+    обновление при дозагрузке"): recompute the full candidate set exactly as
+    _process_start_once would, but merge it into the process's existing
+    checks by evidence_group_id (app.incremental.build_merge_plan) instead of
+    replacing them outright - "без сброса верификации". SEM-ROOM-FN's own
+    model call is scoped to sheet pairs new_file_ids actually touches
+    (_room_function_checks_incremental) for the ТЗ's 1-minute budget.
+
+    Mirrors _process_start_once's own error handling throughout: every step
+    that can fail on its own is caught and logged rather than raised, so one
+    failed side-effect (a notification, a metric) never costs the process
+    reaching a resolved status.
+    """
+    process = await db.get_process(process_id)
+    if process is None:
+        logger.error("process not found", extra={"process_id": process_id})
+        return
+
+    files = await db.get_files(process_id)
+    old_rows = await db.get_checks_for_merge(process_id)
+
+    document_files, final_files, entries = await _apply_manifest(process_id, process, files, db, storage)
+
+    new_document_files = [f for f in document_files if f.id in new_file_ids]
+    await _extract_document_pages(process_id, new_document_files, db, storage, config, cache=cache)
+
+    metas = [
+        FileMeta(
+            file_id=f.id, doc_stage=f.doc_stage, discipline=f.discipline,
+            document_code=f.document_code, revision=f.revision,
+            approval_status=f.approval_status, approval_date=_as_date(f.approval_date),
+            predecessor_id=f.predecessor_id, readable=True,
+        )
+        for f in final_files
+    ]
+    expected = None
+    if entries:
+        expected = {stage: 0 for stage in STAGES}
+        for entry in entries:
+            expected[entry.doc_stage] = expected.get(entry.doc_stage, 0) + 1
+
+    completeness = compute_completeness(metas, expected)
+    by_stage = {c.stage: c for c in completeness}
+    try:
+        scenario = determine_scenario(completeness)
+    except ValueError:
+        scenario = None
+
+    old_sem_checks_by_group = {
+        row["evidence_group_id"]: _old_row_to_check_dict(row)
+        for row in old_rows if row["param_code"] == _SEM_ROOM_FN_CODE
+    }
+    checks, specs = await _compute_checks(
+        process_id, process.object_id, final_files, db, config,
+        new_file_ids=new_file_ids, old_sem_checks_by_group=old_sem_checks_by_group,
+    )
+    _record_findings_metrics(checks)
+
+    user_ids = [row["verified_by"] for row in old_rows if row.get("verified_by")]
+    try:
+        user_names = await db.get_user_names(user_ids)
+    except Exception as exc:  # noqa: BLE001 - a merge note naming raw ids is still a note
+        logger.error("looking up user names for merge notes failed", extra={
+            "process_id": process_id, "error": str(exc),
+        })
+        user_names = {}
+
+    plan = build_merge_plan(old_rows, checks, user_names)
+    logger.info("incremental merge computed", extra={
+        "process_id": process_id, "added": plan.added, "changed": plan.changed,
+        "removed": plan.removed, "kept": plan.kept,
+    })
+
+    new_status = "VERIFYING" if plan.decision_survived else "READY"
+    protocol_version = None
+    try:
+        superseded_version = await db.snapshot_and_supersede_protocol(process_id)
+        await db.apply_merge_plan(process_id, process.object_id, plan)
+        protocol_version = await db.create_protocol(
+            process.id, process.object_id, specs.version, config.model_version,
+            config.dataset_version, input_manifest_hash(process, final_files),
+            status=new_status,
+        )
+        logger.info("protocol superseded and reissued", extra={
+            "process_id": process_id, "object_id": process.object_id,
+            "superseded_version": superseded_version, "version": protocol_version,
+        })
+    except Exception as exc:  # noqa: BLE001 - the process still reaches a resolved status without it
+        logger.error("incremental merge failed", extra={
+            "process_id": process_id, "error": str(exc),
+        })
+
+    if protocol_version is not None:
+        try:
+            await db.mark_files_added_in_protocol(sorted(new_file_ids), protocol_version)
+        except Exception as exc:  # noqa: BLE001 - cosmetic only (document list badge)
+            logger.error("marking files' protocol version failed", extra={
+                "process_id": process_id, "error": str(exc),
+            })
+
+    await db.save_processing_result(
+        process_id,
+        pd_completeness=by_stage["PD"].status,
+        rd_completeness=by_stage["RD"].status,
+        id_completeness=by_stage["ID"].status,
+        scenario=scenario,
+        status=new_status,
+    )
+
+    logger.info("process updated", extra={
+        "process_id": process_id, "scenario": scenario, "status": new_status,
+    })
+
+    try:
+        # Customer's ТЗ "Инкрементальное обновление при дозагрузке": the
+        # inspector is told the protocol changed and by how much, not just
+        # that it exists (PROCESS_READY, the fresh-run notification, would
+        # read as if nothing had been decided before).
+        await db.notify_process_owner(
+            process, "PROTOCOL_UPDATED", "Протокол обновлён после дозагрузки",
+            f"Протокол по процессу {process.id} обновлён после дозагрузки: "
+            f"добавлено {plan.added}, изменено {plan.changed}, "
+            f"удалено {plan.removed}, сохранено {plan.kept}.",
+        )
+    except Exception as exc:  # noqa: BLE001 - see comment above
+        logger.error("notifying process owner failed", extra={
+            "process_id": process_id, "error": str(exc),
+        })
+
+
+async def process_update(process_id: str, db, storage, config, *, cache=None, file_ids=None) -> None:
+    """Entry point routed from the queue (app.consumer.HANDLERS) for
+    "process.update" - a дозагрузка's incremental update. Retries the whole
+    task in-process the same number of times, and on the same terms, as
+    process_start below; the two share every bit of that behaviour (attempts,
+    FAILED, admin notification) precisely because a дозагрузка's failure
+    mode must read identically to a fresh run's to an inspector or an
+    administrator watching the process list.
+    """
+    new_file_ids = set(file_ids or [])
+    attempts_allowed = 1 + max(config.processing_retries, 0)
+    last_exc: BaseException | None = None
+    started = time.monotonic()
+    for attempt in range(1, attempts_allowed + 1):
+        try:
+            await _process_update_once(process_id, new_file_ids, db, storage, config, cache=cache)
+            elapsed = time.monotonic() - started
+            incremental_update_duration_seconds.observe(elapsed)
+            # Customer's ТЗ: "Инкрементальное обновление протокола (при
+            # дозагрузке) — не более 1 минуты" - logged, not enforced: a slow
+            # update still finishes and still updates the protocol, but an
+            # operator needs to see it broke the budget.
+            if elapsed > 60:
+                logger.warning("incremental update exceeded the 1-minute budget", extra={
+                    "process_id": process_id, "elapsed_s": round(elapsed, 3),
+                })
+            processes_total.labels(result="ready").inc()
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - retried in-process, reported once exhausted
+            last_exc = exc
+            logger.error("process.update attempt failed", extra={
+                "process_id": process_id, "attempt": attempt, "attempts": attempts_allowed,
+                "error": str(exc) or exc.__class__.__name__,
+            })
+
+    incremental_update_duration_seconds.observe(time.monotonic() - started)
+    processes_total.labels(result="failed").inc()
+
+    message = f"Дозагрузка завершилась ошибкой: {last_exc}"
+    try:
+        await db.mark_process_failed(process_id, message)
+    except Exception as exc:  # noqa: BLE001 - never raised back into the consumer
+        logger.error("marking process failed did not succeed", extra={
+            "process_id": process_id, "error": str(exc),
+        })
+    try:
+        process = await db.get_process(process_id)
+        await db.notify_admins(
+            "PROCESS_FAILED", "Дозагрузка завершилась ошибкой", message,
+            process_id=process_id, object_id=process.object_id if process is not None else None,
+        )
+    except Exception as exc:  # noqa: BLE001 - see comment above
+        logger.error("admin notification failed", extra={
             "process_id": process_id, "error": str(exc),
         })
 
