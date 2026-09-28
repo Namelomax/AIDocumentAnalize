@@ -205,10 +205,16 @@ assert_at_least "CANDIDATE for room 1.109 with actual area 18.20" \
   "SELECT count(*) FROM checks WHERE process_id = '$PROCESS3' AND finding_status = 'CANDIDATE' AND subject = 'room 1.109' AND actual_value = '18.20';" \
   1
 
-echo "15. the school pair yields the changed floor total as a candidate"
-assert_at_least "CANDIDATE for floor total 6234.10 -> 6252.30" \
-  "SELECT count(*) FROM checks WHERE process_id = '$PROCESS3' AND finding_status = 'CANDIDATE' AND subject = 'floor total' AND expected_value = '6234.10' AND actual_value = '6252.30';" \
+echo "15. the school pair's floor total (+0.29%) is a verified negative, not a candidate"
+# 6234.10 -> 6252.30 is a systematic recalculation well inside M-002's own 1%
+# ceiling (specs/params/M-002.yaml compare_threshold): app.explication.compare
+# now reports it NEGATIVE_VERIFIED rather than as a second candidate next to
+# room 1.109.
+assert_at_least "NEGATIVE_VERIFIED for floor total 6234.10 -> 6252.30" \
+  "SELECT count(*) FROM checks WHERE process_id = '$PROCESS3' AND finding_status = 'NEGATIVE_VERIFIED' AND subject = 'floor total' AND expected_value = '6234.10' AND actual_value = '6252.30';" \
   1
+assert_zero "CANDIDATE for floor total 6234.10 -> 6252.30" \
+  "SELECT count(*) FROM checks WHERE process_id = '$PROCESS3' AND finding_status = 'CANDIDATE' AND subject = 'floor total' AND expected_value = '6234.10' AND actual_value = '6252.30';"
 
 echo "16. the Polyarnaya negative pair yields no candidates"
 assert_zero "checks with evidence on the Polyarnaya files that are CANDIDATE" \

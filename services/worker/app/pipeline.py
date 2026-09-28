@@ -22,7 +22,9 @@ from datetime import date, datetime
 from app.domain.completeness import STAGES, compute_completeness, determine_scenario
 from app.domain.manifest import parse_manifest
 from app.domain.revisions import FileMeta, select_source_revision
-from app.explication.compare import RoomFinding, SheetRooms, compare_sheets, pair_sheets
+from app.explication.compare import (
+    DEFAULT_AREA_RELATIVE_THRESHOLD, RoomFinding, SheetRooms, compare_sheets, pair_sheets,
+)
 from app.explication.functions import NamePair, compare_room_functions, normalize_room_name
 from app.explication.parse import Room, find_floor_totals, find_rooms, room_key
 from app.llm.provider import LlmUnavailable, provider_from_config
@@ -454,7 +456,8 @@ async def _room_function_checks(process_id: str, object_id: str, matrix_version:
 
 
 async def _explication_checks(process_id: str, object_id: str, files, db,
-                               m003: ParamSpec, matrix_version: str, provider) -> list[dict]:
+                               m003: ParamSpec, matrix_version: str, provider,
+                               area_relative_threshold: float) -> list[dict]:
     """M-003: compare room explications between the current PD and RD sources.
 
     Every group that could not contribute a comparable file records its own
@@ -498,7 +501,7 @@ async def _explication_checks(process_id: str, object_id: str, files, db,
         return checks
 
     for pd_sheet, rd_sheet in pairs:
-        for finding in compare_sheets(pd_sheet, rd_sheet):
+        for finding in compare_sheets(pd_sheet, rd_sheet, area_relative_threshold):
             checks.append(_room_finding_check(
                 object_id, m003, matrix_version, pd_sheet, rd_sheet, finding, file_by_id,
             ))
@@ -658,6 +661,19 @@ async def process_start(process_id: str, db, storage, config) -> None:
     specs = load_specs()
     m003 = next(spec for spec in specs.params if spec.code == "M-003")
 
+    # M-003's own room/floor-total area deltas reuse M-002's relative
+    # ceiling ("Дельта общей площади ... > 1%") rather than a threshold of
+    # their own - see app.explication.compare's module docstring. M-002 is
+    # looked up defensively, not with M-003's own next(...) that raises: a
+    # matrix missing this one spec must not cost the run every explication
+    # comparison over a threshold it can fall back on instead.
+    m002 = next((spec for spec in specs.params if spec.code == "M-002"), None)
+    area_relative_threshold = (
+        m002.compare_threshold
+        if m002 is not None and m002.compare_threshold is not None
+        else DEFAULT_AREA_RELATIVE_THRESHOLD
+    )
+
     # None when LLM_BASE_URL is unset (see app.config's own docstring): every
     # call downstream already treats that the same as LlmUnavailable, so no
     # branch is needed here beyond building it once for the whole package.
@@ -666,6 +682,7 @@ async def process_start(process_id: str, db, storage, config) -> None:
     try:
         checks = await _explication_checks(
             process_id, process.object_id, final_files, db, m003, specs.version, provider,
+            area_relative_threshold,
         )
     except Exception as exc:  # noqa: BLE001 - a failed comparison is one finding, not a lost package
         logger.error("explication comparison failed", extra={

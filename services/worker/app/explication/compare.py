@@ -9,6 +9,27 @@ measured against), a changed one must be reported with its signed delta, and
 a room missing from one sheet is only ever reported when its neighbours on
 the *other* sheet prove the gap is real rather than a parsing miss - the
 pilot markup's own argument for room 1.109 ("after 1.108 comes 1.110").
+
+A run against the pilot markup's own reference sheets (Полярная 25 school
+and DOO, Задание/Комплект_предметной_разметки.pdf) showed a third rule is
+needed before an area delta is even a candidate: a systematic recalculation
+between PD and RD nudges *every* room's area by about one rounding step
+(e.g. +0.10 m² on 38 of the DOO's ~40 rooms), and for a small room that step
+alone clears any absolute threshold worth having. Two areas are therefore
+"the same", not a candidate, when *either* of two things is true - see
+`_within_rounding_tolerance`:
+  - the delta is within M-002's own relative ceiling for the building's
+    total area (`compare_threshold` in specs/params/M-002.yaml, currently
+    1%) - the pilot's own bar for "this delta matters", reused here rather
+    than inventing a second one for rooms; or
+  - the delta is no more than one unit of the precision the areas were
+    themselves recorded to (0.1 m² or 0.01 m², recovered from the numbers
+    since parse.py keeps only the float) - a single rounding step is not
+    evidence of a real change, however large a fraction of a small room it
+    happens to be.
+A delta clearing *both* bars is a candidate; one that does not is
+NEGATIVE_VERIFIED, with a rationale saying so - it must still be reported,
+per the FPR <= 0.10 comment above, just not as a candidate.
 """
 
 import re
@@ -22,6 +43,14 @@ from app.pdf.geometry import NormalizedBox
 # folding one room's two detections into one, so the same rounding never
 # reads as a delta here.
 _AREA_TOLERANCE = 0.005
+
+# M-002's own relative ceiling ("Дельта общей площади между ПД и РД (или ИД)
+# > 1%") is reused as the relative half of the room/floor-total rounding
+# tolerance above (there is no room-specific parameter in the matrix to draw
+# it from instead). Only a fallback for when the spec file cannot be loaded
+# at all (see app.pipeline) - the real value always comes from
+# specs/params/M-002.yaml's compare_threshold at runtime.
+DEFAULT_AREA_RELATIVE_THRESHOLD = 0.01
 
 # A room sheet is another sheet's counterpart when they share at least half
 # of the smaller sheet's room numbers. Below that, two sheets that happen to
@@ -72,6 +101,46 @@ def _fmt_ru(value: float) -> str:
 
 def _fmt_signed_ru(value: float) -> str:
     return _fmt_signed(value).replace(".", ",")
+
+
+def _is_whole_tenth(value: float) -> bool:
+    """True when `value` round-trips exactly at one decimal place (8.7, or a
+    whole number like 87.0) - i.e. it could have been written to 0.1 m²
+    precision. parse.py keeps only the float, never the text a value was
+    written as, so the precision has to be recovered from the number itself;
+    the *10 round-trip is exact for one-decimal values (float noise aside)
+    but fails for a genuine two-decimal one like 8.73.
+    """
+    scaled = value * 10
+    return abs(scaled - round(scaled)) < 1e-6
+
+
+def _precision_unit(a: float, b: float) -> float:
+    """The precision both areas were recorded to: 0.1 m² when both round-trip
+    at one decimal place, 0.01 m² (the explications' other common precision)
+    otherwise. Either value alone being a "round" 0.1 number proves nothing -
+    Наблюдение above found a *pair* like 8.7/8.8 that are both one-decimal,
+    while a pair like 8.70/8.73 needs the finer unit even though 8.70 alone
+    would pass the whole-tenth test.
+    """
+    if _is_whole_tenth(a) and _is_whole_tenth(b):
+        return 0.1
+    return 0.01
+
+
+def _within_rounding_tolerance(pd_area: float, rd_area: float, relative_threshold: float) -> bool:
+    """The module docstring's two-part allowance: not a candidate when the
+    delta is small either as a fraction of the PD area, or as a fraction of
+    the recording precision (at most one rounding step). Only called once
+    the tiny `_AREA_TOLERANCE` case (an exact or near-exact match) has
+    already been ruled out by the caller.
+    """
+    delta = abs(rd_area - pd_area)
+    if pd_area and delta <= relative_threshold * abs(pd_area):
+        return True
+    # `+ 1e-9` absorbs the float noise `_precision_unit`'s own *10 round-trip
+    # does not - e.g. 47.9 -> 48.5 subtracts to 0.6000000000000014, not 0.6.
+    return delta <= _precision_unit(pd_area, rd_area) + 1e-9
 
 
 def _union(boxes: list[NormalizedBox]) -> NormalizedBox:
@@ -145,7 +214,8 @@ def _find_room(sheet: SheetRooms, number: str, scope: str | None) -> Room | None
     )
 
 
-def _compare_room(key: str, pd: SheetRooms, pd_room: Room, rd: SheetRooms, rd_room: Room) -> RoomFinding:
+def _compare_room(key: str, pd: SheetRooms, pd_room: Room, rd: SheetRooms, rd_room: Room,
+                   relative_threshold: float) -> RoomFinding:
     # The dict key is room_key(room, rooms) from parse.py, not the bare
     # number: Алтуфьевское's ground floor "1" and antresol "1" are different
     # rooms, and a subject built from the number alone would let their
@@ -164,6 +234,19 @@ def _compare_room(key: str, pd: SheetRooms, pd_room: Room, rd: SheetRooms, rd_ro
         )
 
     delta = rd_room.area - pd_room.area
+    if _within_rounding_tolerance(pd_room.area, rd_room.area, relative_threshold):
+        return RoomFinding(
+            subject=subject, status="NEGATIVE_VERIFIED",
+            expected=_fmt(pd_room.area), actual=_fmt(rd_room.area), delta=None,
+            rationale=(
+                f"Площадь помещения {pd_room.number}: в ПД {_fmt_ru(pd_room.area)} м², "
+                f"в РД {_fmt_ru(rd_room.area)} м² — различие в пределах точности "
+                f"записи и допуска {relative_threshold:.0%}."
+            ),
+            expected_sheet=pd, expected_box=pd_room.evidence_box,
+            actual_sheet=rd, actual_box=rd_room.evidence_box,
+        )
+
     return RoomFinding(
         subject=subject, status="CANDIDATE",
         expected=_fmt(pd_room.area), actual=_fmt(rd_room.area), delta=_fmt_signed(delta),
@@ -231,7 +314,7 @@ def _added_in_rd(key: str, pd: SheetRooms, rd: SheetRooms, rd_room: Room) -> Roo
     )
 
 
-def _compare_totals(pd: SheetRooms, rd: SheetRooms) -> RoomFinding | None:
+def _compare_totals(pd: SheetRooms, rd: SheetRooms, relative_threshold: float) -> RoomFinding | None:
     # Only compared when each sheet carries exactly one total: with zero,
     # there is nothing to compare, and with more than one, which total on one
     # sheet corresponds to which on the other is not determined by anything
@@ -250,6 +333,23 @@ def _compare_totals(pd: SheetRooms, rd: SheetRooms) -> RoomFinding | None:
             actual_sheet=rd, actual_box=rd_total.evidence_box,
         )
 
+    # Same rounding allowance as a single room (module docstring): a floor
+    # total is itself just a sum of room areas, so the same systematic
+    # recalculation that nudges every room by one step nudges the total too -
+    # СОШ25's own total (6234.10 -> 6252.30, +0.29%) is exactly this case.
+    if _within_rounding_tolerance(pd_total.area, rd_total.area, relative_threshold):
+        return RoomFinding(
+            subject="floor total", status="NEGATIVE_VERIFIED",
+            expected=_fmt(pd_total.area), actual=_fmt(rd_total.area), delta=None,
+            rationale=(
+                f"Итог по этажу: в ПД {_fmt_ru(pd_total.area)} м², "
+                f"в РД {_fmt_ru(rd_total.area)} м² — различие в пределах точности "
+                f"записи и допуска {relative_threshold:.0%}."
+            ),
+            expected_sheet=pd, expected_box=pd_total.evidence_box,
+            actual_sheet=rd, actual_box=rd_total.evidence_box,
+        )
+
     return RoomFinding(
         subject="floor total", status="CANDIDATE",
         expected=_fmt(pd_total.area), actual=_fmt(rd_total.area), delta=_fmt_signed(delta),
@@ -262,7 +362,13 @@ def _compare_totals(pd: SheetRooms, rd: SheetRooms) -> RoomFinding | None:
     )
 
 
-def compare_sheets(pd: SheetRooms, rd: SheetRooms) -> list[RoomFinding]:
+def compare_sheets(pd: SheetRooms, rd: SheetRooms,
+                    relative_threshold: float = DEFAULT_AREA_RELATIVE_THRESHOLD) -> list[RoomFinding]:
+    """`relative_threshold` is M-002's own compare_threshold (app.pipeline
+    reads it from specs/params/M-002.yaml and passes it through); the default
+    here only covers direct callers that do not - tests, and a spec file that
+    failed to load at all.
+    """
     findings: list[RoomFinding] = []
 
     for key in sorted(set(pd.rooms) | set(rd.rooms)):
@@ -270,7 +376,7 @@ def compare_sheets(pd: SheetRooms, rd: SheetRooms) -> list[RoomFinding]:
         rd_room = rd.rooms.get(key)
 
         if pd_room is not None and rd_room is not None:
-            findings.append(_compare_room(key, pd, pd_room, rd, rd_room))
+            findings.append(_compare_room(key, pd, pd_room, rd, rd_room, relative_threshold))
             continue
 
         finding = (
@@ -280,7 +386,7 @@ def compare_sheets(pd: SheetRooms, rd: SheetRooms) -> list[RoomFinding]:
         if finding is not None:
             findings.append(finding)
 
-    totals_finding = _compare_totals(pd, rd)
+    totals_finding = _compare_totals(pd, rd, relative_threshold)
     if totals_finding is not None:
         findings.append(totals_finding)
 
