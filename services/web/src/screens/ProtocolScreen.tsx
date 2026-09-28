@@ -96,14 +96,19 @@ export default function ProtocolScreen({
       candidates: protocol.findings.filter((f) => f.status === 'CANDIDATE').length,
       confirmed: protocol.findings.filter((f) => f.status === 'CONFIRMED_VIOLATION').length,
       verified: protocol.findings.filter((f) => f.status === 'NEGATIVE_VERIFIED').length,
-      hypotheses: protocol.findings.filter((f) => f.status === 'SUSPICION').length,
+      // Hypotheses live in their own section of the protocol (protocol.suspicions),
+      // never in `findings` (Global Constraint: a hypothesis is not a violation).
+      hypotheses: protocol.suspicions.length,
     };
   }, [protocol]);
 
   const findingRows = useMemo(() => {
     if (!protocol || activeTab === 'completeness') return [];
-    const status = FINDING_TAB_STATUS[activeTab];
-    let list = protocol.findings.filter((f) => f.status === status);
+    // Hypotheses are a disjoint list of their own (protocol.suspicions), not
+    // a finding_status to filter `findings` by — see counts.hypotheses above.
+    let list = activeTab === 'hypotheses'
+      ? protocol.suspicions
+      : protocol.findings.filter((f) => f.status === FINDING_TAB_STATUS[activeTab]);
     if (priorityFilter !== 'ALL') list = list.filter((f) => f.priority === priorityFilter);
     return list;
   }, [protocol, activeTab, priorityFilter]);

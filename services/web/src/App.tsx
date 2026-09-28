@@ -137,10 +137,12 @@ export default function App() {
 
         {nav.screen === 'hypotheses' && (
           <HypothesesScreen
-            onBack={() => onNavigate({ screen: 'protocol', protocolId: nav.protocolId })}
-            onPromote={() =>
-              onNavigate({ screen: 'verification', protocolId: nav.protocolId, objectId: nav.objectId })
-            }
+            protocolId={nav.protocolId}
+            onBack={() => (
+              nav.protocolId
+                ? onNavigate({ screen: 'protocol', protocolId: nav.protocolId, objectId: nav.objectId })
+                : onNavigate({ screen: 'dashboard' })
+            )}
           />
         )}
       </main>

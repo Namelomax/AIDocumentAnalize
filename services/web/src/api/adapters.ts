@@ -8,6 +8,7 @@ import type {
   ApprovalStatus,
   CompletenessRowStatus,
   CompletenessStatus,
+  DetectionMethod,
   DocStage,
   EvidenceFragment,
   Finding,
@@ -169,13 +170,10 @@ export interface ApiProtocolSummary {
   suspicions?: number;
 }
 
-// SUSPICION-status findings, alongside `findings`/`completeness`, from a
-// parallel change to protocol/view.ts (the free-search hypothesis module
-// itself is still not wired up — see HypothesesScreen.tsx). Declared here so
-// a response that includes it type-checks; toProtocol() below does not read
-// it, since this task's hypotheses screen stays an honest empty state
-// regardless of what the protocol response carries.
-export type ApiSuspicion = ApiFinding & { detection_method?: string; confidence?: number };
+// A hypothesis in the shape of a finding (services/api/src/protocol/view.ts,
+// SuspicionView) — detection_method/confidence are the two fields a finding
+// never carries.
+export type ApiSuspicion = ApiFinding & { detection_method: string | null; confidence: number | null };
 
 export interface ApiProtocol {
   id: string;
@@ -194,6 +192,15 @@ export interface ApiProtocol {
   completeness: ApiCompletenessRow[];
   findings: ApiFinding[];
   suspicions?: ApiSuspicion[];
+}
+
+// GET /api/v1/suspicions → items[] (services/api/src/routes/suspicions.ts):
+// a hypothesis plus which object and which protocol it belongs to, since this
+// list runs across every object at once rather than one open protocol.
+export interface ApiSuspicionListItem extends ApiSuspicion {
+  object_id: string;
+  object_name: string;
+  protocol_id: string;
 }
 
 /* ─────────── Общие преобразования ─────────── */
@@ -432,6 +439,48 @@ export function toFinding(api: ApiFinding): Finding {
   };
 }
 
+// detectionLabels (labels.ts) and DetectionMethod (types/index.ts) both speak
+// lowercase; the engine's own vocabulary (schema.prisma's Check.detectionMethod
+// comment: "LOGICAL, SEMANTIC, NORMATIVE or ML") is uppercase — this is the one
+// place that reconciles them. An unrecognized or absent value maps to
+// undefined rather than guessing a method the engine never reported.
+function mapDetectionMethod(value: string | null): DetectionMethod | undefined {
+  switch (value) {
+    case 'LOGICAL': return 'logical';
+    case 'SEMANTIC': return 'semantic';
+    case 'NORMATIVE': return 'normative';
+    case 'ML': return 'ml';
+    default: return undefined;
+  }
+}
+
+// A hypothesis reads exactly like a finding (toFinding), plus how it was
+// found and how sure the model was — the model's own self-assessment, not a
+// probability of violation (section 9.5; HypothesesScreen.tsx labels it as
+// such wherever it is shown).
+export function toSuspicion(api: ApiSuspicion): Finding {
+  return {
+    ...toFinding(api),
+    detectionMethod: mapDetectionMethod(api.detection_method),
+    confidence: api.confidence ?? undefined,
+  };
+}
+
+export interface SuspicionListItem extends Finding {
+  objectId: string;
+  objectName: string;
+  protocolId: string;
+}
+
+export function toSuspicionListItem(api: ApiSuspicionListItem): SuspicionListItem {
+  return {
+    ...toSuspicion(api),
+    objectId: api.object_id,
+    objectName: api.object_name,
+    protocolId: api.protocol_id,
+  };
+}
+
 export function toCompletenessRow(api: ApiCompletenessRow): ProtocolCompletenessRow {
   return {
     paramCode: api.param_code,
@@ -472,8 +521,8 @@ export function toProtocol(api: ApiProtocol): Protocol {
     // tables of the protocol — never merged into one list here.
     completeness: api.completeness.map(toCompletenessRow),
     findings: api.findings.map(toFinding),
-    // api.suspicions is intentionally not read: the free-search hypothesis
-    // module has no screen wired to it yet (HypothesesScreen.tsx stays an
-    // honest empty state), so there is nothing here to show it in.
+    // A third, disjoint section (Global Constraint: a hypothesis is not a
+    // violation) — `?? []` covers a response from before this field existed.
+    suspicions: (api.suspicions ?? []).map(toSuspicion),
   };
 }

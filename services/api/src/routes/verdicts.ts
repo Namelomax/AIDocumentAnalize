@@ -153,6 +153,68 @@ export async function verdictRoutes(app: FastifyInstance) {
   );
 
   app.post(
+    '/api/v1/findings/:check_id/promote',
+    { preHandler: requireRole('INSPECTOR', 'SUPERVISOR', 'ADMIN') },
+    async (request, reply) => {
+      const paramsParsed = checkParamsSchema.safeParse(request.params);
+      if (!paramsParsed.success) return reply.code(400).send({ error: 'VALIDATION_FAILED' });
+
+      const check = await prisma.check.findUnique({ where: { id: paramsParsed.data.check_id } });
+      if (!check) return reply.code(404).send({ error: 'FINDING_NOT_FOUND' });
+
+      // Section 9.5: the only action left once a hypothesis's evidence is
+      // already attached is turning it into a candidate - anything that
+      // already went further (a candidate, a decided finding, completeness
+      // only) was never a hypothesis to begin with.
+      if (check.findingStatus !== 'SUSPICION') {
+        return reply.code(409).send({ error: 'NOT_A_SUSPICION' });
+      }
+
+      const protocol = await prisma.protocol.findFirst({
+        where: { processId: check.processId },
+        orderBy: { version: 'desc' },
+      });
+      if (!protocol) return reply.code(404).send({ error: 'PROTOCOL_NOT_FOUND' });
+
+      if (protocol.status === 'PROTOCOL_FINALIZED') {
+        return reply.code(409).send({ error: 'PROTOCOL_FINALIZED' });
+      }
+
+      // Section 9.2: the pair "what the engine said / what the inspector
+      // decided" is set once. A promoted hypothesis was the engine's own
+      // SUSPICION - that is what it stays for engine_status, exactly as an
+      // ordinary candidate keeps whatever the engine originally called it.
+      const engineStatus = check.engineStatus ?? 'SUSPICION';
+
+      const updated = await prisma.$transaction(async (tx) => {
+        const updatedCheck = await tx.check.update({
+          where: { id: check.id },
+          data: { findingStatus: 'CANDIDATE', engineStatus },
+          include: { fragments: true },
+        });
+
+        // A promoted hypothesis is a fresh, undecided candidate - if the
+        // protocol/process had already moved past verification, it reopens,
+        // same as any other candidate that newly needed a decision would
+        // (section 9.3).
+        if (protocol.status === 'VERIFICATION_COMPLETED') {
+          await tx.protocol.update({ where: { id: protocol.id }, data: { status: 'VERIFYING' } });
+        }
+        const process = await tx.process.findUniqueOrThrow({ where: { id: check.processId } });
+        if (process.status === 'COMPLETED') {
+          await tx.process.update({ where: { id: check.processId }, data: { status: 'VERIFYING' } });
+        }
+
+        return updatedCheck;
+      });
+
+      await audit(request, 'SUSPICION_PROMOTED', check.objectId, { check_id: check.id });
+
+      return findingResponse(updated as CheckWithFragments);
+    },
+  );
+
+  app.post(
     '/api/v1/protocols/:protocol_id/finalize',
     { preHandler: requireRole('INSPECTOR', 'SUPERVISOR', 'ADMIN') },
     async (request, reply) => {

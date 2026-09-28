@@ -7,6 +7,8 @@ import {
   toProgress,
   toProjectObject,
   toProtocol,
+  toSuspicion,
+  toSuspicionListItem,
   toUploadedFile,
   type ApiCompletenessRow,
   type ApiEvidence,
@@ -14,6 +16,8 @@ import {
   type ApiObjectListItem,
   type ApiProgress,
   type ApiProtocol,
+  type ApiSuspicion,
+  type ApiSuspicionListItem,
 } from './adapters';
 
 // Fixtures below mirror the real response shapes of services/api (see
@@ -141,6 +145,57 @@ describe('toFinding', () => {
   it('leaves decision undefined when the finding has none', () => {
     const finding = toFinding(findingFixture);
     expect(finding.decision).toBeUndefined();
+  });
+});
+
+describe('toSuspicion', () => {
+  const suspicionFixture: ApiSuspicion = {
+    ...findingFixture,
+    id: 'check-suspicion',
+    param_code: 'SEM-ROOM-FN',
+    finding_status: 'SUSPICION',
+    detection_method: 'SEMANTIC',
+    confidence: 0.9,
+  };
+
+  it('carries a suspicion in the shape of a finding, plus its detection method and confidence', () => {
+    const suspicion = toSuspicion(suspicionFixture);
+    expect(suspicion.id).toBe('check-suspicion');
+    expect(suspicion.status).toBe('SUSPICION');
+    expect(suspicion.detectionMethod).toBe('semantic');
+    expect(suspicion.confidence).toBe(0.9);
+  });
+
+  it('maps every engine detection method to the interface vocabulary', () => {
+    expect(toSuspicion({ ...suspicionFixture, detection_method: 'LOGICAL' }).detectionMethod).toBe('logical');
+    expect(toSuspicion({ ...suspicionFixture, detection_method: 'NORMATIVE' }).detectionMethod).toBe('normative');
+    expect(toSuspicion({ ...suspicionFixture, detection_method: 'ML' }).detectionMethod).toBe('ml');
+  });
+
+  it('leaves detectionMethod and confidence undefined when the engine reported none', () => {
+    const suspicion = toSuspicion({ ...suspicionFixture, detection_method: null, confidence: null });
+    expect(suspicion.detectionMethod).toBeUndefined();
+    expect(suspicion.confidence).toBeUndefined();
+  });
+});
+
+describe('toSuspicionListItem', () => {
+  it('carries the object and protocol a hypothesis belongs to, alongside its finding fields', () => {
+    const fixture: ApiSuspicionListItem = {
+      ...findingFixture,
+      id: 'check-suspicion',
+      finding_status: 'SUSPICION',
+      detection_method: 'SEMANTIC',
+      confidence: 0.9,
+      object_id: 'obj-1',
+      object_name: 'Школа №1',
+      protocol_id: 'protocol-1',
+    };
+    const item = toSuspicionListItem(fixture);
+    expect(item.objectId).toBe('obj-1');
+    expect(item.objectName).toBe('Школа №1');
+    expect(item.protocolId).toBe('protocol-1');
+    expect(item.detectionMethod).toBe('semantic');
   });
 });
 
@@ -326,16 +381,23 @@ describe('toProtocol', () => {
     expect(protocol.hash).toBe('c'.repeat(64));
   });
 
-  it('does not fail when the response carries a suspicions section (hypothesis module, in parallel development)', () => {
+  it('reads suspicions into their own section, separate from findings', () => {
     const protocol = toProtocol({
       ...protocolFixture,
-      summary: { ...protocolFixture.summary, suspicions: 2 },
-      suspicions: [{ ...findingFixture, id: 'check-suspicion', detection_method: 'ml', confidence: 0.8 }],
+      summary: { ...protocolFixture.summary, suspicions: 1 },
+      suspicions: [{ ...findingFixture, id: 'check-suspicion', detection_method: 'ML', confidence: 0.8 }],
     });
-    // The hypotheses screen stays an honest empty state regardless — this
-    // only asserts the adapter tolerates the extra field rather than throwing.
+    // A hypothesis is never a finding (Global Constraint) — it must not
+    // appear in `findings`, only in its own `suspicions` section.
     expect(protocol.findings).toHaveLength(1);
     expect(protocol.findings.some((f) => f.id === 'check-suspicion')).toBe(false);
+    expect(protocol.suspicions).toHaveLength(1);
+    expect(protocol.suspicions[0]).toMatchObject({ id: 'check-suspicion', detectionMethod: 'ml', confidence: 0.8 });
+  });
+
+  it('defaults suspicions to an empty list when the response has none', () => {
+    const protocol = toProtocol(protocolFixture);
+    expect(protocol.suspicions).toEqual([]);
   });
 });
 

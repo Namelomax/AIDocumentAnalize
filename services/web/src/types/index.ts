@@ -184,6 +184,10 @@ export interface Protocol {
   };
   completeness: ProtocolCompletenessRow[];
   findings: Finding[];
+  // Free-search hypotheses (section 9.5) - a third, disjoint section from
+  // `findings`, never merged into it (services/api's buildProtocolResponse
+  // keeps the same separation): a SUSPICION is never a violation.
+  suspicions: Finding[];
 }
 
 export interface CompositeAtom {
