@@ -20,6 +20,8 @@ THIRD_PARTY_IMAGES=(
   "rabbitmq@sha256:606d8c0d6b3c18d1da9afc53bc7cdb2a8d5486df91b5a9830e9e07626c9ae281"
   "quay.io/minio/minio@sha256:a1ea29fa28355559ef137d71fc570e508a214ec84ff8083e39bc5428980b015e"
   "nginx@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10"
+  "prom/prometheus@sha256:565ee86501224ebbb98fc10b332fa54440b100469924003359edf49cbce374bd"
+  "grafana/grafana-oss@sha256:147620479985b5780600dea24223c71eb8525e01727cce7fcd4bba8896d66d60"
 )
 
 # Images we build ourselves, tagged so "docker compose up" on the stand
@@ -40,7 +42,7 @@ mkdir -p dist
 
 BUNDLE_PATH="dist/inspector-images.tar"
 
-echo "Saving all eight images to ${BUNDLE_PATH}..."
+echo "Saving all ten images to ${BUNDLE_PATH}..."
 docker save -o "${BUNDLE_PATH}" "${THIRD_PARTY_IMAGES[@]}" "${OWN_IMAGES[@]}"
 
 BUNDLE_SIZE=$(du -h "${BUNDLE_PATH}" | cut -f1)

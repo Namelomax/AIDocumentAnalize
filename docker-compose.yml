@@ -150,3 +150,52 @@ services:
       timeout: 5s
       retries: 10
     restart: unless-stopped
+
+  # Customer's ТЗ p.31: "Интеграция с Prometheus для сбора метрик" и
+  # "Алертинг". Scrapes api:3000/metrics and worker:9100 (deploy/monitoring/
+  # prometheus.yml) and evaluates deploy/monitoring/alert-rules.yml - no
+  # Alertmanager here, see deploy/monitoring/README.md for why the stand
+  # stops at Prometheus/Grafana's own UI rather than e-mail/Telegram.
+  prometheus:
+    image: prom/prometheus@sha256:565ee86501224ebbb98fc10b332fa54440b100469924003359edf49cbce374bd
+    volumes:
+      - ./deploy/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/monitoring/alert-rules.yml:/etc/prometheus/alert-rules.yml:ro
+      - ./data/prometheus:/prometheus
+    ports:
+      - "9090:9090"
+    depends_on:
+      api: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # Customer's ТЗ p.31: "Grafana для визуализации дашбордов". Datasource and
+  # dashboard are provisioned (deploy/monitoring/grafana/provisioning) so the
+  # dashboard "Инспектор ИИ — эксплуатация" is already there on first login -
+  # nothing to click through by hand on a stand no one on the team is present
+  # for.
+  grafana:
+    image: grafana/grafana-oss@sha256:147620479985b5780600dea24223c71eb8525e01727cce7fcd4bba8896d66d60
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      # Section 12 (access control) applies to Grafana too - no unauthenticated
+      # viewer, even for a demo dashboard.
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      - ./deploy/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./data/grafana:/var/lib/grafana
+    ports:
+      - "3001:3000"
+    depends_on:
+      prometheus: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped

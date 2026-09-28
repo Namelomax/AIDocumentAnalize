@@ -64,8 +64,16 @@ docker compose up
 Вход: `POST /api/v1/auth/login` с телом `{ "login": "...", "password": "..." }`
 возвращает `{ token, user }`.
 
+## Мониторинг
+
+`docker compose up` поднимает вместе со стендом Prometheus
+(`http://localhost:9090`) и Grafana (`http://localhost:3001`) с готовым
+дашбордом «Инспектор ИИ — эксплуатация» и настроенными алертами. Подробности
+— `deploy/monitoring/README.md`.
+
 ## Структура каталогов
 
 - `services/` — исходный код сервисов.
+- `deploy/monitoring/` — конфигурация Prometheus, Grafana и алертов.
 - `docs/` — архитектура и планы проекта.
 - `Задание/` — исходные материалы заказчика.

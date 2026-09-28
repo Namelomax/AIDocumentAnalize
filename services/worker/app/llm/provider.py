@@ -23,6 +23,8 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
+from app.metrics import llm_request_duration_seconds, llm_requests_total
+
 logger = logging.getLogger(__name__)
 
 
@@ -86,11 +88,18 @@ class ChatProvider:
         the plan's "no new dependency" constraint.
         """
         started = time.monotonic()
-        payload = await asyncio.to_thread(self._call, system, user)
+        try:
+            payload = await asyncio.to_thread(self._call, system, user)
+            content = self._extract_message_content(payload)
+            result = _parse_json_response(content)
+        except LlmUnavailable:
+            llm_requests_total.labels(result="error").inc()
+            llm_request_duration_seconds.observe(time.monotonic() - started)
+            raise
         elapsed_s = time.monotonic() - started
 
-        content = self._extract_message_content(payload)
-        result = _parse_json_response(content)
+        llm_requests_total.labels(result="ok").inc()
+        llm_request_duration_seconds.observe(elapsed_s)
 
         usage = payload.get("usage") if isinstance(payload, dict) else None
         logger.info("llm call completed", extra={

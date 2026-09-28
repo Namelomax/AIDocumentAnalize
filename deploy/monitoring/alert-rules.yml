@@ -1,0 +1,72 @@
+# Customer's ТЗ p.31: "Алертинг: настройка алертов при превышении пороговых
+# значений метрик (например, загрузка CPU > 80%, время ответа > 500 мс)".
+#
+# No Alertmanager is wired up on this stand: e-mail/Telegram delivery needs a
+# network the offline stand does not have (see deploy/monitoring/README.md).
+# These four rules are still evaluated by Prometheus itself and visible in
+# its own UI (http://localhost:9090/alerts) and API
+# (GET /api/v1/rules) without one.
+groups:
+  - name: inspector-alerts
+    rules:
+      # "загрузка CPU > 80%" from the ТЗ's own example, per service
+      # (process_cpu_seconds_total is labelled by job=api|worker|prometheus
+      # from prometheus.yml's scrape_configs).
+      - alert: HighCpu
+        expr: rate(process_cpu_seconds_total[1m]) > 0.8
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Высокая загрузка CPU: {{ $labels.job }}"
+          description: >-
+            Сервис {{ $labels.job }} ({{ $labels.instance }}) использует более 80% CPU
+            на протяжении 2 минут (сейчас {{ $value | humanizePercentage }}).
+
+      # "время ответа > 500 мс" from the ТЗ's own example - p95 across the
+      # api's own http_request_duration_seconds (services/api/src/metrics.ts),
+      # by route pattern so one slow endpoint does not hide in an averaged-out
+      # total.
+      - alert: SlowResponses
+        expr: >-
+          histogram_quantile(0.95,
+            sum(rate(http_request_duration_seconds_bucket[5m])) by (le, route)
+          ) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Медленные ответы API: {{ $labels.route }}"
+          description: >-
+            95-й перцентиль времени ответа маршрута {{ $labels.route }} превышает
+            500 мс на протяжении 5 минут (сейчас {{ $value | humanizeDuration }}).
+
+      # Customer's ТЗ p.17, "Обработка ошибок при загрузке": a process or a
+      # file that failed even after every retry (app.pipeline) is worth an
+      # operator's attention regardless of how many succeeded around it.
+      - alert: ProcessingFailures
+        expr: >-
+          increase(inspector_processes_total{result="failed"}[15m]) > 0
+          or
+          increase(inspector_files_processed_total{result="failed"}[15m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Ошибки обработки в worker"
+          description: >-
+            За последние 15 минут worker завершил хотя бы одну обработку пакета
+            или файла с ошибкой после исчерпания всех повторных попыток.
+
+      # A target that stopped answering scrapes at all - covers a crashed or
+      # unreachable api/worker/prometheus before any of their own metrics
+      # would even show it.
+      - alert: TargetDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Цель Prometheus недоступна: {{ $labels.job }}"
+          description: >-
+            Цель {{ $labels.job }} ({{ $labels.instance }}) не отвечает на
+            сбор метрик более 1 минуты.

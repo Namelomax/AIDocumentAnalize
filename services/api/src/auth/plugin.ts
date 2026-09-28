@@ -10,7 +10,10 @@ declare module '@fastify/jwt' {
   }
 }
 
-const PUBLIC = new Set(['GET /api/v1/health', 'POST /api/v1/auth/login']);
+// GET /metrics: prom-client's own registry, scraped by Prometheus directly
+// (not through the web container's nginx, which only forwards /api/ -
+// see services/web/nginx.conf). Prometheus has no JWT of its own to send.
+const PUBLIC = new Set(['GET /api/v1/health', 'POST /api/v1/auth/login', 'GET /metrics']);
 
 export const authPlugin = fp(async (app) => {
   app.addHook('onRequest', async (request, reply) => {

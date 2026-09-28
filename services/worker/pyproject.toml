@@ -10,6 +10,9 @@ dependencies = [
   "pymupdf>=1.24.0",
   "pyyaml>=6.0",
   "python-json-logger>=2.0.7",
+  # Pinned exactly (not >=): the /metrics exporter's client library, whose
+  # wire format Prometheus itself depends on staying stable across the stand.
+  "prometheus-client==0.26.0",
 ]
 
 [project.optional-dependencies]

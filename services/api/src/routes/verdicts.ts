@@ -4,6 +4,7 @@ import type { Check } from '@prisma/client';
 import { prisma } from '../db.js';
 import { requireRole } from '../auth/plugin.js';
 import { audit } from '../audit.js';
+import { compositeSplitsTotal, finalizationsTotal, verdictsTotal } from '../metrics.js';
 import { visibleCheckWhere } from '../checks/visibility.js';
 import { buildFinding, type CheckWithFragments } from '../protocol/view.js';
 import { paramsByCode, inspectorsById, atomsByParent, loadProtocolResponse } from './protocols.js';
@@ -166,6 +167,8 @@ export async function verdictRoutes(app: FastifyInstance) {
         return updatedCheck;
       });
 
+      verdictsTotal.labels(body.decision).inc();
+
       await audit(request, 'VERDICT', check.objectId, {
         check_id: check.id,
         decision: body.decision,
@@ -211,6 +214,8 @@ export async function verdictRoutes(app: FastifyInstance) {
         data: { splitBy: request.user.id, splitAt: new Date() },
         include: { atoms: { include: { fragments: true } } },
       });
+
+      compositeSplitsTotal.inc();
 
       await audit(request, 'COMPOSITE_SPLIT', check.objectId, {
         check_id: check.id,
@@ -316,6 +321,8 @@ export async function verdictRoutes(app: FastifyInstance) {
         });
         await tx.process.update({ where: { id: protocol.processId }, data: { status: 'FINALIZED' } });
       });
+
+      finalizationsTotal.inc();
 
       await audit(request, 'PROTOCOL_FINALIZED', protocol.objectId, { protocol_id: protocol.id });
 

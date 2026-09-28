@@ -1,0 +1,30 @@
+# Customer's ТЗ p.31: "Интеграция с Prometheus для сбора метрик". The stand
+# is offline (docker-compose.yml's own comments on api/worker), so every
+# target here is one of our own services on the compose network - nothing
+# scraped ever leaves it.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/alert-rules.yml
+
+scrape_configs:
+  # Prometheus itself: TargetDown (alert-rules.yml) also fires on this job if
+  # the process cannot scrape its own /metrics, which is as good a canary for
+  # "something is badly wrong" as any.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["api:3000"]
+
+  - job_name: worker
+    # app.main starts prometheus_client's HTTP server on METRICS_PORT
+    # (services/worker/app/main.py); its default metrics path is already
+    # /metrics.
+    static_configs:
+      - targets: ["worker:9100"]

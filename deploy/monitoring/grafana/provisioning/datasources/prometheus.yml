@@ -1,0 +1,12 @@
+# Provisioned so the stand has a working datasource the moment "docker
+# compose up" finishes - nothing to click through by hand on a stand no one
+# on the team is present for.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false

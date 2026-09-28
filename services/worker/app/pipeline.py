@@ -29,6 +29,10 @@ from app.explication.compare import (
 from app.explication.functions import NamePair, compare_room_functions, normalize_room_name
 from app.explication.parse import Room, find_floor_totals, find_rooms, room_key
 from app.llm.provider import LlmUnavailable, provider_from_config
+from app.metrics import (
+    file_attempts_total, files_processed_total, findings_total,
+    process_duration_seconds, processes_total,
+)
 from app.params.engine import evaluate_all
 from app.params.specs import ParamSpec, load_specs
 from app.pdf.extract import ExtractedBlock, ExtractedLine, ExtractedPage, extract_pages
@@ -121,6 +125,7 @@ async def _extract_document_pages(process_id: str, files, db, storage, config) -
 
         last_exc: BaseException | None = None
         for attempt in range(1, attempts_allowed + 1):
+            file_attempts_total.inc()
             try:
                 stored = await _extract_one_file(record, db, storage, config.file_processing_timeout_s)
                 logger.info("pages extracted", extra={
@@ -146,8 +151,10 @@ async def _extract_document_pages(process_id: str, files, db, storage, config) -
                 })
 
         if last_exc is None:
+            files_processed_total.labels(result="ok").inc()
             continue
 
+        files_processed_total.labels(result="failed").inc()
         message = (
             f"Не удалось обработать файл «{record.file_name}» после "
             f"{attempts_allowed} попыток: {last_exc}"
@@ -586,6 +593,24 @@ async def _explication_checks(process_id: str, object_id: str, files, db,
     return checks
 
 
+# The three statuses an inspector's screen ever shows as a finding (section
+# 9.2/9.5). A completeness-only row (finding_status None) is a statement
+# about input quality, never a finding - see _completeness_check's docstring.
+_FINDING_STATUSES = ("CANDIDATE", "NEGATIVE_VERIFIED", "SUSPICION")
+
+
+def _record_findings_metrics(checks: list[dict]) -> None:
+    """Count one run's findings by status, composite atoms included -
+    save_checks inserts them as their own rows (_room_finding_check's own
+    comment), so they are findings of their own for this count too."""
+    for check in checks:
+        if check.get("finding_status") in _FINDING_STATUSES:
+            findings_total.labels(status=check["finding_status"]).inc()
+        for atom in check.get("atoms", []):
+            if atom.get("finding_status") in _FINDING_STATUSES:
+                findings_total.labels(status=atom["finding_status"]).inc()
+
+
 def input_manifest_hash(process, files) -> str:
     """The fingerprint of what a protocol was computed from.
 
@@ -777,6 +802,8 @@ async def _process_start_once(process_id: str, db, storage, config) -> None:
             process.object_id, spec, specs.version, "matrix", outcome.status, outcome.reason,
         ))
 
+    _record_findings_metrics(checks)
+
     try:
         await db.save_checks(process_id, process.object_id, checks)
     except Exception as exc:  # noqa: BLE001 - the protocol still reaches READY without it
@@ -851,9 +878,12 @@ async def process_start(process_id: str, db, storage, config) -> None:
     """
     attempts_allowed = 1 + max(config.processing_retries, 0)
     last_exc: BaseException | None = None
+    started = time.monotonic()
     for attempt in range(1, attempts_allowed + 1):
         try:
             await _process_start_once(process_id, db, storage, config)
+            process_duration_seconds.observe(time.monotonic() - started)
+            processes_total.labels(result="ready").inc()
             return
         except asyncio.CancelledError:
             raise
@@ -865,6 +895,9 @@ async def process_start(process_id: str, db, storage, config) -> None:
                 "attempts": attempts_allowed,
                 "error": str(exc) or exc.__class__.__name__,
             })
+
+    process_duration_seconds.observe(time.monotonic() - started)
+    processes_total.labels(result="failed").inc()
 
     message = f"Обработка пакета завершилась ошибкой: {last_exc}"
     try:

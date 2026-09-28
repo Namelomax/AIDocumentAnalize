@@ -5,6 +5,7 @@ import type { UserRole } from '@prisma/client';
 import { config } from './config.js';
 import { loggerOptions } from './logger.js';
 import { healthRoutes } from './routes/health.js';
+import { metricsRoutes } from './routes/metrics.js';
 import { documentRoutes } from './routes/documents.js';
 import { objectRoutes } from './routes/objects.js';
 import { processRoutes } from './routes/processes.js';
@@ -21,6 +22,7 @@ import { ensureBucket } from './storage.js';
 import { seedDemoUsers } from './auth/seed.js';
 import { authPlugin } from './auth/plugin.js';
 import { enterRequestContext, setCurrentUser } from './auth/context.js';
+import { httpRequestDuration } from './metrics.js';
 
 export interface BuildServerOptions {
   logStream?: NodeJS.WritableStream;
@@ -64,8 +66,20 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
     return crypto.randomUUID();
   });
 
+  // Section 13/customer's ТЗ p.31: one histogram sample per finished
+  // request, labelled by the route *pattern* (never request.url - see
+  // metrics.ts's own comment on why). onResponse rather than onRequest so
+  // reply.elapsedTime and reply.statusCode are already final.
+  app.addHook('onResponse', async (request, reply) => {
+    const route = request.routeOptions.url ?? 'unmatched_route';
+    httpRequestDuration
+      .labels(request.method, route, String(reply.statusCode))
+      .observe(reply.elapsedTime / 1000);
+  });
+
   await app.register(authPlugin);
   await app.register(healthRoutes);
+  await app.register(metricsRoutes);
   await app.register(documentRoutes);
   await app.register(objectRoutes);
   await app.register(processRoutes);

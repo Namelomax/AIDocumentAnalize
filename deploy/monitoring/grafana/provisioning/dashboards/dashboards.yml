@@ -1,0 +1,13 @@
+# Points Grafana at the JSON dashboard baked into the image
+# (deploy/monitoring/grafana/dashboards, mounted read-only) so it is already
+# there on first login.
+apiVersion: 1
+
+providers:
+  - name: Инспектор ИИ
+    folder: ""
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards

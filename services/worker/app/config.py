@@ -35,6 +35,11 @@ class Config:
     # working unchanged.
     file_processing_timeout_s: float = 300.0
     processing_retries: int = 2
+    # Customer's ТЗ p.31, "Интеграция с Prometheus": the worker has no HTTP
+    # server of its own otherwise, so /metrics gets a dedicated port rather
+    # than sharing one with anything else. Defaulted here too, same reason as
+    # the two fields above.
+    metrics_port: int = 9100
 
 
 def load_config() -> Config:
@@ -53,4 +58,5 @@ def load_config() -> Config:
         llm_timeout_s=float(os.environ.get("LLM_TIMEOUT_S", "60")),
         file_processing_timeout_s=float(os.environ.get("FILE_PROCESSING_TIMEOUT_S", "300")),
         processing_retries=int(os.environ.get("PROCESSING_RETRIES", "2")),
+        metrics_port=int(os.environ.get("METRICS_PORT", "9100")),
     )

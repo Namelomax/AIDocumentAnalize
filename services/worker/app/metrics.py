@@ -1,0 +1,72 @@
+"""Prometheus metrics for the worker.
+
+Customer's ТЗ p.31: "Интеграция с Prometheus для сбора метрик". Counters and
+histograms live in this one module, separate from app.main (which only
+starts the HTTP exporter) and from the pipeline/LLM client (which record
+events), so a test can import and assert on a metric directly without
+touching an HTTP server at all - the module-level registry prometheus_client
+keeps by default is enough.
+
+Process-level metrics (CPU seconds, RSS, open fds, GC) are not defined here:
+prometheus_client registers its own ProcessCollector and GCCollector on
+import, before app.main ever calls start_http_server.
+"""
+
+from prometheus_client import Counter, Histogram
+
+# One PDF file's extraction, once all retries for it are exhausted
+# (app.pipeline._extract_document_pages). "ok" also covers a file that only
+# succeeded on a retry - the file's own outcome, not any one attempt's.
+files_processed_total = Counter(
+    "inspector_files_processed_total",
+    "PDF files whose extraction finished, by final outcome",
+    ["result"],
+)
+
+# Every extraction attempt, including ones that were later retried - the
+# ratio against inspector_files_processed_total is how many retries a run
+# actually needed.
+file_attempts_total = Counter(
+    "inspector_file_attempts_total",
+    "PDF text-extraction attempts across all files, including retries",
+)
+
+# One process.start task, once every in-process retry
+# (app.pipeline.process_start) has been exhausted one way or the other.
+processes_total = Counter(
+    "inspector_processes_total",
+    "process.start tasks completed, by final outcome",
+    ["result"],
+)
+
+# Wall-clock time for one process.start task end to end, success or failure -
+# the customer's "время ответа" for the worker side of the pipeline.
+process_duration_seconds = Histogram(
+    "inspector_process_duration_seconds",
+    "Time to process one process.start task, success or failure",
+)
+
+# One row per check written by a run, counted only for the three statuses an
+# inspector's screen actually shows as a finding (section 9.2/9.5) -
+# completeness-only rows (finding_status is null) are not findings and are
+# never counted here.
+findings_total = Counter(
+    "inspector_findings_total",
+    "Findings written per run, by finding status",
+    ["status"],
+)
+
+# Calls to the configured language model (app.llm.provider.ChatProvider).
+# "error" covers everything complete_json turns into LlmUnavailable -
+# unreachable server, timeout, or a response that was not the JSON shape
+# asked for.
+llm_requests_total = Counter(
+    "inspector_llm_requests_total",
+    "Calls to the configured language model, by outcome",
+    ["result"],
+)
+
+llm_request_duration_seconds = Histogram(
+    "inspector_llm_request_duration_seconds",
+    "Language model call latency",
+)
