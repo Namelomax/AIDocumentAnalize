@@ -282,82 +282,103 @@ class Database:
         )
         return [_page_line_row(record) for record in records]
 
+    async def _insert_check(self, connection, process_id: str, object_id: str,
+                             check: dict, parent_check_id: str | None) -> str:
+        """One row of `checks` (plus its evidence_fragments), atomic or a
+        composite's own row - the two only differ in whether
+        `parent_check_id` is set. Returns the new row's id, so a composite's
+        atoms (see save_checks) can be inserted under it.
+        """
+        check_id = str(uuid.uuid4())
+        await connection.execute(
+            """
+            INSERT INTO checks (
+                id, process_id, object_id, param_id, param_code,
+                evidence_group_id, subject, expected_value, actual_value,
+                delta, completeness_status, finding_status, review_priority,
+                rationale, matrix_version, detection_method, confidence,
+                parent_check_id
+            )
+            VALUES (
+                $1, $2, $3, (SELECT id FROM params WHERE code = $4), $4,
+                $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+            )
+            """,
+            check_id,
+            process_id,
+            object_id,
+            check["param_code"],
+            check["evidence_group_id"],
+            check.get("subject"),
+            check.get("expected_value"),
+            check.get("actual_value"),
+            check.get("delta"),
+            check["completeness_status"],
+            check.get("finding_status"),
+            check["review_priority"],
+            check.get("rationale"),
+            check["matrix_version"],
+            # Free-search hypotheses only (section 9.5): how the
+            # model found this and how sure it was. Null for
+            # every matrix check - (SELECT id FROM params …)
+            # above is null for SEM-ROOM-FN the same way, since
+            # it is not a matrix parameter either.
+            check.get("detection_method"),
+            check.get("confidence"),
+            parent_check_id,
+        )
+
+        fragments = check.get("fragments") or []
+        if fragments:
+            await connection.executemany(
+                """
+                INSERT INTO evidence_fragments (
+                    id, check_id, evidence_group_id, file_id, file_sha256,
+                    stage, document_code, revision, approval_status,
+                    sheet_page, x0, y0, x1, y1, extracted_value, role
+                )
+                VALUES (
+                    $1, $2, $3, $4, $5, $6::"DocStage", $7, $8,
+                    $9::"ApprovalStatus", $10, $11, $12, $13, $14, $15, $16
+                )
+                """,
+                [
+                    (
+                        str(uuid.uuid4()), check_id, check["evidence_group_id"],
+                        fragment["file_id"], fragment["file_sha256"], fragment["stage"],
+                        fragment.get("document_code"), fragment.get("revision"),
+                        fragment["approval_status"], fragment["sheet_page"],
+                        fragment["x0"], fragment["y0"], fragment["x1"], fragment["y1"],
+                        fragment.get("extracted_value"), fragment["role"],
+                    )
+                    for fragment in fragments
+                ],
+            )
+        return check_id
+
     async def save_checks(self, process_id: str, object_id: str, checks: list[dict]) -> None:
         """Replace every check recorded for a process with a fresh set.
 
         A re-run must not accumulate stale findings alongside new ones: the
-        delete cascades to evidence_fragments, so the process ends up with
-        exactly one set of checks whatever was there before - the same
+        delete cascades to evidence_fragments (and, via parent_check_id ON
+        DELETE CASCADE, to any composite's atoms), so the process ends up
+        with exactly one set of checks whatever was there before - the same
         replace-in-one-transaction shape as save_pages uses for a file.
+
+        A composite candidate (app.explication.compare) carries its own
+        members under `check["atoms"]`, each an ordinary check dict built
+        the same way an atomic finding always was. The composite's own row
+        is inserted first so its atoms can be linked to it by id; an atom
+        stays invisible to the inspector (services/api's visibility rule)
+        until the composite is split.
         """
         async with self._pool.acquire() as connection:
             async with connection.transaction():
                 await connection.execute("DELETE FROM checks WHERE process_id = $1", process_id)
                 for check in checks:
-                    check_id = str(uuid.uuid4())
-                    await connection.execute(
-                        """
-                        INSERT INTO checks (
-                            id, process_id, object_id, param_id, param_code,
-                            evidence_group_id, subject, expected_value, actual_value,
-                            delta, completeness_status, finding_status, review_priority,
-                            rationale, matrix_version, detection_method, confidence
-                        )
-                        VALUES (
-                            $1, $2, $3, (SELECT id FROM params WHERE code = $4), $4,
-                            $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
-                        )
-                        """,
-                        check_id,
-                        process_id,
-                        object_id,
-                        check["param_code"],
-                        check["evidence_group_id"],
-                        check.get("subject"),
-                        check.get("expected_value"),
-                        check.get("actual_value"),
-                        check.get("delta"),
-                        check["completeness_status"],
-                        check.get("finding_status"),
-                        check["review_priority"],
-                        check.get("rationale"),
-                        check["matrix_version"],
-                        # Free-search hypotheses only (section 9.5): how the
-                        # model found this and how sure it was. Null for
-                        # every matrix check - (SELECT id FROM params …)
-                        # above is null for SEM-ROOM-FN the same way, since
-                        # it is not a matrix parameter either.
-                        check.get("detection_method"),
-                        check.get("confidence"),
-                    )
-
-                    fragments = check.get("fragments") or []
-                    if not fragments:
-                        continue
-                    await connection.executemany(
-                        """
-                        INSERT INTO evidence_fragments (
-                            id, check_id, evidence_group_id, file_id, file_sha256,
-                            stage, document_code, revision, approval_status,
-                            sheet_page, x0, y0, x1, y1, extracted_value, role
-                        )
-                        VALUES (
-                            $1, $2, $3, $4, $5, $6::"DocStage", $7, $8,
-                            $9::"ApprovalStatus", $10, $11, $12, $13, $14, $15, $16
-                        )
-                        """,
-                        [
-                            (
-                                str(uuid.uuid4()), check_id, check["evidence_group_id"],
-                                fragment["file_id"], fragment["file_sha256"], fragment["stage"],
-                                fragment.get("document_code"), fragment.get("revision"),
-                                fragment["approval_status"], fragment["sheet_page"],
-                                fragment["x0"], fragment["y0"], fragment["x1"], fragment["y1"],
-                                fragment.get("extracted_value"), fragment["role"],
-                            )
-                            for fragment in fragments
-                        ],
-                    )
+                    check_id = await self._insert_check(connection, process_id, object_id, check, None)
+                    for atom in check.get("atoms") or []:
+                        await self._insert_check(connection, process_id, object_id, atom, check_id)
 
     async def create_protocol(
         self,

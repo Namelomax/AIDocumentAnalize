@@ -4,8 +4,9 @@ import type { Check } from '@prisma/client';
 import { prisma } from '../db.js';
 import { requireRole } from '../auth/plugin.js';
 import { audit } from '../audit.js';
+import { visibleCheckWhere } from '../checks/visibility.js';
 import { buildFinding, type CheckWithFragments } from '../protocol/view.js';
-import { paramsByCode, inspectorsById, loadProtocolResponse } from './protocols.js';
+import { paramsByCode, inspectorsById, atomsByParent, loadProtocolResponse } from './protocols.js';
 
 const checkParamsSchema = z.object({ check_id: z.string().uuid() });
 const protocolParamsSchema = z.object({ protocol_id: z.string().uuid() });
@@ -48,9 +49,17 @@ function isDecidable(check: Check): boolean {
   return check.verifiedBy !== null;
 }
 
+// Section 9.2's "нельзя подтвердить частично": a composite candidate
+// (checks with atoms of their own, none split yet) must be split into its
+// atomic findings before any one of them can be decided.
+const COMPOSITE_NOT_SPLIT_MESSAGE =
+  'Составной кандидат нельзя подтвердить частично — сначала разделите его на атомарные находки';
+
 async function findingResponse(check: CheckWithFragments) {
-  const [params, inspectors] = await Promise.all([paramsByCode([check]), inspectorsById([check])]);
-  return buildFinding(check, params.get(check.paramCode), inspectors);
+  const [params, inspectors, atoms] = await Promise.all([
+    paramsByCode([check]), inspectorsById([check]), atomsByParent([check]),
+  ]);
+  return buildFinding(check, params.get(check.paramCode), inspectors, atoms.get(check.id));
 }
 
 export async function verdictRoutes(app: FastifyInstance) {
@@ -72,7 +81,10 @@ export async function verdictRoutes(app: FastifyInstance) {
         return reply.code(400).send({ error: 'REJECTION_REQUIRES_REASON' });
       }
 
-      const check = await prisma.check.findUnique({ where: { id: paramsParsed.data.check_id } });
+      const check = await prisma.check.findUnique({
+        where: { id: paramsParsed.data.check_id },
+        include: { parent: true, atoms: { select: { id: true } } },
+      });
       if (!check) return reply.code(404).send({ error: 'FINDING_NOT_FOUND' });
 
       const protocol = await prisma.protocol.findFirst({
@@ -84,6 +96,18 @@ export async function verdictRoutes(app: FastifyInstance) {
       // Section 9.3: once finalized, no further decision on that process.
       if (protocol.status === 'PROTOCOL_FINALIZED') {
         return reply.code(409).send({ error: 'PROTOCOL_FINALIZED' });
+      }
+
+      // A composite candidate cannot be decided as a whole - it must be
+      // split first (POST /api/v1/findings/:id/split).
+      if (check.atoms.length > 0 && check.splitAt === null) {
+        return reply.code(409).send({ error: 'COMPOSITE_NOT_SPLIT', message: COMPOSITE_NOT_SPLIT_MESSAGE });
+      }
+      // An atom of a composite that has not been split yet is not a finding
+      // of its own - same visibility rule as everywhere else it is checked
+      // (checks/visibility.ts), enforced here too against a direct call.
+      if (check.parentCheckId !== null && check.parent?.splitAt == null) {
+        return reply.code(409).send({ error: 'NOT_A_CANDIDATE' });
       }
 
       if (!isDecidable(check)) {
@@ -127,7 +151,7 @@ export async function verdictRoutes(app: FastifyInstance) {
         // verification as it happens - VERIFYING while candidates remain,
         // VERIFICATION_COMPLETED once none do.
         const remainingCandidates = await tx.check.count({
-          where: { processId: check.processId, findingStatus: 'CANDIDATE' },
+          where: { processId: check.processId, findingStatus: 'CANDIDATE', ...visibleCheckWhere },
         });
         const done = remainingCandidates === 0;
         await tx.protocol.update({
@@ -149,6 +173,53 @@ export async function verdictRoutes(app: FastifyInstance) {
       });
 
       return findingResponse(updated as CheckWithFragments);
+    },
+  );
+
+  app.post(
+    '/api/v1/findings/:check_id/split',
+    { preHandler: requireRole('INSPECTOR', 'SUPERVISOR', 'ADMIN') },
+    async (request, reply) => {
+      const paramsParsed = checkParamsSchema.safeParse(request.params);
+      if (!paramsParsed.success) return reply.code(400).send({ error: 'VALIDATION_FAILED' });
+
+      const check = await prisma.check.findUnique({
+        where: { id: paramsParsed.data.check_id },
+        include: { atoms: true },
+      });
+      if (!check) return reply.code(404).send({ error: 'FINDING_NOT_FOUND' });
+
+      // Only a composite - a check with atoms of its own - can be split.
+      if (check.atoms.length === 0) return reply.code(409).send({ error: 'NOT_A_COMPOSITE' });
+      if (check.splitAt !== null) return reply.code(409).send({ error: 'ALREADY_SPLIT' });
+
+      const protocol = await prisma.protocol.findFirst({
+        where: { processId: check.processId },
+        orderBy: { version: 'desc' },
+      });
+      if (!protocol) return reply.code(404).send({ error: 'PROTOCOL_NOT_FOUND' });
+
+      if (protocol.status === 'PROTOCOL_FINALIZED') {
+        return reply.code(409).send({ error: 'PROTOCOL_FINALIZED' });
+      }
+
+      // The atoms already exist (the worker inserted them alongside the
+      // composite - app.db.save_checks); splitting only ever reveals them by
+      // setting split_at, it never creates or copies a row.
+      const updated = await prisma.check.update({
+        where: { id: check.id },
+        data: { splitBy: request.user.id, splitAt: new Date() },
+        include: { atoms: { include: { fragments: true } } },
+      });
+
+      await audit(request, 'COMPOSITE_SPLIT', check.objectId, {
+        check_id: check.id,
+        atom_ids: updated.atoms.map((atom) => atom.id),
+      });
+
+      const atoms = updated.atoms as CheckWithFragments[];
+      const [params, inspectors] = await Promise.all([paramsByCode(atoms), inspectorsById(atoms)]);
+      return { atoms: atoms.map((atom) => buildFinding(atom, params.get(atom.paramCode), inspectors)) };
     },
   );
 
@@ -231,7 +302,7 @@ export async function verdictRoutes(app: FastifyInstance) {
       // Section 9.3, algorithm step 4: finalization is refused while any
       // candidate is still undecided, and the inspector is told which ones.
       const pending = await prisma.check.findMany({
-        where: { processId: protocol.processId, findingStatus: 'CANDIDATE' },
+        where: { processId: protocol.processId, findingStatus: 'CANDIDATE', ...visibleCheckWhere },
         select: { id: true },
       });
       if (pending.length > 0) {

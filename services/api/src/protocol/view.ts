@@ -28,6 +28,23 @@ export interface EvidenceView {
   image_url: string;
 }
 
+// One member of an unsplit composite candidate (module docstring below,
+// buildFinding) - only what the inspector needs to see before splitting;
+// its evidence/decision live on the atom's own finding once it is split and
+// visible on its own.
+export interface CompositeAtomView {
+  id: string;
+  param_code: string;
+  title: string;
+  expected_value: string | null;
+  actual_value: string | null;
+  delta: string | null;
+}
+
+export interface CompositeView {
+  atoms: CompositeAtomView[];
+}
+
 export interface DecisionView {
   status: string | null;
   reason_code: string | null;
@@ -56,6 +73,11 @@ export interface FindingView {
   sources: string[];
   evidence: EvidenceView[];
   decision: DecisionView | null;
+  // Set only for an unsplit composite candidate (services/api's visibility
+  // rule, checks/visibility.ts) - its members, so the inspector can see what
+  // a split would produce before doing it. Never set on an atom or an
+  // ordinary, atomic finding.
+  composite?: CompositeView;
 }
 
 export interface CompletenessRow {
@@ -140,6 +162,10 @@ function normReference(param: ParamForView | undefined): string | null {
 // Anything the worker didn't emit one of these three shapes for is shown
 // as-is rather than guessed at.
 function subjectLabel(subject: string): string {
+  // A composite candidate's own subject (worker's app.explication.compare,
+  // `f"rooms {first}..{last}"`) - a run of consecutive rooms, not one room.
+  const composite = subject.match(/^rooms (.+)\.\.(.+)$/);
+  if (composite) return `помещения ${composite[1]}–${composite[2]}`;
   const room = subject.match(/^room (.+)$/);
   if (room) return `помещение ${room[1]}`;
   if (subject === 'floor total') return 'итог по этажу';
@@ -171,10 +197,27 @@ function decisionView(
   };
 }
 
+function buildCompositeAtomView(atom: Check): CompositeAtomView {
+  return {
+    id: atom.id,
+    param_code: atom.paramCode,
+    // A compact label, not the full findingTitle: the composite card lists
+    // every atom next to each other, where the parameter name (shared by
+    // all of them) would only repeat.
+    title: atom.subject ? subjectLabel(atom.subject) : atom.paramCode,
+    expected_value: atom.expectedValue,
+    actual_value: atom.actualValue,
+    delta: atom.delta,
+  };
+}
+
 export function buildFinding(
   check: CheckWithFragments,
   param: ParamForView | undefined,
   inspectorsById: Map<string, InspectorForView>,
+  // The composite's own members, when `check` is an unsplit composite -
+  // absent (or empty) for every atom and every ordinary, atomic finding.
+  compositeAtoms?: Check[],
 ): FindingView {
   return {
     id: check.id,
@@ -197,6 +240,9 @@ export function buildFinding(
     sources: [...new Set(check.fragments.map((fragment) => fragment.stage))],
     evidence: check.fragments.map(evidenceView),
     decision: decisionView(check, inspectorsById),
+    composite: compositeAtoms && compositeAtoms.length > 0
+      ? { atoms: compositeAtoms.map(buildCompositeAtomView) }
+      : undefined,
   };
 }
 
@@ -300,6 +346,11 @@ export function buildProtocolResponse(
   checks: CheckWithFragments[],
   paramsByCode: Map<string, ParamForView>,
   inspectorsById: Map<string, InspectorForView>,
+  // An unsplit composite's own members, keyed by the composite's check id
+  // (routes/protocols.ts's atomsByParent) - empty by default so a caller
+  // that has none to give (e.g. a route that never has composites in reach)
+  // does not have to build an empty Map just to call this.
+  compositeAtomsByParent: Map<string, Check[]> = new Map(),
 ): ProtocolResponse {
   const { findings, suspicions, completeness } = splitChecks(checks);
   return {
@@ -317,7 +368,9 @@ export function buildProtocolResponse(
     finalized_at: protocol.finalizedAt,
     summary: buildSummary(checks),
     completeness: completeness.map((check) => buildCompletenessRow(check, paramsByCode.get(check.paramCode))),
-    findings: findings.map((check) => buildFinding(check, paramsByCode.get(check.paramCode), inspectorsById)),
+    findings: findings.map((check) => buildFinding(
+      check, paramsByCode.get(check.paramCode), inspectorsById, compositeAtomsByParent.get(check.id),
+    )),
     suspicions: suspicions.map((check) => buildSuspicion(check, paramsByCode.get(check.paramCode), inspectorsById)),
   };
 }

@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '../db.js';
 import { audit } from '../audit.js';
+import { visibleCheckWhere } from '../checks/visibility.js';
 import { indicatorFor, type LatestProtocolForIndicator } from '../objects/indicator.js';
 
 const createSchema = z.object({
@@ -67,7 +68,9 @@ async function latestProtocolCountsByProcess(processIds: string[]): Promise<Map<
 
   const grouped = await prisma.check.groupBy({
     by: ['processId', 'findingStatus'],
-    where: { processId: { in: processIds } },
+    // An unsplit composite counts once, under its own CANDIDATE row; its
+    // hidden atoms never count at all (checks/visibility.ts).
+    where: { processId: { in: processIds }, ...visibleCheckWhere },
     _count: { _all: true },
   });
   const countsByProcess = new Map<string, { confirmed: number; candidates: number; clarifications: number }>();

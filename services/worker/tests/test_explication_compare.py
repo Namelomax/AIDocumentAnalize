@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from app.explication.compare import SheetRooms, compare_sheets, pair_sheets
-from app.explication.parse import Room, find_floor_totals, find_rooms
+from app.explication.compare import SheetRooms, _union, compare_sheets, pair_sheets
+from app.explication.parse import FloorTotal, Room, find_floor_totals, find_rooms
 from app.pdf.extract import extract_pages
 from app.pdf.geometry import NormalizedBox
 
@@ -17,6 +17,10 @@ def sheet(file_id, rooms, totals=()):
 
 def room(number, area):
     return Room(number, area, None, BOX)
+
+
+def room_in(number, area, scope):
+    return Room(number, area, None, BOX, scope)
 
 
 def test_equal_rooms_are_verified_negatives():
@@ -102,6 +106,84 @@ def test_an_absence_without_neighbours_proves_nothing():
     assert not [f for f in compare_sheets(pd, rd) if f.subject == "room 1.109"]
 
 
+def test_a_run_of_three_candidates_becomes_one_composite_with_three_atoms():
+    pd = sheet("pd", [room("1", 10.0), room("2", 10.0), room("3", 10.0), room("4", 10.0)])
+    rd = sheet("rd", [room("1", 10.0), room("2", 12.0), room("3", 12.0), room("4", 12.0)])
+
+    findings = compare_sheets(pd, rd)
+    assert [(f.subject, f.status) for f in findings] == [
+        ("room 1", "NEGATIVE_VERIFIED"),
+        ("rooms 2..4", "CANDIDATE"),
+    ]
+    composite = findings[1]
+    assert [a.subject for a in composite.atoms] == ["room 2", "room 3", "room 4"]
+    assert (composite.expected, composite.actual, composite.delta) == ("30.00", "36.00", "+6.00")
+    # The union of every atom's own evidence box on each side.
+    assert composite.expected_box == _union([a.expected_box for a in composite.atoms])
+    assert composite.actual_box == _union([a.actual_box for a in composite.atoms])
+
+
+def test_a_negative_room_in_the_middle_splits_the_run():
+    pd = sheet("pd", [room(str(n), 10.0) for n in range(1, 6)])
+    rd = sheet("rd", [
+        room("1", 12.0), room("2", 12.0),  # candidates
+        room("3", 10.0),                   # unchanged - breaks the run
+        room("4", 12.0), room("5", 12.0),  # candidates
+    ])
+
+    findings = compare_sheets(pd, rd)
+    candidates = {f.subject: f for f in findings if f.status == "CANDIDATE"}
+    assert set(candidates) == {"rooms 1..2", "rooms 4..5"}
+    assert len(candidates["rooms 1..2"].atoms) == 2
+    assert len(candidates["rooms 4..5"].atoms) == 2
+    negative = {f.subject for f in findings if f.status == "NEGATIVE_VERIFIED"}
+    assert "room 3" in negative
+
+
+def test_a_single_candidate_stays_atomic():
+    pd = sheet("pd", [room("1", 10.0), room("2", 10.0), room("3", 10.0)])
+    rd = sheet("rd", [room("1", 10.0), room("2", 12.0), room("3", 10.0)])
+
+    findings = compare_sheets(pd, rd)
+    candidates = {f.subject: f for f in findings if f.status == "CANDIDATE"}
+    assert list(candidates) == ["room 2"]
+    assert candidates["room 2"].atoms == ()
+
+
+def test_different_scopes_never_merge_into_one_composite():
+    """Two independent tables (Алтуфьевское's ground floor vs. antresol)
+    whose room numbers happen to sit next to each other in table order must
+    never be read as one run - each table's own single candidate stays
+    atomic."""
+    pd = sheet("pd", [room_in("9", 10.0, "ground"), room_in("10", 10.0, "antresol")])
+    rd = sheet("rd", [room_in("9", 12.0, "ground"), room_in("10", 12.0, "antresol")])
+
+    findings = compare_sheets(pd, rd)
+    candidates = {f.subject: f for f in findings if f.status == "CANDIDATE"}
+    assert set(candidates) == {"room 9", "room 10"}
+    assert candidates["room 9"].atoms == ()
+    assert candidates["room 10"].atoms == ()
+
+
+def test_floor_total_never_joins_a_composite():
+    pd = sheet(
+        "pd", [room("1", 10.0), room("2", 10.0)],
+        totals=[FloorTotal("Итого", 100.0, BOX)],
+    )
+    rd = sheet(
+        "rd", [room("1", 12.0), room("2", 12.0)],
+        totals=[FloorTotal("Итого", 120.0, BOX)],
+    )
+
+    findings = compare_sheets(pd, rd)
+    subjects = [f.subject for f in findings]
+    assert "floor total" in subjects
+    total_finding = next(f for f in findings if f.subject == "floor total")
+    assert total_finding.atoms == ()
+    composite = next(f for f in findings if f.subject == "rooms 1..2")
+    assert "floor total" not in {a.subject for a in composite.atoms}
+
+
 def test_sheets_are_paired_by_shared_room_numbers():
     first = sheet("pd-1", [room(f"1.{i}", 1.0) for i in range(1, 11)])
     second = sheet("pd-2", [room(f"2.{i}", 1.0) for i in range(1, 11)])
@@ -158,23 +240,36 @@ class TestReferencePairs:
     def test_doo_pair_keeps_candidates_bounded_and_covers_the_pilot_rooms(self, pages):
         """DOO, лист 17/18 (Полярная 25): a systematic recalculation nudges
         almost every one of ~40 rooms by about one rounding step - unfiltered,
-        that was 38 candidates on a pilot markup naming one violation
-        (kitchen block, rooms 135-150). The two-part tolerance must cut that
-        down (ceiling: 20) while still keeping every room in the pilot's own
-        135-145 range whose change is unambiguous - more than one rounding
-        step *and* more than 1% - among the candidates, room 145
-        (13.7 -> 11.8) included.
+        that was 38 independent candidates on a pilot markup naming ONE
+        violation over ONE box spanning rows 134-149 (kitchen block,
+        DOO25-V01). The two-part tolerance already cuts the independent-room
+        count down; grouping consecutive CANDIDATE rooms into composites
+        (module docstring of app.explication.compare) must then collapse
+        that range into two composites - split only by room 146, whose own
+        change (2.60 -> 2.50) the same tolerance correctly calls
+        NEGATIVE_VERIFIED - leaving a handful of candidates total, nowhere
+        near the unfiltered 18.
         """
         findings = compare_sheets(self.sheet_of(pages, 17, "pd"), self.sheet_of(pages, 18, "rd"))
         candidates = {f.subject: f for f in findings if f.status == "CANDIDATE"}
 
-        assert len(candidates) <= 20
+        assert len(candidates) <= 6
 
-        expected_in_pilot_range = {
-            "135", "136", "137", "138", "139", "140", "141", "142", "143", "144", "145",
-        }
-        assert expected_in_pilot_range <= {
-            subject.removeprefix("room ") for subject in candidates
-        }
-        assert candidates["room 145"].expected == "13.70"
-        assert candidates["room 145"].actual == "11.80"
+        # The pilot's 134-149 kitchen block, minus room 146 (NEGATIVE_VERIFIED,
+        # within tolerance - the run correctly breaks there).
+        composite_a = candidates["rooms 134..145"]
+        assert len(composite_a.atoms) == 12
+        assert {a.subject for a in composite_a.atoms} == {f"room {n}" for n in range(134, 146)}
+        assert composite_a.expected == "114.70"
+        assert composite_a.actual == "110.40"
+        assert composite_a.delta == "-4.30"
+        room_145 = next(a for a in composite_a.atoms if a.subject == "room 145")
+        assert (room_145.expected, room_145.actual) == ("13.70", "11.80")
+
+        composite_b = candidates["rooms 147..149"]
+        assert len(composite_b.atoms) == 3
+        assert {a.subject for a in composite_b.atoms} == {"room 147", "room 148", "room 149"}
+
+        # Rooms outside the kitchen block stay their own, atomic candidates.
+        assert candidates["room 121"].atoms == ()
+        assert candidates["room 154"].atoms == ()

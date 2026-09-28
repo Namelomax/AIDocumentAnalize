@@ -146,6 +146,38 @@ describe('toFinding', () => {
     const finding = toFinding(findingFixture);
     expect(finding.decision).toBeUndefined();
   });
+
+  it('leaves composite undefined for an ordinary, atomic finding', () => {
+    const finding = toFinding(findingFixture);
+    expect(finding.composite).toBeUndefined();
+  });
+
+  it('maps an unsplit composite candidate into finding.composite.atoms', () => {
+    const finding = toFinding({
+      ...findingFixture,
+      title: 'Полезная / Расчетная площадь — помещения 134–149',
+      unit: 'м²',
+      composite: {
+        atoms: [
+          {
+            id: 'atom-1', param_code: 'M-003', title: 'помещение 134',
+            expected_value: '15.00', actual_value: '14.00', delta: '-1.00',
+          },
+          {
+            id: 'atom-2', param_code: 'M-003', title: 'помещение 149',
+            expected_value: '15.00', actual_value: '14.00', delta: '-1.00',
+          },
+        ],
+      },
+    });
+
+    expect(finding.composite).toBeDefined();
+    expect(finding.composite?.atoms).toHaveLength(2);
+    expect(finding.composite?.atoms[0]).toEqual({
+      id: 'atom-1', code: 'M-003', title: 'помещение 134',
+      expected: '15.00 м²', actual: '14.00 м²', delta: '-1.00',
+    });
+  });
 });
 
 describe('toSuspicion', () => {

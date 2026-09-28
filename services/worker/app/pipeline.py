@@ -304,9 +304,12 @@ def _room_finding_check(object_id: str, spec: ParamSpec, matrix_version: str,
     # floor or in another table) is not unique across a package with more
     # than one PD/RD sheet pair: the pair the finding came from - fixed
     # across re-runs, since file ids and page numbers do not change - is
-    # what actually makes the group id unique within the process.
+    # what actually makes the group id unique within the process. A
+    # composite's own subject ("rooms 134..149") is built the same way as an
+    # ordinary room's ("room 134"), so this scheme already keeps a composite
+    # and its own atoms apart without any change here.
     pair_id = f"{pd_sheet.file_id}#{pd_sheet.page_no}~{rd_sheet.file_id}#{rd_sheet.page_no}"
-    return {
+    check = {
         "param_code": spec.code,
         "evidence_group_id": f"{object_id}:{spec.code}:{pair_id}:{finding.subject}",
         "subject": finding.subject,
@@ -325,6 +328,17 @@ def _room_finding_check(object_id: str, spec: ParamSpec, matrix_version: str,
                       finding.actual, "actual"),
         ],
     }
+    # A composite candidate (app.explication.compare's module docstring)
+    # carries its own members as ordinary check dicts, built exactly the way
+    # every atomic finding always was - db.save_checks inserts them under
+    # this check's id (parent_check_id), invisible until an inspector splits
+    # the composite (POST /findings/:id/split, services/api).
+    if finding.atoms:
+        check["atoms"] = [
+            _room_finding_check(object_id, spec, matrix_version, pd_sheet, rd_sheet, atom, file_by_id)
+            for atom in finding.atoms
+        ]
+    return check
 
 
 def _sem_room_fn_not_comparable(object_id: str, matrix_version: str, group_label: str, reason: str) -> dict:

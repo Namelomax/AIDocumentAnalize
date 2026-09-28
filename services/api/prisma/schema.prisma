@@ -351,13 +351,26 @@ model Check {
   // The model's own confidence for a hypothesis. Kept for the inspector's
   // ordering only; it never turns a hypothesis into a candidate.
   confidence          Float?
+  // Composite candidates (worker's app.explication.compare: a run of >= 2
+  // consecutive changed rooms in one explication table, section 9.2's "нельзя
+  // подтвердить частично"). Null for an ordinary, atomic check. Set on an
+  // atom to the composite check it was split out of; the atom stays hidden
+  // (services/api's visibility rule) until that composite's splitAt is set.
+  parentCheckId       String?   @map("parent_check_id")
+  // Who split the composite this check is, and when - null until split.
+  // Meaningless on an atom (only ever set on the composite itself).
+  splitBy             String?   @map("split_by")
+  splitAt             DateTime? @map("split_at")
 
   process    Process            @relation(fields: [processId], references: [id], onDelete: Cascade)
   fragments  EvidenceFragment[]
   rejections RejectionLog[]
+  parent     Check?             @relation("CompositeSplit", fields: [parentCheckId], references: [id], onDelete: Cascade)
+  atoms      Check[]            @relation("CompositeSplit")
 
   @@unique([processId, evidenceGroupId])
   @@index([processId, findingStatus])
+  @@index([parentCheckId])
   @@map("checks")
 }
 

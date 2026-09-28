@@ -11,7 +11,7 @@ import EvidencePanel from '../components/EvidencePanel';
 import { SkeletonQueue, SkeletonEvidencePanel } from '../components/Skeleton';
 import { useToast } from '../components/Toast';
 import { reasonCodes, reasonLabels, approvalLabels } from '../labels';
-import { api, ApiError, getSession } from '../api/client';
+import { api, ApiError, splitComposite } from '../api/client';
 import { toFinding, type ApiFinding } from '../api/adapters';
 import type { Finding, ReasonCode, RevisionCard } from '../types';
 
@@ -19,12 +19,6 @@ interface Props {
   protocolId: string;
   onBack: () => void;
   onFinish: (protocolId: string) => void;
-}
-
-function nowStr(): string {
-  const d = new Date();
-  const p = (n: number) => String(n).padStart(2, '0');
-  return `${p(d.getDate())}.${p(d.getMonth() + 1)}.${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
 /* ─────────── Выбор редакции (CLARIFICATION_REQUIRED) ─────────── */
@@ -93,28 +87,35 @@ export default function VerificationScreen({ protocolId, onBack, onFinish }: Pro
   const [showReasons, setShowReasons] = useState(false);
   const [pendingReason, setPendingReason] = useState<ReasonCode | undefined>(undefined);
   const [selectedRevisionIdx, setSelectedRevisionIdx] = useState<0 | 1 | null>(null);
-  const [selectedAtoms, setSelectedAtoms] = useState<Record<string, boolean>>({});
   const [queueCompleted, setQueueCompleted] = useState(false);
+
+  // Shared by the initial load and by the split button below (Plan: a split
+  // composite's atoms only become ordinary candidates once the queue is
+  // re-fetched - the server, not this screen, decides what the queue is now).
+  const loadCandidates = async (): Promise<boolean> => {
+    try {
+      const response = await api<{ items: ApiFinding[] }>(
+        `/api/v1/protocols/${protocolId}/findings?status=CANDIDATE`,
+      );
+      setCandidates(response.items.map(toFinding));
+      return true;
+    } catch (err) {
+      setLoadError(err instanceof ApiError ? err.message : 'Не удалось загрузить кандидатов');
+      return false;
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setLoadError(null);
     (async () => {
-      try {
-        const response = await api<{ items: ApiFinding[] }>(
-          `/api/v1/protocols/${protocolId}/findings?status=CANDIDATE`,
-        );
-        if (cancelled) return;
-        setCandidates(response.items.map(toFinding));
-        setIndex(0);
-      } catch (err) {
-        if (!cancelled) setLoadError(err instanceof ApiError ? err.message : 'Не удалось загрузить кандидатов');
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
+      const ok = await loadCandidates();
+      if (!cancelled && ok) setIndex(0);
+      if (!cancelled) setLoading(false);
     })();
     return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [protocolId]);
 
   const baseFinding: Finding | undefined = candidates[index];
@@ -138,6 +139,14 @@ export default function VerificationScreen({ protocolId, onBack, onFinish }: Pro
         else if (e.key === 'ArrowLeft') { e.preventDefault(); goPrev(); }
         return;
       }
+      if (isComposite) {
+        // Section 9.2: no partial decision on a composite - "1"/"2"/"3" do
+        // nothing until it is split; only navigation stays available.
+        if (e.key === '1') { e.preventDefault(); void handleCompositeSplit(); }
+        else if (e.key === 'ArrowRight') { e.preventDefault(); goNext(); }
+        else if (e.key === 'ArrowLeft') { e.preventDefault(); goPrev(); }
+        return;
+      }
       if (e.key === '1') { e.preventDefault(); handleConfirm(); }
       else if (e.key === '2') { e.preventDefault(); setShowReasons(true); }
       else if (e.key === '3') { e.preventDefault(); handleClarify(); }
@@ -147,14 +156,16 @@ export default function VerificationScreen({ protocolId, onBack, onFinish }: Pro
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [finding?.id, showReasons, pendingReason, comment, selectedRevisionIdx, queueCompleted, isClarification, saving]);
+  }, [
+    finding?.id, showReasons, pendingReason, comment, selectedRevisionIdx,
+    queueCompleted, isClarification, isComposite, saving,
+  ]);
 
   const resetLocal = () => {
     setComment('');
     setShowReasons(false);
     setPendingReason(undefined);
     setSelectedRevisionIdx(null);
-    setSelectedAtoms({});
   };
 
   const goNext = () => {
@@ -256,30 +267,31 @@ export default function VerificationScreen({ protocolId, onBack, onFinish }: Pro
     setSelectedRevisionIdx(null);
   };
 
-  // The engine does not yet split a composite candidate into atomic findings
-  // (Plan 6 scope: "Разбиение составного кандидата") — recorded locally
-  // only, same as the mock this screen replaces, until a split endpoint
-  // exists. toFinding() never sets `composite` from real data, so this path
-  // stays unreachable in practice.
-  const handleCompositeSave = () => {
-    if (!finding) return;
-    const atoms = Object.entries(selectedAtoms).filter(([, v]) => v).map(([k]) => k);
-    if (atoms.length === 0) return;
-    const session = getSession();
-    setDecided((prev) => ({
-      ...prev,
-      [finding.id]: {
-        ...finding,
-        status: 'CONFIRMED_VIOLATION',
-        decision: {
-          status: 'CONFIRMED_VIOLATION',
-          comment: `${comment ? comment + ' · ' : ''}Выделено находок: ${atoms.length}`,
-          inspector: session?.user.fullName || session?.user.login || '—',
-          timestamp: nowStr(),
-        },
-      },
-    }));
-    window.setTimeout(goNext, 120);
+  // Section 9.2: a composite candidate cannot be confirmed partially - the
+  // only action available on it is splitting it into its atomic findings
+  // (POST /findings/:id/split). The queue is re-fetched afterwards so the
+  // atoms appear as ordinary candidates the inspector then decides one by
+  // one, same as any other candidate.
+  const handleCompositeSplit = async () => {
+    if (!finding?.composite || saving) return;
+    setSaving(true);
+    try {
+      await splitComposite(finding.id);
+      const ok = await loadCandidates();
+      if (ok) {
+        setIndex(0);
+        resetLocal();
+        push({ kind: 'success', message: `Кандидат разделён на ${finding.composite.atoms.length} находок` });
+      }
+    } catch (err) {
+      push({
+        kind: 'error',
+        message: 'Не удалось разделить кандидата',
+        detail: err instanceof ApiError ? err.message : undefined,
+      });
+    } finally {
+      setSaving(false);
+    }
   };
 
   const progress = useMemo(
@@ -527,16 +539,16 @@ export default function VerificationScreen({ protocolId, onBack, onFinish }: Pro
             </div>
           )}
 
-          {/* Блок составного кандидата */}
+          {/* Блок составного кандидата - что войдёт в разделение */}
           {isComposite && finding.composite && (
             <div className="bg-white border border-[#E2E8F0] rounded-lg p-4">
               <div className="flex items-center gap-2 mb-3">
                 <Layers size={14} className="text-[#5925DC]" aria-hidden />
                 <div className="text-[13px] font-medium text-[#0F172A]">
-                  Разделить на атомарные находки
+                  Составной кандидат
                 </div>
                 <span className="text-[11px] text-[#94A3B8]">
-                  · {finding.composite.atoms.length} под-параметров
+                  · {finding.composite.atoms.length} находок после разделения
                 </span>
               </div>
               {finding.composite.note && (
@@ -546,25 +558,17 @@ export default function VerificationScreen({ protocolId, onBack, onFinish }: Pro
               )}
               <div className="grid grid-cols-1 gap-1 max-h-[180px] overflow-y-auto pr-1">
                 {finding.composite.atoms.map((atom) => (
-                  <label
+                  <div
                     key={atom.id}
-                    className="flex items-center gap-3 px-3 py-2 rounded-md border border-[#E2E8F0] hover:bg-[#F5F7FA] cursor-pointer"
+                    className="flex items-center gap-3 px-3 py-2 rounded-md border border-[#E2E8F0]"
                   >
-                    <input
-                      type="checkbox"
-                      checked={!!selectedAtoms[atom.id]}
-                      onChange={(e) =>
-                        setSelectedAtoms((prev) => ({ ...prev, [atom.id]: e.target.checked }))
-                      }
-                      className="w-4 h-4 accent-[#1B4E9B]"
-                    />
                     <span className="mono text-[12px] text-[#0F172A] shrink-0 w-[70px]">{atom.code}</span>
                     <span className="text-[13px] text-[#0F172A] flex-1 truncate">{atom.title}</span>
                     <span className="text-[12px] text-[#475569] num shrink-0">{atom.expected}</span>
                     <span className="text-[#CBD5E1]">→</span>
                     <span className="text-[12px] text-[#0F172A] num shrink-0">{atom.actual}</span>
                     <span className="text-[12px] text-[#475569] num shrink-0 w-[60px] text-right">{atom.delta}</span>
-                  </label>
+                  </div>
                 ))}
               </div>
             </div>
@@ -661,77 +665,23 @@ export default function VerificationScreen({ protocolId, onBack, onFinish }: Pro
                 </div>
               </>
             ) : isComposite ? (
-              /* Составной кандидат */
+              /* Составной кандидат - section 9.2: "нельзя подтвердить
+                 частично". The only action available is the split itself;
+                 confirm/reject/clarify stay unavailable until the atoms it
+                 produces are reloaded as ordinary candidates. */
               <>
                 <div className="text-[13px] text-[#0F172A] leading-5 mb-1">
-                  Отметьте в центральной панели, какие под-параметры подтверждаются. Каждый подтверждённый под-параметр станет отдельной находкой.
+                  Составной кандидат нельзя подтвердить частично. Разделите его на атомарные находки — каждая станет отдельным кандидатом с собственным решением.
                 </div>
                 <Button
                   variant="danger"
                   size="lg"
-                  disabled={!Object.values(selectedAtoms).some(Boolean)}
+                  disabled={saving}
                   className="w-full"
-                  onClick={handleCompositeSave}
+                  onClick={() => void handleCompositeSplit()}
                 >
-                  Подтвердить выбранные находки
+                  {saving ? 'Разделение…' : `Разделить на ${finding.composite?.atoms.length ?? 0} находок`}
                 </Button>
-                <Button
-                  variant="secondary"
-                  size="lg"
-                  className="w-full"
-                  onClick={() => setShowReasons(true)}
-                >
-                  Отклонить кандидата
-                </Button>
-                {showReasons && (
-                  <div className="mt-2">
-                    <div className="text-[12px] text-[#94A3B8] uppercase tracking-wide mb-2">
-                      Код причины отклонения
-                    </div>
-                    <div className="grid grid-cols-2 gap-2">
-                      {reasonCodes.map((rc) => {
-                        const active = pendingReason === rc;
-                        return (
-                          <button
-                            key={rc}
-                            type="button"
-                            onClick={() => setPendingReason(rc)}
-                            className={[
-                              'text-left px-2.5 py-2 rounded-md border text-[12px] leading-4 transition-colors',
-                              active
-                                ? 'bg-[#E8F0FB] border-[#1B4E9B] text-[#1B4E9B]'
-                                : 'bg-white border-[#CBD5E1] text-[#0F172A] hover:bg-[#F5F7FA]'
-                            ].join(' ')}
-                          >
-                            {reasonLabels[rc]}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    <Button
-                      variant="primary"
-                      size="lg"
-                      className="w-full mt-3"
-                      disabled={!pendingReason || !comment.trim() || saving}
-                      icon={<Save size={14} />}
-                      onClick={handleRejectSave}
-                    >
-                      Сохранить решение
-                    </Button>
-                  </div>
-                )}
-                <div className="mt-2">
-                  <div className="text-[12px] text-[#94A3B8] uppercase tracking-wide mb-1.5">
-                    Комментарий инспектора
-                  </div>
-                  <textarea
-                    value={comment}
-                    onChange={(e) => setComment(e.target.value)}
-                    rows={2}
-                    placeholder="Обоснование"
-                    className="w-full px-2.5 py-2 border border-[#CBD5E1] rounded-md text-[13px] resize-none outline-none focus:border-[#1B4E9B]"
-                  />
-                </div>
               </>
             ) : (
               /* Стандартный кандидат */

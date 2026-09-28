@@ -30,6 +30,22 @@ alone clears any absolute threshold worth having. Two areas are therefore
 A delta clearing *both* bars is a candidate; one that does not is
 NEGATIVE_VERIFIED, with a rationale saying so - it must still be reported,
 per the FPR <= 0.10 comment above, just not as a candidate.
+
+Задание/10. Мосстройнадзор.pdf and the pilot's own markup (DOO25-V01,
+Задание/Комплект_предметной_разметки.pdf) add a fourth rule: the DOO pair's
+kitchen-block change is recorded by the pilot as ONE violation over one box
+spanning rows 134-149, not eighteen independent ones - a composite candidate
+the inspector must split before deciding on any part of it. `compare_sheets`
+therefore groups a maximal run of *two or more* consecutive CANDIDATE room
+findings (area change, absent-from-RD or added-in-RD - never a floor total,
+which is compared once for the whole sheet and never part of a run) into one
+composite RoomFinding carrying its members as `atoms`. "Consecutive" means
+adjacent in the table's own printed order - natural sort of the room number,
+grouped so two different tables' numbers (Алтуфьевское's ground floor vs.
+antresol "1") never merge - not adjacent integers: a NEGATIVE_VERIFIED room,
+or one with no finding at all, sits in that same order and breaks the run
+exactly where the pilot's own comparison would. A run of one stays atomic,
+exactly as before this rule existed.
 """
 
 import re
@@ -73,7 +89,7 @@ class SheetRooms:
 
 @dataclass(frozen=True)
 class RoomFinding:
-    subject: str                 # "room 1.109" or "floor total"
+    subject: str                 # "room 1.109", "floor total", or "rooms 134..149"
     status: str                  # "CANDIDATE" or "NEGATIVE_VERIFIED"
     expected: str | None         # value on the design sheet, None when absent
     actual: str | None           # value on the working sheet, None when absent
@@ -83,6 +99,10 @@ class RoomFinding:
     expected_box: NormalizedBox
     actual_sheet: SheetRooms
     actual_box: NormalizedBox
+    # The individual room findings a composite candidate was built from
+    # (module docstring) - empty for every ordinary, atomic finding, which is
+    # every finding this module produced before composites existed.
+    atoms: tuple["RoomFinding", ...] = ()
 
 
 def _fmt(value: float) -> str:
@@ -141,6 +161,130 @@ def _within_rounding_tolerance(pd_area: float, rd_area: float, relative_threshol
     # `+ 1e-9` absorbs the float noise `_precision_unit`'s own *10 round-trip
     # does not - e.g. 47.9 -> 48.5 subtracts to 0.6000000000000014, not 0.6.
     return delta <= _precision_unit(pd_area, rd_area) + 1e-9
+
+
+def _natural_key(number: str) -> tuple:
+    """Table order for a room number, not a plain string sort: "1.9" must
+    sort before "1.10", which `"1.9" < "1.10"` gets wrong. Split on "." into
+    ints; a number with any non-numeric part (Алтуфьевское's stair flights
+    "А", "Б") sorts after every numeric one, as its own group ordered by the
+    raw text - there is no numeric position to place it at instead.
+    """
+    parts = number.split(".")
+    try:
+        return (0, tuple(int(part) for part in parts))
+    except ValueError:
+        return (1, number)
+
+
+def _table_order(keys: list[str], scope_by_key: dict[str, str | None],
+                  number_by_key: dict[str, str]) -> list[list[str]]:
+    """Every room key in the order its own table prints it, one list per
+    scope: two independent tables' numbers (Алтуфьевское's ground floor vs.
+    antresol "1") must never be read as adjacent to each other, so grouping
+    below must never see a lone candidate at the end of one table's list
+    right next to a lone candidate at the start of another's - only a
+    per-scope grouping caller can guarantee that, not a flattened one.
+    Natural-sorted by number within each scope.
+    """
+    by_scope: dict[str | None, list[str]] = {}
+    for key in keys:
+        by_scope.setdefault(scope_by_key[key], []).append(key)
+
+    return [
+        sorted(by_scope[scope], key=lambda k: _natural_key(number_by_key[k]))
+        for scope in sorted(by_scope, key=lambda s: (s is None, s or ""))
+    ]
+
+
+def _composite_finding(run: list[tuple[str, str, RoomFinding]]) -> RoomFinding:
+    """One composite candidate out of a run of >= 2 consecutive CANDIDATE
+    room findings (module docstring). `run` is a list of (key, number,
+    finding) in table order; only the boundary keys and the room numbers
+    they were written under are shown to the inspector, the rest are read
+    off the nested atoms.
+    """
+    keys = [key for key, _number, _finding in run]
+    numbers = [number for _key, number, _finding in run]
+    atoms = tuple(finding for _key, _number, finding in run)
+
+    # Only atoms that actually carry a value on that side contribute to the
+    # sum - an added-in-RD or absent-from-RD atom inside the run has no
+    # value on one side at all, same as its own standalone finding would.
+    expected_values = [float(a.expected) for a in atoms if a.expected is not None]
+    actual_values = [float(a.actual) for a in atoms if a.actual is not None]
+    delta_values = [float(a.delta) for a in atoms if a.delta is not None]
+
+    expected_total = sum(expected_values) if expected_values else None
+    actual_total = sum(actual_values) if actual_values else None
+    delta_total = sum(delta_values) if delta_values else None
+
+    number_range = f"{numbers[0]}–{numbers[-1]}"
+    if expected_total is not None and actual_total is not None and delta_total is not None:
+        rationale = (
+            f"Изменены площади {len(atoms)} помещений подряд ({number_range}): "
+            f"в ПД {_fmt_ru(expected_total)} м², в РД {_fmt_ru(actual_total)} м² "
+            f"(дельта {_fmt_signed_ru(delta_total)} м²). Разделите кандидат, "
+            f"чтобы решить по каждому помещению."
+        )
+    else:
+        # A run mixing area changes with an added or a missing room (both
+        # sides not present on every atom) - the same claim, without a total
+        # the mixed atoms cannot honestly support.
+        rationale = (
+            f"Изменения в {len(atoms)} помещениях подряд ({number_range}): "
+            f"состав и площади отличаются между ПД и РД. Разделите кандидат, "
+            f"чтобы решить по каждому помещению."
+        )
+
+    return RoomFinding(
+        subject=f"rooms {keys[0]}..{keys[-1]}",
+        status="CANDIDATE",
+        expected=_fmt(expected_total) if expected_total is not None else None,
+        actual=_fmt(actual_total) if actual_total is not None else None,
+        delta=_fmt_signed(delta_total) if delta_total is not None else None,
+        rationale=rationale,
+        expected_sheet=atoms[0].expected_sheet,
+        expected_box=_union([a.expected_box for a in atoms]),
+        actual_sheet=atoms[0].actual_sheet,
+        actual_box=_union([a.actual_box for a in atoms]),
+        atoms=atoms,
+    )
+
+
+def _group_room_findings(keys: list[str], finding_by_key: dict[str, RoomFinding],
+                          scope_by_key: dict[str, str | None],
+                          number_by_key: dict[str, str]) -> list[RoomFinding]:
+    """Replace every maximal run of >= 2 consecutive CANDIDATE room findings
+    (module docstring) with one composite; everything else - a lone
+    candidate, a NEGATIVE_VERIFIED finding - passes through unchanged.
+    """
+    result: list[RoomFinding] = []
+    run: list[tuple[str, str, RoomFinding]] = []
+
+    def flush() -> None:
+        if not run:
+            return
+        result.append(run[0][2] if len(run) == 1 else _composite_finding(run))
+        run.clear()
+
+    for scope_group in _table_order(keys, scope_by_key, number_by_key):
+        for key in scope_group:
+            finding = finding_by_key.get(key)
+            if finding is not None and finding.status == "CANDIDATE":
+                run.append((key, number_by_key[key], finding))
+                continue
+            # A NEGATIVE_VERIFIED finding, or a room with no finding at all
+            # (`finding is None`, e.g. an absence `_absent_from_rd` could not
+            # confirm), both break a run in progress - the second is skipped
+            # here exactly as it always was, only after breaking the run.
+            flush()
+            if finding is not None:
+                result.append(finding)
+        # A table boundary always breaks a run in progress, even when every
+        # room right up to the last one of this scope was a candidate.
+        flush()
+    return result
 
 
 def _union(boxes: list[NormalizedBox]) -> NormalizedBox:
@@ -369,14 +513,20 @@ def compare_sheets(pd: SheetRooms, rd: SheetRooms,
     here only covers direct callers that do not - tests, and a spec file that
     failed to load at all.
     """
-    findings: list[RoomFinding] = []
+    keys = sorted(set(pd.rooms) | set(rd.rooms))
+    finding_by_key: dict[str, RoomFinding] = {}
+    scope_by_key: dict[str, str | None] = {}
+    number_by_key: dict[str, str] = {}
 
-    for key in sorted(set(pd.rooms) | set(rd.rooms)):
+    for key in keys:
         pd_room = pd.rooms.get(key)
         rd_room = rd.rooms.get(key)
+        room = pd_room if pd_room is not None else rd_room
+        scope_by_key[key] = room.scope
+        number_by_key[key] = room.number
 
         if pd_room is not None and rd_room is not None:
-            findings.append(_compare_room(key, pd, pd_room, rd, rd_room, relative_threshold))
+            finding_by_key[key] = _compare_room(key, pd, pd_room, rd, rd_room, relative_threshold)
             continue
 
         finding = (
@@ -384,7 +534,9 @@ def compare_sheets(pd: SheetRooms, rd: SheetRooms,
             else _added_in_rd(key, pd, rd, rd_room)
         )
         if finding is not None:
-            findings.append(finding)
+            finding_by_key[key] = finding
+
+    findings: list[RoomFinding] = _group_room_findings(keys, finding_by_key, scope_by_key, number_by_key)
 
     totals_finding = _compare_totals(pd, rd, relative_threshold)
     if totals_finding is not None:

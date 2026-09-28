@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Check, Protocol } from '@prisma/client';
 import { prisma } from '../db.js';
+import { visibleCheckWhere } from '../checks/visibility.js';
 import {
   buildFinding,
   buildProtocolResponse,
@@ -46,15 +47,35 @@ export async function inspectorsById(checks: Check[]): Promise<Map<string, Inspe
   return new Map(users.map((user) => [user.id, user]));
 }
 
+// An unsplit composite's own members, keyed by the composite's own check id.
+// Deliberately not filtered through visibleCheckWhere: an atom is invisible
+// as a *finding of its own* until its parent is split, but its data is
+// exactly what the composite's own card (FindingView.composite) is for -
+// showing the inspector what a split would produce.
+export async function atomsByParent(checks: Check[]): Promise<Map<string, Check[]>> {
+  const parentIds = checks.map((check) => check.id);
+  if (parentIds.length === 0) return new Map();
+  const atoms = await prisma.check.findMany({ where: { parentCheckId: { in: parentIds } } });
+  const byParent = new Map<string, Check[]>();
+  for (const atom of atoms) {
+    const list = byParent.get(atom.parentCheckId!) ?? [];
+    list.push(atom);
+    byParent.set(atom.parentCheckId!, list);
+  }
+  return byParent;
+}
+
 export async function loadProtocolResponse(protocol: Protocol) {
   const checks = (await prisma.check.findMany({
-    where: { processId: protocol.processId },
+    where: { processId: protocol.processId, ...visibleCheckWhere },
     include: { fragments: true },
     orderBy: { createdAt: 'asc' },
   })) as CheckWithFragments[];
 
-  const [params, inspectors] = await Promise.all([paramsByCode(checks), inspectorsById(checks)]);
-  return buildProtocolResponse(protocol, checks, params, inspectors);
+  const [params, inspectors, atoms] = await Promise.all([
+    paramsByCode(checks), inspectorsById(checks), atomsByParent(checks),
+  ]);
+  return buildProtocolResponse(protocol, checks, params, inspectors, atoms);
 }
 
 export async function protocolRoutes(app: FastifyInstance) {
@@ -100,26 +121,35 @@ export async function protocolRoutes(app: FastifyInstance) {
         // listing - it answers only for findings, the other half of the
         // protocol stays under /protocols/:id.
         findingStatus: queryParsed.data.status ?? { not: null },
+        ...visibleCheckWhere,
       },
       include: { fragments: true },
       orderBy: { createdAt: 'asc' },
     })) as CheckWithFragments[];
 
-    const [params, inspectors] = await Promise.all([paramsByCode(checks), inspectorsById(checks)]);
-    return { items: checks.map((check) => buildFinding(check, params.get(check.paramCode), inspectors)) };
+    const [params, inspectors, atoms] = await Promise.all([
+      paramsByCode(checks), inspectorsById(checks), atomsByParent(checks),
+    ]);
+    return {
+      items: checks.map((check) => buildFinding(
+        check, params.get(check.paramCode), inspectors, atoms.get(check.id),
+      )),
+    };
   });
 
   app.get('/api/v1/findings/:check_id', async (request, reply) => {
     const parsed = checkParamsSchema.safeParse(request.params);
     if (!parsed.success) return reply.code(400).send({ error: 'VALIDATION_FAILED' });
 
-    const check = (await prisma.check.findUnique({
-      where: { id: parsed.data.check_id },
+    const check = (await prisma.check.findFirst({
+      where: { id: parsed.data.check_id, ...visibleCheckWhere },
       include: { fragments: true },
     })) as CheckWithFragments | null;
     if (!check) return reply.code(404).send({ error: 'FINDING_NOT_FOUND' });
 
-    const [params, inspectors] = await Promise.all([paramsByCode([check]), inspectorsById([check])]);
-    return buildFinding(check, params.get(check.paramCode), inspectors);
+    const [params, inspectors, atoms] = await Promise.all([
+      paramsByCode([check]), inspectorsById([check]), atomsByParent([check]),
+    ]);
+    return buildFinding(check, params.get(check.paramCode), inspectors, atoms.get(check.id));
   });
 }

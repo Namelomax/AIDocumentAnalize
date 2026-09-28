@@ -151,6 +151,24 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   return (text ? JSON.parse(text) : undefined) as T;
 }
 
+// The shape POST /findings/:id/split returns - the composite's own atoms,
+// each already in the finding form (services/api's buildFinding), since a
+// split atom becomes an ordinary candidate the queue re-fetch below reloads
+// exactly like any other.
+export interface SplitResponseAtom {
+  id: string;
+  finding_status: string | null;
+  [key: string]: unknown;
+}
+
+// A composite candidate (Global Constraint: it cannot be confirmed
+// partially) split into its atomic findings. Used by VerificationScreen's
+// "Разделить на N находок" button; the caller reloads the candidate queue
+// afterwards so the atoms appear as ordinary candidates.
+export function splitComposite(checkId: string): Promise<{ atoms: SplitResponseAtom[] }> {
+  return api<{ atoms: SplitResponseAtom[] }>(`/api/v1/findings/${checkId}/split`, { method: 'POST' });
+}
+
 export async function apiBlob(path: string): Promise<Blob> {
   const response = await fetch(path, { headers: authHeaders() });
   if (response.status === 401) {

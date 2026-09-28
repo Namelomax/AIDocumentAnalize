@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { prisma } from '../db.js';
 import { publishTask } from '../queue.js';
 import { audit } from '../audit.js';
+import { visibleCheckWhere } from '../checks/visibility.js';
 
 const paramsSchema = z.object({ process_id: z.string().uuid() });
 
@@ -96,8 +97,8 @@ export async function processRoutes(app: FastifyInstance) {
         prisma.fileRecord.count({ where: { processId: process.id, mimeType: 'application/pdf' } }),
         prisma.page.count({ where: { file: { processId: process.id } } }),
         prisma.page.count({ where: { file: { processId: process.id }, needsOcr: true } }),
-        prisma.check.count({ where: { processId: process.id } }),
-        prisma.check.count({ where: { processId: process.id, findingStatus: 'CANDIDATE' } }),
+        prisma.check.count({ where: { processId: process.id, ...visibleCheckWhere } }),
+        prisma.check.count({ where: { processId: process.id, findingStatus: 'CANDIDATE', ...visibleCheckWhere } }),
         prisma.protocol.findFirst({
           where: { processId: process.id },
           orderBy: { version: 'desc' },

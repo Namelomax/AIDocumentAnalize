@@ -8,6 +8,7 @@ import type {
   ApprovalStatus,
   CompletenessRowStatus,
   CompletenessStatus,
+  CompositeAtom,
   DetectionMethod,
   DocStage,
   EvidenceFragment,
@@ -146,6 +147,23 @@ export interface ApiFinding {
   sources: string[];
   evidence: ApiEvidence[];
   decision: ApiDecision | null;
+  // Set only for an unsplit composite candidate (services/api's
+  // checks/visibility.ts) - its members, in the shape POST
+  // /findings/:id/split's own response also uses for each atom.
+  composite?: ApiComposite;
+}
+
+export interface ApiCompositeAtom {
+  id: string;
+  param_code: string;
+  title: string;
+  expected_value: string | null;
+  actual_value: string | null;
+  delta: string | null;
+}
+
+export interface ApiComposite {
+  atoms: ApiCompositeAtom[];
 }
 
 export interface ApiCompletenessRow {
@@ -409,6 +427,20 @@ function toFindingDecision(api: ApiDecision | null): FindingDecision | undefined
   };
 }
 
+// A composite candidate's own member (services/api's protocol/view.ts,
+// CompositeAtomView) - `unit` comes from the parent composite's own finding,
+// since an atom's API shape carries no unit of its own.
+function toCompositeAtom(api: ApiCompositeAtom, unit: string | null): CompositeAtom {
+  return {
+    id: api.id,
+    code: api.param_code,
+    title: api.title,
+    expected: formatValue(api.expected_value, unit),
+    actual: formatValue(api.actual_value, unit),
+    delta: api.delta ?? '—',
+  };
+}
+
 export function toFinding(api: ApiFinding): Finding {
   // Task 4 spec: the finding's status comes from finding_status, falling
   // back to completeness_status when it is absent (a completeness-only row
@@ -436,6 +468,9 @@ export function toFinding(api: ApiFinding): Finding {
     expectedEvidence: pickEvidence(api.evidence, 'expected'),
     actualEvidence: pickEvidence(api.evidence, 'actual'),
     decision: toFindingDecision(api.decision),
+    composite: api.composite
+      ? { atoms: api.composite.atoms.map((atom) => toCompositeAtom(atom, api.unit)) }
+      : undefined,
   };
 }
 

@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '../db.js';
+import { visibleCheckWhere } from '../checks/visibility.js';
 
 // "In work" mirrors the object list's own latest-process lookup
 // (routes/objects.ts) rather than reusing it: the summary only needs a
@@ -27,8 +28,12 @@ export async function dashboardRoutes(app: FastifyInstance) {
       objectsInWork(),
       prisma.protocol.count({ where: { status: { in: ['READY', 'VERIFYING'] } } }),
       // A candidate only belongs in this count while its process hasn't been
-      // finalized yet - once finalized there is nothing left to review.
-      prisma.check.count({ where: { findingStatus: 'CANDIDATE', process: { status: { not: 'FINALIZED' } } } }),
+      // finalized yet - once finalized there is nothing left to review. An
+      // unsplit composite counts once; its hidden atoms never count at all
+      // (checks/visibility.ts).
+      prisma.check.count({
+        where: { findingStatus: 'CANDIDATE', process: { status: { not: 'FINALIZED' } }, ...visibleCheckWhere },
+      }),
       prisma.protocol.count({
         where: { status: 'PROTOCOL_FINALIZED', finalizedAt: { gte: startOfCurrentMonth() } },
       }),

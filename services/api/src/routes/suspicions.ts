@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Protocol } from '@prisma/client';
 import { prisma } from '../db.js';
+import { visibleCheckWhere } from '../checks/visibility.js';
 import { buildSuspicion, type CheckWithFragments, type SuspicionView } from '../protocol/view.js';
 import { paramsByCode, inspectorsById } from './protocols.js';
 
@@ -70,7 +71,11 @@ export async function suspicionRoutes(app: FastifyInstance) {
 
     const protocolByProcess = new Map(protocols.map((protocol) => [protocol.processId, protocol]));
     const checks = (await prisma.check.findMany({
-      where: { processId: { in: [...protocolByProcess.keys()] }, findingStatus: 'SUSPICION' },
+      where: {
+        processId: { in: [...protocolByProcess.keys()] },
+        findingStatus: 'SUSPICION',
+        ...visibleCheckWhere,
+      },
       include: { fragments: true },
       orderBy: { createdAt: 'desc' },
       take: MAX_ITEMS,

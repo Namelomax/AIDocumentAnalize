@@ -165,6 +165,102 @@ async def test_save_checks_writes_a_suspicion_with_a_null_param_id(db, scenario)
 
 
 @pytest.mark.asyncio
+async def test_save_checks_writes_a_composite_and_its_atoms(db, scenario):
+    """A composite candidate (app.explication.compare) carries its own
+    members under check["atoms"] - db.save_checks must insert the composite
+    first and link each atom to it via parent_check_id, invisible to the
+    inspector until split (services/api's visibility rule)."""
+    object_id, process_id, file_id = scenario
+
+    atom_1 = {
+        "param_code": "M-003",
+        "evidence_group_id": f"{object_id}:M-003:room 134",
+        "subject": "room 134",
+        "expected_value": "15.00", "actual_value": "14.00", "delta": "-1.00",
+        "completeness_status": "COMPLETE", "finding_status": "CANDIDATE",
+        "review_priority": "MEDIUM", "rationale": "Площадь помещения 134 изменена.",
+        "matrix_version": "1.1", "fragments": [],
+    }
+    atom_2 = {
+        "param_code": "M-003",
+        "evidence_group_id": f"{object_id}:M-003:room 149",
+        "subject": "room 149",
+        "expected_value": "15.00", "actual_value": "14.00", "delta": "-1.00",
+        "completeness_status": "COMPLETE", "finding_status": "CANDIDATE",
+        "review_priority": "MEDIUM", "rationale": "Площадь помещения 149 изменена.",
+        "matrix_version": "1.1", "fragments": [],
+    }
+    composite = {
+        "param_code": "M-003",
+        "evidence_group_id": f"{object_id}:M-003:rooms 134..149",
+        "subject": "rooms 134..149",
+        "expected_value": "30.00", "actual_value": "28.00", "delta": "-2.00",
+        "completeness_status": "COMPLETE", "finding_status": "CANDIDATE",
+        "review_priority": "MEDIUM",
+        "rationale": "Изменены площади 2 помещений подряд (134-149).",
+        "matrix_version": "1.1", "fragments": [],
+        "atoms": [atom_1, atom_2],
+    }
+
+    await db.save_checks(process_id, object_id, [composite])
+
+    async with db._pool.acquire() as connection:
+        rows = await connection.fetch(
+            "SELECT id, subject, parent_check_id, split_at FROM checks WHERE process_id = $1", process_id,
+        )
+
+    assert len(rows) == 3
+    composite_row = next(r for r in rows if r["subject"] == "rooms 134..149")
+    atom_rows = [r for r in rows if r["subject"] != "rooms 134..149"]
+    assert composite_row["parent_check_id"] is None
+    assert composite_row["split_at"] is None
+    assert {r["subject"] for r in atom_rows} == {"room 134", "room 149"}
+    assert all(r["parent_check_id"] == composite_row["id"] for r in atom_rows)
+
+
+@pytest.mark.asyncio
+async def test_save_checks_replacing_a_composite_run_is_idempotent(db, scenario):
+    """A re-run must not accumulate a second composite/atoms set alongside
+    the first - same replace-in-one-transaction guarantee as an ordinary
+    check (test_save_checks_replaces_the_previous_set)."""
+    object_id, process_id, file_id = scenario
+
+    composite = {
+        "param_code": "M-003",
+        "evidence_group_id": f"{object_id}:M-003:rooms 1..2",
+        "subject": "rooms 1..2",
+        "expected_value": "20.00", "actual_value": "18.00", "delta": "-2.00",
+        "completeness_status": "COMPLETE", "finding_status": "CANDIDATE",
+        "review_priority": "MEDIUM", "rationale": "Изменены площади 2 помещений подряд (1-2).",
+        "matrix_version": "1.1", "fragments": [],
+        "atoms": [
+            {
+                "param_code": "M-003", "evidence_group_id": f"{object_id}:M-003:room 1",
+                "subject": "room 1", "expected_value": "10.00", "actual_value": "9.00", "delta": "-1.00",
+                "completeness_status": "COMPLETE", "finding_status": "CANDIDATE",
+                "review_priority": "MEDIUM", "rationale": "Площадь помещения 1 изменена.",
+                "matrix_version": "1.1", "fragments": [],
+            },
+            {
+                "param_code": "M-003", "evidence_group_id": f"{object_id}:M-003:room 2",
+                "subject": "room 2", "expected_value": "10.00", "actual_value": "9.00", "delta": "-1.00",
+                "completeness_status": "COMPLETE", "finding_status": "CANDIDATE",
+                "review_priority": "MEDIUM", "rationale": "Площадь помещения 2 изменена.",
+                "matrix_version": "1.1", "fragments": [],
+            },
+        ],
+    }
+
+    await db.save_checks(process_id, object_id, [composite])
+    await db.save_checks(process_id, object_id, [composite])
+
+    async with db._pool.acquire() as connection:
+        rows = await connection.fetch("SELECT id FROM checks WHERE process_id = $1", process_id)
+
+    assert len(rows) == 3
+
+
+@pytest.mark.asyncio
 async def test_save_checks_replaces_the_previous_set(db, scenario):
     object_id, process_id, file_id = scenario
 
