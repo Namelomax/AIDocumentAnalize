@@ -104,3 +104,37 @@ parse_cache_total = Counter(
     "PDF parse cache lookups, by outcome",
     ["result"],
 )
+
+# One page that carried no text layer (app.pdf.extract's needs_ocr), once
+# app.pipeline has finished trying to OCR it. "ok" is a page that got at
+# least one recovered line; "low_quality" reached the model but got nothing
+# legible back; "unavailable" is OCR_MODEL unset or the model unreachable
+# for every strip of the page - all three still let the process finish
+# (customer's ТЗ p.16 п.1: a page that cannot be read returns LOW_QUALITY,
+# never an invented value), only "ok" hands the explication parser real text.
+ocr_pages_total = Counter(
+    "inspector_ocr_pages_total",
+    "Pages handed to the OCR model, by outcome",
+    ["result"],
+)
+
+# One HTTP call to the OCR model - one page is usually several of these
+# (app.ocr.tiling splits a page into horizontal strips), so this is a call's
+# own latency, not a page's total OCR time.
+ocr_request_duration_seconds = Histogram(
+    "inspector_ocr_request_duration_seconds",
+    "OCR model call latency, per strip",
+)
+
+# One outcome from app.params.engine.evaluate_all, per parameter, by its own
+# modality (scalar_text/doc_presence/drawing_entity/drawing_measure) and
+# status - the cheap per-run signal for how much of the 132-parameter matrix
+# is actually being answered rather than refused (app.params.scalar's own
+# module docstring: precision over recall, so NOT_COMPARABLE/MISSING_EVIDENCE
+# are expected, not a bug, and are counted here on the same footing as a
+# real CANDIDATE/NEGATIVE_VERIFIED).
+param_outcomes_total = Counter(
+    "inspector_param_outcomes_total",
+    "Matrix parameter outcomes per run, by modality and status",
+    ["code_group", "status"],
+)

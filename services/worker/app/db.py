@@ -372,23 +372,38 @@ class Database:
                     await connection.execute(
                         """
                         INSERT INTO pages (id, file_id, page_no, width_pt, height_pt,
-                                           rotation, char_count, needs_ocr, image_key)
-                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                                           rotation, char_count, needs_ocr, image_key,
+                                           quality_status)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                         """,
                         page_id, file_id, page["page_no"], page["width_pt"],
                         page["height_pt"], page["rotation"], page["char_count"],
                         page["needs_ocr"], page.get("image_key"),
+                        # Set only by app.ocr.tiling for a page that needed
+                        # OCR and got nothing legible back - null for every
+                        # page whose own text layer was readable.
+                        page.get("quality_status"),
                     )
                     if not page["blocks"]:
                         continue
                     await connection.executemany(
                         """
-                        INSERT INTO text_blocks (id, page_id, block_no, line_no, text, x0, y0, x1, y1)
-                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                        INSERT INTO text_blocks
+                            (id, page_id, block_no, line_no, text, x0, y0, x1, y1, source, confidence)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                         """,
                         [
                             (str(uuid.uuid4()), page_id, b["block_no"], b["line_no"], b["text"],
-                             b["x0"], b["y0"], b["x1"], b["y1"])
+                             b["x0"], b["y0"], b["x1"], b["y1"],
+                             # "text" for the PDF's own text layer, "ocr" for
+                             # a line app.ocr.tiling recovered - the evidence
+                             # UI and ocr_eval both read this back to tell
+                             # the two apart. confidence is null for every
+                             # line: neither the PDF's own text layer nor
+                             # glm-ocr's plain-text answer (app.ocr.client's
+                             # own docstring) reports one - the column exists
+                             # for a future OCR model that does.
+                             b.get("source", "text"), b.get("confidence"))
                             for b in page["blocks"]
                         ],
                     )

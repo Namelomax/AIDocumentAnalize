@@ -97,25 +97,32 @@ export async function processRoutes(app: FastifyInstance) {
     const process = await prisma.process.findUnique({ where: { id: parsed.data.process_id } });
     if (!process) return reply.code(404).send({ error: 'PROCESS_NOT_FOUND' });
 
-    const [filesTotal, filesPdf, pagesExtracted, pagesNeedsOcr, checksTotal, checksCandidates, protocol] =
-      await Promise.all([
-        prisma.fileRecord.count({ where: { processId: process.id } }),
-        prisma.fileRecord.count({ where: { processId: process.id, mimeType: 'application/pdf' } }),
-        prisma.page.count({ where: { file: { processId: process.id } } }),
-        prisma.page.count({ where: { file: { processId: process.id }, needsOcr: true } }),
-        prisma.check.count({ where: { processId: process.id, ...visibleCheckWhere } }),
-        prisma.check.count({ where: { processId: process.id, findingStatus: 'CANDIDATE', ...visibleCheckWhere } }),
-        prisma.protocol.findFirst({
-          where: { processId: process.id },
-          orderBy: { version: 'desc' },
-          select: { id: true },
-        }),
-      ]);
+    const [
+      filesTotal, filesPdf, pagesExtracted, pagesNeedsOcr, pagesLowQuality,
+      checksTotal, checksCandidates, protocol,
+    ] = await Promise.all([
+      prisma.fileRecord.count({ where: { processId: process.id } }),
+      prisma.fileRecord.count({ where: { processId: process.id, mimeType: 'application/pdf' } }),
+      prisma.page.count({ where: { file: { processId: process.id } } }),
+      prisma.page.count({ where: { file: { processId: process.id }, needsOcr: true } }),
+      // Customer's ТЗ p.16 п.1: a page OCR could not read at all (model
+      // unavailable, or nothing legible came back - services/worker's
+      // app.ocr.tiling) counted on its own, not folded into needs_ocr -
+      // most needs_ocr pages do get read, this is the ones that did not.
+      prisma.page.count({ where: { file: { processId: process.id }, qualityStatus: 'LOW_QUALITY' } }),
+      prisma.check.count({ where: { processId: process.id, ...visibleCheckWhere } }),
+      prisma.check.count({ where: { processId: process.id, findingStatus: 'CANDIDATE', ...visibleCheckWhere } }),
+      prisma.protocol.findFirst({
+        where: { processId: process.id },
+        orderBy: { version: 'desc' },
+        select: { id: true },
+      }),
+    ]);
 
     return {
       status: process.status,
       files: { total: filesTotal, pdf: filesPdf },
-      pages: { extracted: pagesExtracted, needs_ocr: pagesNeedsOcr },
+      pages: { extracted: pagesExtracted, needs_ocr: pagesNeedsOcr, low_quality: pagesLowQuality },
       checks: { total: checksTotal, candidates: checksCandidates },
       protocol_id: protocol?.id ?? null,
     };

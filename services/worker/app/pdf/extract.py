@@ -19,7 +19,12 @@ from app.pdf.geometry import NormalizedBox, normalize_box
 # needs_ocr for inputs already cached under the old version. The cache key
 # embeds this number so such a change can never serve a stale shape to code
 # that no longer expects it; the entry is just treated as a miss instead.
-PARSER_VERSION = 1
+#
+# 2: app.pipeline now stores each block's line with a "source" ("text" vs
+# "ocr") and adds OCR-recovered lines/quality_status to a page's own cache
+# entry (app.ocr.tiling) - an entry cached under version 1 predates both and
+# must be treated as a miss, not silently read back as if it had them.
+PARSER_VERSION = 2
 
 
 @dataclass(frozen=True)

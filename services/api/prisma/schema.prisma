@@ -327,6 +327,12 @@ model Page {
   // is out of scope here, so the flag is recorded and acted on later.
   needsOcr  Boolean  @default(false) @map("needs_ocr")
   imageKey  String?  @map("image_key")
+  // Set by services/worker's app.ocr.tiling when a page needed OCR and
+  // nothing legible came back (model unavailable, or every strip's answer
+  // was empty) - customer's ТЗ p.16 п.1: "система обязана вернуть
+  // LOW_QUALITY или ABSTAIN". Null for a page whose own text layer was
+  // readable, and for a page OCR did recover text for.
+  qualityStatus String? @map("quality_status")
   createdAt DateTime @default(now()) @map("created_at")
 
   file   FileRecord  @relation(fields: [fileId], references: [id], onDelete: Cascade)
@@ -351,6 +357,15 @@ model TextBlock {
   y0      Float
   x1      Float
   y1      Float
+  // "text" for a line read from the PDF's own text layer, "ocr" for one
+  // app.ocr.tiling recovered from a scanned page - the evidence UI and
+  // services/worker's tools/ocr_eval.py both read this back to tell the two
+  // apart.
+  source     String  @default("text")
+  // Null for both sources today: neither PyMuPDF's text layer nor glm-ocr's
+  // plain-text answer (services/worker's app.ocr.client) reports a
+  // confidence value. Kept for a future OCR model that does.
+  confidence Float?
 
   page Page @relation(fields: [pageId], references: [id], onDelete: Cascade)
 

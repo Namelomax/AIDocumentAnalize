@@ -194,6 +194,21 @@ services:
       LLM_BASE_URL: ${LLM_BASE_URL:-}
       LLM_MODEL: ${LLM_MODEL:-}
       LLM_TIMEOUT_S: ${LLM_TIMEOUT_S:-60}
+      # Customer's ТЗ p.16, п.1 "Распознавание текста (OCR)": a page with no
+      # text layer (app.pdf.extract's needs_ocr) is OCR'd by this local model
+      # - same OpenAI-compatible interface as the free-search model above,
+      # same rule: OCR_MODEL blank turns it off, no default here may name a
+      # real host. OCR_BASE_URL defaults to LLM_BASE_URL in app.config, since
+      # dev and the stand both already point that at the one local model
+      # server; set OCR_BASE_URL only when OCR is served from somewhere else.
+      OCR_BASE_URL: ${OCR_BASE_URL:-}
+      OCR_MODEL: ${OCR_MODEL:-}
+      # LM Studio on the reference dev machine took 40-90s per strip - see
+      # app.config.Config.ocr_timeout_s's own comment.
+      OCR_TIMEOUT_S: ${OCR_TIMEOUT_S:-120}
+      # Customer's ТЗ p.16, п.1: "не менее 300 dpi".
+      OCR_DPI: ${OCR_DPI:-300}
+      OCR_STRIP_HEIGHT_PX: ${OCR_STRIP_HEIGHT_PX:-800}
       # Section 9.5's free-search hypotheses (SEM-ROOM-FN) are asked about in
       # batches of this many room-name pairs per model call, each batch under
       # LLM_TIMEOUT_S - the reference school package's 23 pairs in one

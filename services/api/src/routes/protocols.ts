@@ -7,8 +7,10 @@ import {
   buildFinding,
   buildProtocolResponse,
   groupAtomsByParent,
+  pageQualityKey,
   type CheckWithFragments,
   type InspectorForView,
+  type PageQualityInfo,
   type ParamForView,
 } from '../protocol/view.js';
 
@@ -123,6 +125,25 @@ export async function atomsByParent(checks: Check[]): Promise<Map<string, Check[
   return byParent;
 }
 
+// Every fragment's own page (file_id, sheet_page), looked up once for a
+// whole batch of checks - not per fragment - so a protocol with hundreds of
+// findings costs one query here, not hundreds. Absent from the map (rather
+// than an explicit null-filled entry) for a fragment whose page row is
+// somehow gone: evidenceView already reads a missing key as "not known",
+// the same as a fragment whose file has no OCR-relevant page at all.
+export async function pageQualityByFragment(checks: CheckWithFragments[]): Promise<Map<string, PageQualityInfo>> {
+  const fileIds = [...new Set(checks.flatMap((check) => check.fragments.map((fragment) => fragment.fileId)))];
+  if (fileIds.length === 0) return new Map();
+  const pages = await prisma.page.findMany({
+    where: { fileId: { in: fileIds } },
+    select: { fileId: true, pageNo: true, needsOcr: true, qualityStatus: true },
+  });
+  return new Map(pages.map((page) => [
+    pageQualityKey(page.fileId, page.pageNo),
+    { needsOcr: page.needsOcr, qualityStatus: page.qualityStatus },
+  ]));
+}
+
 const DEFAULT_LIST_LIMIT = 50;
 
 interface ProtocolListCounts {
@@ -189,8 +210,10 @@ async function loadSnapshotProtocolResponse(protocol: Protocol) {
   const allChecks = reviveSnapshotChecks(protocol.snapshot);
   const visible = filterVisibleChecks(allChecks);
   const atoms = groupAtomsByParent(allChecks);
-  const [params, inspectors] = await Promise.all([paramsByCode(visible), inspectorsById(visible)]);
-  return buildProtocolResponse(protocol, visible, params, inspectors, atoms);
+  const [params, inspectors, pageQuality] = await Promise.all([
+    paramsByCode(visible), inspectorsById(visible), pageQualityByFragment(visible),
+  ]);
+  return buildProtocolResponse(protocol, visible, params, inspectors, atoms, pageQuality);
 }
 
 export async function loadProtocolResponse(protocol: Protocol) {
@@ -204,10 +227,10 @@ export async function loadProtocolResponse(protocol: Protocol) {
     orderBy: { createdAt: 'asc' },
   })) as CheckWithFragments[];
 
-  const [params, inspectors, atoms] = await Promise.all([
-    paramsByCode(checks), inspectorsById(checks), atomsByParent(checks),
+  const [params, inspectors, atoms, pageQuality] = await Promise.all([
+    paramsByCode(checks), inspectorsById(checks), atomsByParent(checks), pageQualityByFragment(checks),
   ]);
-  return buildProtocolResponse(protocol, checks, params, inspectors, atoms);
+  return buildProtocolResponse(protocol, checks, params, inspectors, atoms, pageQuality);
 }
 
 export async function protocolRoutes(app: FastifyInstance) {
@@ -325,10 +348,12 @@ export async function protocolRoutes(app: FastifyInstance) {
         .filter((check) => (queryParsed.data.status ? check.findingStatus === queryParsed.data.status
           : check.findingStatus !== null));
       const atoms = groupAtomsByParent(allChecks);
-      const [params, inspectors] = await Promise.all([paramsByCode(visible), inspectorsById(visible)]);
+      const [params, inspectors, pageQuality] = await Promise.all([
+        paramsByCode(visible), inspectorsById(visible), pageQualityByFragment(visible),
+      ]);
       return {
         items: visible.map((check) => buildFinding(
-          check, params.get(check.paramCode), inspectors, atoms.get(check.id),
+          check, params.get(check.paramCode), inspectors, atoms.get(check.id), pageQuality,
         )),
       };
     }
@@ -346,12 +371,12 @@ export async function protocolRoutes(app: FastifyInstance) {
       orderBy: { createdAt: 'asc' },
     })) as CheckWithFragments[];
 
-    const [params, inspectors, atoms] = await Promise.all([
-      paramsByCode(checks), inspectorsById(checks), atomsByParent(checks),
+    const [params, inspectors, atoms, pageQuality] = await Promise.all([
+      paramsByCode(checks), inspectorsById(checks), atomsByParent(checks), pageQualityByFragment(checks),
     ]);
     return {
       items: checks.map((check) => buildFinding(
-        check, params.get(check.paramCode), inspectors, atoms.get(check.id),
+        check, params.get(check.paramCode), inspectors, atoms.get(check.id), pageQuality,
       )),
     };
   });
@@ -366,9 +391,9 @@ export async function protocolRoutes(app: FastifyInstance) {
     })) as CheckWithFragments | null;
     if (!check) return reply.code(404).send({ error: 'FINDING_NOT_FOUND' });
 
-    const [params, inspectors, atoms] = await Promise.all([
-      paramsByCode([check]), inspectorsById([check]), atomsByParent([check]),
+    const [params, inspectors, atoms, pageQuality] = await Promise.all([
+      paramsByCode([check]), inspectorsById([check]), atomsByParent([check]), pageQualityByFragment([check]),
     ]);
-    return buildFinding(check, params.get(check.paramCode), inspectors, atoms.get(check.id));
+    return buildFinding(check, params.get(check.paramCode), inspectors, atoms.get(check.id), pageQuality);
   });
 }

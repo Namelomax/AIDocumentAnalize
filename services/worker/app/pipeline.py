@@ -45,10 +45,13 @@ from app.incremental import build_merge_plan
 from app.llm.provider import LlmUnavailable, provider_from_config
 from app.metrics import (
     file_attempts_total, files_processed_total, findings_total,
-    hypotheses_duration_seconds, incremental_update_duration_seconds, process_duration_seconds,
-    processes_total,
+    hypotheses_duration_seconds, incremental_update_duration_seconds, param_outcomes_total,
+    process_duration_seconds, processes_total,
 )
-from app.params.engine import evaluate_all
+from app.ocr.client import ocr_provider_from_config
+from app.ocr.tiling import ocr_page
+from app.params.engine import ParamOutcome, build_evaluators, evaluate_all
+from app.params.locate import EvidenceRef, ParamContext, StageDocument, load_locators
 from app.params.specs import ParamSpec, load_specs
 from app.pdf.extract import ExtractedBlock, ExtractedLine, ExtractedPage, PARSER_VERSION, extract_pages
 from app.pdf.geometry import NormalizedBox
@@ -102,8 +105,11 @@ def _validated_cached_page(page: dict) -> dict:
         # Accessed, not just presence-checked: a block dict missing a field
         # would otherwise only fail later, inside db.save_pages, by which
         # point some page images have already been copied under the new
-        # file id - see _pages_from_cache_entry's own docstring.
-        _ = (b["block_no"], b["line_no"], b["text"], b["x0"], b["y0"], b["x1"], b["y1"])
+        # file id - see _pages_from_cache_entry's own docstring. "source" is
+        # included here (PARSER_VERSION 2) so an entry cached under the old
+        # shape, which never had it, is treated as a miss rather than read
+        # back as if every one of its lines came from the text layer.
+        _ = (b["block_no"], b["line_no"], b["text"], b["x0"], b["y0"], b["x1"], b["y1"], b["source"])
     return {
         "page_no": page["page_no"],
         "width_pt": page["width_pt"],
@@ -111,6 +117,7 @@ def _validated_cached_page(page: dict) -> dict:
         "rotation": page["rotation"],
         "char_count": page["char_count"],
         "needs_ocr": page["needs_ocr"],
+        "quality_status": page.get("quality_status"),
         "blocks": blocks,
     }
 
@@ -162,19 +169,77 @@ async def _pages_from_cache_entry(entry: dict, record, storage, process_id: str)
     return stored
 
 
-async def _extract_one_file(record, db, storage, timeout_s: float, *,
+async def _ocr_stored_pages(raw: bytes, stored: list[dict], config, *,
+                             process_id: str, file_id: str) -> None:
+    """Fill in OCR text (app.ocr.tiling) for every stored page that came back
+    from extract_pages with needs_ocr set, in place - customer's ТЗ p.16,
+    п.1 "Распознавание текста (OCR)".
+
+    A page-level failure here (an unreachable model, a corrupt page) must
+    never fail the file's own extraction, which already succeeded: this is a
+    second, independent read of pages extract_pages itself could not read at
+    all, and it degrades to LOW_QUALITY exactly like a page gets when
+    OCR_MODEL is not configured at all (app.ocr.tiling.ocr_page's own
+    docstring) - it never raises back into _extract_one_file's retry loop,
+    which exists for the text layer, not for this.
+    """
+    if not any(page["needs_ocr"] for page in stored):
+        return
+
+    provider = ocr_provider_from_config(config)
+    for page in stored:
+        if not page["needs_ocr"]:
+            continue
+        started = time.monotonic()
+        try:
+            result = await ocr_page(
+                raw, page["page_no"], provider,
+                dpi=config.ocr_dpi, strip_height_px=config.ocr_strip_height_px,
+            )
+        except Exception as exc:  # noqa: BLE001 - a page's own OCR failure degrades, it does not fail the file
+            logger.error("ocr failed for page", extra={
+                "process_id": process_id, "file_id": file_id,
+                "page_no": page["page_no"], "error": str(exc),
+            })
+            page["quality_status"] = "LOW_QUALITY"
+            continue
+
+        page["quality_status"] = result.quality_status
+        # OCR block numbers start after the text layer's own (usually none,
+        # for a page that needed OCR in the first place) so they can never
+        # collide with a real text block's own block_no.
+        base_block_no = len(page["blocks"])
+        page["blocks"].extend(
+            {
+                "block_no": base_block_no + line.tile_no, "line_no": line.line_no, "text": line.text,
+                "x0": line.box.x0, "y0": line.box.y0, "x1": line.box.x1, "y1": line.box.y1,
+                "source": "ocr", "confidence": None,
+            }
+            for line in result.lines
+        )
+        logger.info("page ocr completed", extra={
+            "process_id": process_id, "file_id": file_id, "page_no": page["page_no"],
+            "lines": len(result.lines), "quality_status": result.quality_status,
+            "elapsed_s": round(time.monotonic() - started, 3),
+        })
+
+
+async def _extract_one_file(record, db, storage, config, *,
                              process_id: str, cache=None) -> list[dict]:
     """One attempt at reading a single PDF's text layer and rendering its
     pages. Raises (TimeoutError on a timeout, whatever extract_pages/
     render_page_png raise otherwise) rather than catching anything itself -
     the retry loop in _extract_document_pages owns deciding when to give up.
+    OCR (_ocr_stored_pages) is not part of that timeout/retry budget - see
+    its own docstring for why.
 
     Customer's ТЗ p.16, п.5 "Кеширование": a cache hit on record.file_hash
-    (app.pdf.cache) skips extract_pages/render_page_png entirely and copies
-    the earlier run's page images instead - but still goes through
-    db.save_pages below just like a fresh parse, since every file id needs
-    its own pages/text_blocks rows regardless of whether its bytes were ever
-    seen before.
+    (app.pdf.cache) skips extract_pages/render_page_png *and* OCR entirely
+    and copies the earlier run's page images instead - the cached entry
+    already carries whatever text (layer or OCR) that earlier run recovered
+    (PARSER_VERSION, app.pdf.extract) - but still goes through db.save_pages
+    below just like a fresh parse, since every file id needs its own pages/
+    text_blocks rows regardless of whether its bytes were ever seen before.
     """
     if cache is not None:
         entry = await cache.get(
@@ -187,7 +252,9 @@ async def _extract_one_file(record, db, storage, timeout_s: float, *,
                 return stored
 
     raw = await storage.get_object(record.storage_key)
-    pairs = await asyncio.wait_for(asyncio.to_thread(_extract_and_render_sync, raw), timeout=timeout_s)
+    pairs = await asyncio.wait_for(
+        asyncio.to_thread(_extract_and_render_sync, raw), timeout=config.file_processing_timeout_s,
+    )
     stored = []
     for page, png in pairs:
         image_key = f"pages/{record.id}/{page.page_no}.png"
@@ -199,15 +266,18 @@ async def _extract_one_file(record, db, storage, timeout_s: float, *,
             "rotation": page.rotation,
             "char_count": page.char_count,
             "needs_ocr": page.needs_ocr,
+            "quality_status": None,
             "image_key": image_key,
             "blocks": [
                 {"block_no": b.block_no, "line_no": line.line_no, "text": line.text,
                  "x0": line.box.x0, "y0": line.box.y0,
-                 "x1": line.box.x1, "y1": line.box.y1}
+                 "x1": line.box.x1, "y1": line.box.y1,
+                 "source": "text", "confidence": None}
                 for b in page.blocks
                 for line in b.lines
             ],
         })
+    await _ocr_stored_pages(raw, stored, config, process_id=process_id, file_id=record.id)
     await db.save_pages(record.id, stored)
     if cache is not None:
         await cache.set(
@@ -236,7 +306,7 @@ async def _extract_document_pages(process_id: str, files, db, storage, config, *
             file_attempts_total.inc()
             try:
                 stored = await _extract_one_file(
-                    record, db, storage, config.file_processing_timeout_s,
+                    record, db, storage, config,
                     process_id=process_id, cache=cache,
                 )
                 logger.info("pages extracted", extra={
@@ -469,6 +539,67 @@ def _fragment(file, sheet: SheetRooms, box: NormalizedBox,
         "x0": box.x0, "y0": box.y0, "x1": box.x1, "y1": box.y1,
         "extracted_value": extracted_value,
         "role": role,
+    }
+
+
+def _param_fragment(file, ref: EvidenceRef) -> dict:
+    """The same evidence_fragments shape `_fragment` builds for a room
+    finding, off an app.params.locate.EvidenceRef instead of a SheetRooms -
+    app.params.scalar's own ParamOutcome.fragments never sees a FileRow, only
+    a file_id, so the file's own hash/stage/document_code/revision are
+    looked up here the same way `_room_finding_check` looks them up in
+    file_by_id.
+    """
+    return {
+        "file_id": file.id,
+        "file_sha256": file.file_hash,
+        "stage": file.doc_stage,
+        "document_code": file.document_code,
+        "revision": file.revision,
+        "approval_status": file.approval_status,
+        "sheet_page": ref.page_no,
+        "x0": ref.box.x0, "y0": ref.box.y0, "x1": ref.box.x1, "y1": ref.box.y1,
+        "extracted_value": ref.extracted_value,
+        "role": ref.role,
+    }
+
+
+# The two statuses app.params.engine.ParamOutcome (like RoomFinding) is ever
+# allowed to carry as an actual finding - CONFIRMED_VIOLATION is refused
+# before it ever reaches here (app.params.engine.evaluate_all's own guard).
+_PARAM_FINDING_STATUSES = ("CANDIDATE", "NEGATIVE_VERIFIED")
+
+
+def _param_outcome_check(object_id: str, spec: ParamSpec, matrix_version: str,
+                          outcome: ParamOutcome, group_label: str, file_by_id: dict) -> dict:
+    """One checks row for a matrix parameter app.params.scalar actually
+    evaluated - the same dict shape `_completeness_check` returns when there
+    is nothing to compare, extended with `_room_finding_check`'s own
+    expected/actual/delta/fragments once there is. A CANDIDATE or
+    NEGATIVE_VERIFIED is a finding (completeness_status COMPLETE); every
+    other status - MISSING_EVIDENCE, NOT_COMPARABLE, CLARIFICATION_REQUIRED -
+    is a data-quality statement only, exactly as `_completeness_check`'s own
+    docstring describes.
+    """
+    is_finding = outcome.status in _PARAM_FINDING_STATUSES
+    fragments = [
+        _param_fragment(file_by_id[ref.file_id], ref)
+        for ref in outcome.fragments
+        if ref.file_id in file_by_id
+    ]
+    return {
+        "param_code": spec.code,
+        "evidence_group_id": f"{object_id}:{spec.code}:{group_label}",
+        "subject": None,
+        "expected_value": outcome.expected_value,
+        "actual_value": outcome.actual_value,
+        "delta": outcome.delta,
+        "completeness_status": "COMPLETE" if is_finding else outcome.status,
+        "finding_status": outcome.status if is_finding else None,
+        "review_priority": spec.review_priority,
+        "rationale": outcome.reason,
+        "matrix_version": matrix_version,
+        "fragments": fragments,
     }
 
 
@@ -712,13 +843,20 @@ async def _pd_rd_sheet_pairs(process_id: str, files, db) -> tuple[list[tuple[She
 
 async def _explication_checks(process_id: str, object_id: str, files, db,
                                m003: ParamSpec, matrix_version: str,
-                               area_relative_threshold: float) -> list[dict]:
+                               area_relative_threshold: float,
+                               stage_selection: dict[str, tuple[list, list[tuple]]]) -> list[dict]:
     """M-003: compare room explications between the current PD and RD sources.
 
     Every group that could not contribute a comparable file records its own
     completeness statement rather than being silently skipped, so a package
     that could not be compared still says why, instead of just having fewer
     checks than expected.
+
+    `stage_selection` is `_select_stage_files`'s own (winners, problems) per
+    stage, computed once by `_compute_checks` and shared with
+    `_param_context` - each call logs a "source selection" line per
+    (stage, discipline, document_code) group, so computing it twice would
+    double that logging for no reason.
 
     Section 9.5's SEM-ROOM-FN hypotheses are not computed here any more -
     see this module's own docstring; process_hypotheses recomputes its own
@@ -729,7 +867,7 @@ async def _explication_checks(process_id: str, object_id: str, files, db,
     checks: list[dict] = []
     winners_by_stage: dict[str, list] = {}
     for stage in _COMPARABLE_STAGES:
-        winners, problems = _select_stage_files(pdf_files, stage, process_id)
+        winners, problems = stage_selection[stage]
         winners_by_stage[stage] = winners
         for label, status, reason in problems:
             checks.append(_completeness_check(
@@ -800,6 +938,38 @@ def input_manifest_hash(process, files) -> str:
     return hashlib.sha256(joined.encode("utf-8")).hexdigest()
 
 
+async def _param_context(process_id: str, files, db,
+                          stage_selection: dict[str, tuple[list, list[tuple]]]) -> ParamContext:
+    """The winning PD/RD/ID files (`_select_stage_files`, same rule M-003's
+    own comparison uses - a stale or ambiguous revision is never a reference
+    here either), their stored text rebuilt into pages, for
+    app.params.scalar's own locate-and-compare evaluators.
+
+    `stage_selection` is shared with `_explication_checks` - see that
+    function's own docstring for why it is computed once, not per caller.
+    ID is read here even though `_COMPARABLE_STAGES` (M-003's own pair) never
+    includes it: a handful of scalar_text parameters name a source_id
+    document as their own second comparison pair once PD<->RD has nothing to
+    say (app.params.scalar's own module docstring).
+    """
+    stage_docs: dict[str, list[StageDocument]] = {}
+    for stage in ("PD", "RD", "ID"):
+        winners, _problems = stage_selection[stage]
+        docs = []
+        for f in winners:
+            rows = await db.get_page_lines(f.id)
+            docs.append(StageDocument(
+                file_id=f.id, file_name=f.file_name, doc_stage=f.doc_stage,
+                discipline=f.discipline, document_code=f.document_code,
+                pages=_pages_from_lines(rows),
+            ))
+        stage_docs[stage] = docs
+    return ParamContext(
+        pd_docs=stage_docs["PD"], rd_docs=stage_docs["RD"], id_docs=stage_docs["ID"],
+        locators=load_locators(),
+    )
+
+
 async def _compute_checks(process_id: str, object_id: str, final_files, db, config):
     """The full candidate set for a package: M-003's explication comparison
     (composites included) plus a completeness statement for every other
@@ -832,9 +1002,20 @@ async def _compute_checks(process_id: str, object_id: str, final_files, db, conf
         else DEFAULT_AREA_RELATIVE_THRESHOLD
     )
 
+    # Computed once, not once per caller: `_explication_checks` (M-003) and
+    # `_param_context` (every other scalar_text/doc_presence parameter) both
+    # need the same winning PD/RD/ID files, and `_select_stage_files` logs a
+    # "source selection" line per (stage, discipline, document_code) group -
+    # calling it twice would double that logging for no reason.
+    pdf_files = [f for f in final_files if f.mime_type == "application/pdf"]
+    stage_selection = {
+        stage: _select_stage_files(pdf_files, stage, process_id) for stage in ("PD", "RD", "ID")
+    }
+
     try:
         checks = await _explication_checks(
             process_id, object_id, final_files, db, m003, specs.version, area_relative_threshold,
+            stage_selection,
         )
     except Exception as exc:  # noqa: BLE001 - a failed comparison is one finding, not a lost package
         logger.error("explication comparison failed", extra={
@@ -845,16 +1026,29 @@ async def _compute_checks(process_id: str, object_id: str, final_files, db, conf
             f"сравнение экспликаций не выполнено: {exc}",
         )]
 
-    # Every other parameter of the matrix has no extractor wired up yet
-    # (section 9.2: an honest refusal, not a guess). M-003 is excluded here
-    # because it was just answered above, by the comparison itself.
-    for outcome in evaluate_all(specs, {}):
+    # Every scalar_text/doc_presence parameter is routed through
+    # app.params.scalar (build_evaluators); drawing_entity/drawing_measure
+    # still have no extractor (section 9.2: an honest refusal, not a guess).
+    # M-003 is excluded here because it was just answered above, by the
+    # explication comparison itself - build_evaluators never wires it up.
+    try:
+        context = await _param_context(process_id, final_files, db, stage_selection)
+        evaluators = build_evaluators(specs, context)
+    except Exception as exc:  # noqa: BLE001 - a failed setup must not cost every other parameter its own answer
+        logger.error("parameter context build failed", extra={
+            "process_id": process_id, "error": str(exc),
+        })
+        evaluators = {}
+
+    file_by_id = {f.id: f for f in pdf_files}
+    for outcome in evaluate_all(specs, evaluators):
         if outcome.code == "M-003":
             continue
         spec = next(s for s in specs.params if s.code == outcome.code)
-        checks.append(_completeness_check(
-            object_id, spec, specs.version, "matrix", outcome.status, outcome.reason,
+        checks.append(_param_outcome_check(
+            object_id, spec, specs.version, outcome, "matrix", file_by_id,
         ))
+        param_outcomes_total.labels(code_group=spec.modality, status=outcome.status).inc()
 
     return checks, specs
 

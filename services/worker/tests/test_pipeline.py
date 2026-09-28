@@ -49,6 +49,28 @@ def _one_page_pdf(text: str, rotation: int = 0) -> bytes:
     return raw
 
 
+def _readable_page_pdf() -> bytes:
+    """A page with enough real text to clear the default scan_char_threshold
+    (needs_ocr False) - insert_htmlbox, not insert_text, because base-14
+    "helv" has no Cyrillic glyphs on this platform and both silently corrupts
+    the text and - unlike test_extract.py's own use of the same fixture, which
+    only checks that *something* got extracted - truncates it well short of
+    100 characters, which is exactly the threshold these OCR tests need to
+    clear (test_extract.py's own module docstring makes the same font choice
+    for the same reason)."""
+    document = pymupdf.open()
+    page = document.new_page(width=400, height=800)
+    page.insert_htmlbox(
+        pymupdf.Rect(20, 20, 380, 400),
+        "Площадь застройки объекта капитального строительства составляет "
+        "пятьсот квадратных метров согласно проектной документации.",
+        css="* {font-size:14px;}",
+    )
+    raw = document.tobytes()
+    document.close()
+    return raw
+
+
 def _room_sheet_pdf(number: str, area: str) -> bytes:
     """A one-room, one-page sheet: a CAD-style plan label, number then area
     on their own lines - the shape app.explication.parse's Detector 1 reads."""
@@ -105,6 +127,9 @@ class _FakeLlmServer:
     """
 
     def __init__(self, handler_fn):
+        self.requests = []
+        outer = self
+
         class Handler(http.server.BaseHTTPRequestHandler):
             def log_message(self, *_args):  # keep pytest output quiet
                 pass
@@ -112,6 +137,7 @@ class _FakeLlmServer:
             def do_POST(self):
                 length = int(self.headers.get("Content-Length", 0))
                 body = self.rfile.read(length)
+                outer.requests.append(json.loads(body))
                 status, response_body = handler_fn(body)
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
@@ -672,6 +698,175 @@ async def test_one_unreadable_pdf_does_not_stop_the_package():
     assert db.saved["status"] == "READY"
 
 
+# ──────────────── OCR (customer's ТЗ p.16, п.1 "Распознавание текста") ────────────────
+
+def _ocr_server(handler_fn) -> "_FakeLlmServer":
+    """Same fake server _FakeLlmServer already wraps for the free-search
+    model, reused here for the OCR model's own /chat/completions endpoint -
+    the two are interchangeable at the transport level, only the caller
+    (app.ocr.client.OcrProvider vs app.llm.provider.ChatProvider) differs."""
+    return _FakeLlmServer(handler_fn)
+
+
+def _ocr_config(base_url: str, *, dpi: int = 72, strip_height_px: int = 400) -> Config:
+    return replace(
+        CONFIG, ocr_base_url=base_url, ocr_model="glm-ocr", ocr_timeout_s=5.0,
+        ocr_dpi=dpi, ocr_strip_height_px=strip_height_px,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_scanned_page_gets_ocr_lines_with_the_ocr_source():
+    server = _ocr_server(lambda body: (200, _openai_response("распознанная строка")))
+    try:
+        process = mk_process(manifest_uploaded=False)
+        doc = mk_file(id="f-scan", file_name="scan.pdf", storage_key="key-scan",
+                      mime_type="application/pdf")
+        db = FakeDb(process, [doc])
+        storage = FakeStorage({"key-scan": _one_page_pdf("")})  # no text layer -> needs_ocr
+
+        # One strip covering the whole 800pt-tall default page, so the fake
+        # server's single canned answer is not read back twice over.
+        await process_start("p1", db, storage, _ocr_config(server.base_url, strip_height_px=800))
+    finally:
+        server.close()
+
+    page = db.saved_pages["f-scan"][0]
+    assert page["needs_ocr"] is True
+    assert page["quality_status"] is None
+    ocr_blocks = [b for b in page["blocks"] if b["source"] == "ocr"]
+    assert [b["text"] for b in ocr_blocks] == ["распознанная строка"]
+    assert ocr_blocks[0]["confidence"] is None
+    assert db.saved["status"] == "READY"
+
+
+@pytest.mark.asyncio
+async def test_a_readable_pages_text_blocks_are_marked_as_the_text_source():
+    process = mk_process(manifest_uploaded=False)
+    doc = mk_file(id="f-doc", file_name="a.pdf", storage_key="key-doc",
+                  mime_type="application/pdf")
+    db = FakeDb(process, [doc])
+    storage = FakeStorage({"key-doc": _readable_page_pdf()})
+
+    await process_start("p1", db, storage, CONFIG)
+
+    page = db.saved_pages["f-doc"][0]
+    assert page["quality_status"] is None
+    assert all(b["source"] == "text" for b in page["blocks"])
+
+
+@pytest.mark.asyncio
+async def test_a_scanned_page_is_low_quality_when_ocr_is_not_configured():
+    """OCR_MODEL unset (CONFIG's own default): the page stays needs_ocr, gets
+    a LOW_QUALITY status, and the process still reaches READY - the same
+    degradation the free-search model gets when it is not configured."""
+    process = mk_process(manifest_uploaded=False)
+    doc = mk_file(id="f-scan", file_name="scan.pdf", storage_key="key-scan",
+                  mime_type="application/pdf")
+    db = FakeDb(process, [doc])
+    storage = FakeStorage({"key-scan": _one_page_pdf("")})
+
+    await process_start("p1", db, storage, CONFIG)
+
+    page = db.saved_pages["f-scan"][0]
+    assert page["needs_ocr"] is True
+    assert page["quality_status"] == "LOW_QUALITY"
+    assert [b for b in page["blocks"] if b["source"] == "ocr"] == []
+    assert db.saved["status"] == "READY"
+
+
+@pytest.mark.asyncio
+async def test_a_scanned_page_is_low_quality_when_the_ocr_model_is_unreachable():
+    process = mk_process(manifest_uploaded=False)
+    doc = mk_file(id="f-scan", file_name="scan.pdf", storage_key="key-scan",
+                  mime_type="application/pdf")
+    db = FakeDb(process, [doc])
+    storage = FakeStorage({"key-scan": _one_page_pdf("")})
+    unreachable = replace(
+        CONFIG, ocr_base_url="http://127.0.0.1:1/v1", ocr_model="glm-ocr", ocr_timeout_s=1.0,
+    )
+
+    await process_start("p1", db, storage, unreachable)
+
+    page = db.saved_pages["f-scan"][0]
+    assert page["needs_ocr"] is True
+    assert page["quality_status"] == "LOW_QUALITY"
+    assert db.saved["status"] == "READY"
+
+
+@pytest.mark.asyncio
+async def test_a_scanned_page_is_low_quality_when_the_model_returns_nothing_legible():
+    server = _ocr_server(lambda body: (200, _openai_response("   \n  ")))
+    try:
+        process = mk_process(manifest_uploaded=False)
+        doc = mk_file(id="f-scan", file_name="scan.pdf", storage_key="key-scan",
+                      mime_type="application/pdf")
+        db = FakeDb(process, [doc])
+        storage = FakeStorage({"key-scan": _one_page_pdf("")})
+
+        await process_start("p1", db, storage, _ocr_config(server.base_url))
+    finally:
+        server.close()
+
+    page = db.saved_pages["f-scan"][0]
+    assert page["quality_status"] == "LOW_QUALITY"
+
+
+@pytest.mark.asyncio
+async def test_a_page_with_a_text_layer_is_never_sent_to_ocr():
+    """needs_ocr is False: the OCR model must not be called at all, only the
+    text layer already read matters."""
+    server = _ocr_server(lambda body: (200, _openai_response("should never be requested")))
+    try:
+        process = mk_process(manifest_uploaded=False)
+        doc = mk_file(id="f-doc", file_name="a.pdf", storage_key="key-doc",
+                      mime_type="application/pdf")
+        db = FakeDb(process, [doc])
+        storage = FakeStorage({"key-doc": _readable_page_pdf()})
+
+        await process_start("p1", db, storage, _ocr_config(server.base_url))
+    finally:
+        server.close()
+
+    assert server.requests == []
+    page = db.saved_pages["f-doc"][0]
+    assert page["quality_status"] is None
+
+
+@pytest.mark.asyncio
+async def test_parse_cache_old_shape_entry_without_source_falls_back_to_parsing(caplog):
+    """An entry cached under an earlier PARSER_VERSION's shape (no "source"
+    per block) must never be read back as if every line were a text-layer
+    line - see app.pdf.extract.PARSER_VERSION's own comment. Keyed under the
+    *current* version here specifically to prove the fallback is the block
+    validation catching the missing field, not just a version-key miss."""
+    process = mk_process(manifest_uploaded=False)
+    doc = mk_file(id="f-doc", file_name="a.pdf", storage_key="key-doc",
+                  mime_type="application/pdf", file_hash="hash-old-shape")
+    db = FakeDb(process, [doc])
+    storage = FakeStorage({"key-doc": _one_page_pdf("текст")})
+    stale_entry = {
+        "source_file_id": "f-other",
+        "pages": [{
+            "page_no": 1, "width_pt": 400.0, "height_pt": 800.0, "rotation": 0,
+            "char_count": 10, "needs_ocr": False, "image_key": "pages/f-other/1.png",
+            "blocks": [{"block_no": 0, "line_no": 0, "text": "старый формат",
+                        "x0": 0.0, "y0": 0.0, "x1": 1.0, "y1": 0.1}],  # no "source" key
+        }],
+    }
+    redis = FakeRedis({_cache_key("hash-old-shape"): json.dumps(stale_entry).encode()})
+    cache = ParseCache(redis, ttl_s=1000.0)
+
+    with caplog.at_level(logging.WARNING, logger="app.pipeline"):
+        await process_start("p1", db, storage, CONFIG, cache=cache)
+
+    assert db.saved["status"] == "READY"
+    assert "f-doc" in db.saved_pages
+    # Reparsed from the real PDF, not the stale entry's own text.
+    assert db.saved_pages["f-doc"][0]["blocks"][0]["text"] != "старый формат"
+    assert any(r.msg == "parse cache entry corrupt" for r in caplog.records)
+
+
 @pytest.mark.asyncio
 async def test_room_area_change_produces_one_candidate_and_the_rest_not_comparable():
     """The full loop: extraction, comparison, and one checks row per parameter."""
@@ -703,10 +898,24 @@ async def test_room_area_change_produces_one_candidate_and_the_rest_not_comparab
     assert len(candidate["fragments"]) == 2
     assert {f["role"] for f in candidate["fragments"]} == {"expected", "actual"}
 
+    # A bare room-explication sheet has no ТЭП table for app.params.scalar to
+    # read, so every scalar_text/drawing_* parameter still comes back
+    # NOT_COMPARABLE - except the 4 doc_presence parameters (M-098..M-101),
+    # which now answer MISSING_EVIDENCE instead: they check for a specific
+    # document/registry entry (app.params.scalar.evaluate_doc_presence_param),
+    # and "no such document in this package" is a definite absence, not "no
+    # extractor exists" - see that function's own docstring.
     other_not_comparable = [
         c for c in checks if c["param_code"] != "M-003" and c["completeness_status"] == "NOT_COMPARABLE"
     ]
-    assert len(other_not_comparable) == 131
+    assert len(other_not_comparable) == 127
+
+    doc_presence_missing = [
+        c for c in checks
+        if c["param_code"] in ("M-098", "M-099", "M-100", "M-101")
+        and c["completeness_status"] == "MISSING_EVIDENCE"
+    ]
+    assert len(doc_presence_missing) == 4
 
 
 def _room_function_package():

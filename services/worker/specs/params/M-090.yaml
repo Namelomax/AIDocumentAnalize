@@ -18,4 +18,4 @@ gost_reference: null
 fz_reference: null
 other_normative: null
 regex_pattern: null
-implemented: false
+implemented: true

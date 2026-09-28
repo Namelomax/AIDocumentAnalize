@@ -7,7 +7,9 @@ import { audit } from '../audit.js';
 import { compositeSplitsTotal, finalizationsTotal, verdictsTotal } from '../metrics.js';
 import { visibleCheckWhere } from '../checks/visibility.js';
 import { buildFinding, type CheckWithFragments } from '../protocol/view.js';
-import { paramsByCode, inspectorsById, atomsByParent, loadProtocolResponse } from './protocols.js';
+import {
+  paramsByCode, inspectorsById, atomsByParent, pageQualityByFragment, loadProtocolResponse,
+} from './protocols.js';
 import { enqueueTransfer, cancelPendingTransfer } from '../integration/transfers.js';
 
 const checkParamsSchema = z.object({ check_id: z.string().uuid() });
@@ -58,10 +60,10 @@ const COMPOSITE_NOT_SPLIT_MESSAGE =
   'Составной кандидат нельзя подтвердить частично — сначала разделите его на атомарные находки';
 
 async function findingResponse(check: CheckWithFragments) {
-  const [params, inspectors, atoms] = await Promise.all([
-    paramsByCode([check]), inspectorsById([check]), atomsByParent([check]),
+  const [params, inspectors, atoms, pageQuality] = await Promise.all([
+    paramsByCode([check]), inspectorsById([check]), atomsByParent([check]), pageQualityByFragment([check]),
   ]);
-  return buildFinding(check, params.get(check.paramCode), inspectors, atoms.get(check.id));
+  return buildFinding(check, params.get(check.paramCode), inspectors, atoms.get(check.id), pageQuality);
 }
 
 export async function verdictRoutes(app: FastifyInstance) {
@@ -224,8 +226,12 @@ export async function verdictRoutes(app: FastifyInstance) {
       });
 
       const atoms = updated.atoms as CheckWithFragments[];
-      const [params, inspectors] = await Promise.all([paramsByCode(atoms), inspectorsById(atoms)]);
-      return { atoms: atoms.map((atom) => buildFinding(atom, params.get(atom.paramCode), inspectors)) };
+      const [params, inspectors, pageQuality] = await Promise.all([
+        paramsByCode(atoms), inspectorsById(atoms), pageQualityByFragment(atoms),
+      ]);
+      return {
+        atoms: atoms.map((atom) => buildFinding(atom, params.get(atom.paramCode), inspectors, undefined, pageQuality)),
+      };
     },
   );
 

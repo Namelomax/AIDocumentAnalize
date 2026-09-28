@@ -26,6 +26,26 @@ export interface EvidenceView {
   bbox: [number, number, number, number];
   extracted_value: string | null;
   image_url: string;
+  // Whether the sheet this fragment was read off carried its own text layer
+  // (services/worker's app.pdf.extract) or had to go through OCR - and, when
+  // it did, whether that OCR came back with nothing legible ("LOW_QUALITY",
+  // customer's ТЗ p.16 п.1: "система обязана вернуть LOW_QUALITY или
+  // ABSTAIN"). Both null when the page this evidence came from is not known
+  // to the caller (pageQualityByKey was not built for it) - never guessed.
+  needs_ocr: boolean | null;
+  page_quality_status: string | null;
+}
+
+// A page's own OCR-relevant fields (services/worker's app.db.Database.
+// save_pages), keyed by `${fileId}:${pageNo}` (pageQualityKey below) so
+// evidenceView can look one up per fragment without a query of its own.
+export interface PageQualityInfo {
+  needsOcr: boolean;
+  qualityStatus: string | null;
+}
+
+export function pageQualityKey(fileId: string, pageNo: number): string {
+  return `${fileId}:${pageNo}`;
 }
 
 // One member of an unsplit composite candidate (module docstring below,
@@ -131,7 +151,8 @@ export interface ProtocolResponse {
   suspicions: SuspicionView[];
 }
 
-function evidenceView(fragment: EvidenceFragment): EvidenceView {
+function evidenceView(fragment: EvidenceFragment, pageQualityByKey: Map<string, PageQualityInfo>): EvidenceView {
+  const pageInfo = pageQualityByKey.get(pageQualityKey(fragment.fileId, fragment.sheetPage));
   return {
     role: fragment.role,
     file_id: fragment.fileId,
@@ -146,6 +167,8 @@ function evidenceView(fragment: EvidenceFragment): EvidenceView {
     // The image key lives on `pages`, keyed by file and page number - this
     // is a route the client follows, not a storage key it can forge.
     image_url: `/api/v1/files/${fragment.fileId}/pages/${fragment.sheetPage}/image`,
+    needs_ocr: pageInfo?.needsOcr ?? null,
+    page_quality_status: pageInfo?.qualityStatus ?? null,
   };
 }
 
@@ -218,6 +241,11 @@ export function buildFinding(
   // The composite's own members, when `check` is an unsplit composite -
   // absent (or empty) for every atom and every ordinary, atomic finding.
   compositeAtoms?: Check[],
+  // Empty by default, same reasoning as buildProtocolResponse's own
+  // compositeAtomsByParent - a caller with nothing to give does not have to
+  // build an empty Map just to call this; every fragment's needs_ocr/
+  // page_quality_status then simply reads null.
+  pageQualityByKey: Map<string, PageQualityInfo> = new Map(),
 ): FindingView {
   return {
     id: check.id,
@@ -238,7 +266,7 @@ export function buildFinding(
     completeness_status: check.completenessStatus,
     // Distinct stages behind the evidence, in the order they were attached.
     sources: [...new Set(check.fragments.map((fragment) => fragment.stage))],
-    evidence: check.fragments.map(evidenceView),
+    evidence: check.fragments.map((fragment) => evidenceView(fragment, pageQualityByKey)),
     decision: decisionView(check, inspectorsById),
     composite: compositeAtoms && compositeAtoms.length > 0
       ? { atoms: compositeAtoms.map(buildCompositeAtomView) }
@@ -253,9 +281,10 @@ export function buildSuspicion(
   check: CheckWithFragments,
   param: ParamForView | undefined,
   inspectorsById: Map<string, InspectorForView>,
+  pageQualityByKey: Map<string, PageQualityInfo> = new Map(),
 ): SuspicionView {
   return {
-    ...buildFinding(check, param, inspectorsById),
+    ...buildFinding(check, param, inspectorsById, undefined, pageQualityByKey),
     detection_method: check.detectionMethod,
     confidence: check.confidence,
   };
@@ -370,6 +399,8 @@ export function buildProtocolResponse(
   // that has none to give (e.g. a route that never has composites in reach)
   // does not have to build an empty Map just to call this.
   compositeAtomsByParent: Map<string, Check[]> = new Map(),
+  // Same default-empty-Map reasoning as compositeAtomsByParent above.
+  pageQualityByKey: Map<string, PageQualityInfo> = new Map(),
 ): ProtocolResponse {
   const { findings, suspicions, completeness } = splitChecks(checks);
   return {
@@ -389,7 +420,10 @@ export function buildProtocolResponse(
     completeness: completeness.map((check) => buildCompletenessRow(check, paramsByCode.get(check.paramCode))),
     findings: findings.map((check) => buildFinding(
       check, paramsByCode.get(check.paramCode), inspectorsById, compositeAtomsByParent.get(check.id),
+      pageQualityByKey,
     )),
-    suspicions: suspicions.map((check) => buildSuspicion(check, paramsByCode.get(check.paramCode), inspectorsById)),
+    suspicions: suspicions.map((check) => (
+      buildSuspicion(check, paramsByCode.get(check.paramCode), inspectorsById, pageQualityByKey)
+    )),
   };
 }

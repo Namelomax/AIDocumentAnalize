@@ -1,0 +1,85 @@
+{
+  "reference_pdf": "D:\\Jacob\\Programming\\DocAi\\Задание\\Комплект_предметной_разметки.pdf",
+  "dpi": 300,
+  "strip_height_px": 800,
+  "ocr_model": "glm-ocr",
+  "pages": [
+    {
+      "page_no": 11,
+      "quality_status": null,
+      "elapsed_s": 296.028672800001,
+      "reference_chars": 8098,
+      "edit_distance": 5698,
+      "character_accuracy": 0.2963694739441838,
+      "reference_rooms": 0,
+      "matched_rooms": 0,
+      "exact_match": null
+    },
+    {
+      "page_no": 12,
+      "quality_status": null,
+      "elapsed_s": 304.10095679999904,
+      "reference_chars": 10723,
+      "edit_distance": 8288,
+      "character_accuracy": 0.22708197332835955,
+      "reference_rooms": 0,
+      "matched_rooms": 0,
+      "exact_match": null
+    },
+    {
+      "page_no": 19,
+      "quality_status": null,
+      "elapsed_s": 211.7724132000003,
+      "reference_chars": 13234,
+      "edit_distance": 11250,
+      "character_accuracy": 0.14991688076167442,
+      "reference_rooms": 128,
+      "matched_rooms": 0,
+      "exact_match": 0.0
+    },
+    {
+      "page_no": 20,
+      "quality_status": null,
+      "elapsed_s": 441.67950049999854,
+      "reference_chars": 13293,
+      "edit_distance": 9602,
+      "character_accuracy": 0.27766493643270895,
+      "reference_rooms": 129,
+      "matched_rooms": 0,
+      "exact_match": 0.0
+    },
+    {
+      "page_no": 21,
+      "quality_status": null,
+      "elapsed_s": 181.08643109999866,
+      "reference_chars": 6505,
+      "edit_distance": 5269,
+      "character_accuracy": 0.1900076863950807,
+      "reference_rooms": 23,
+      "matched_rooms": 0,
+      "exact_match": 0.0
+    },
+    {
+      "page_no": 22,
+      "quality_status": null,
+      "elapsed_s": 318.18980010000087,
+      "reference_chars": 9505,
+      "edit_distance": 7438,
+      "character_accuracy": 0.2174644923724356,
+      "reference_rooms": 23,
+      "matched_rooms": 0,
+      "exact_match": 0.0
+    }
+  ],
+  "totals": {
+    "pages": 6,
+    "total_reference_chars": 61358,
+    "pooled_character_accuracy": 0.22512141855992696,
+    "total_reference_rooms": 303,
+    "total_matched_rooms": 0,
+    "pooled_exact_match": 0.0,
+    "mean_time_s": 292.1429624166664,
+    "meets_character_accuracy_threshold": false,
+    "meets_exact_match_threshold": false
+  }
+}

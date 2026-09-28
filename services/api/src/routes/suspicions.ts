@@ -4,7 +4,7 @@ import type { Protocol } from '@prisma/client';
 import { prisma } from '../db.js';
 import { visibleCheckWhere } from '../checks/visibility.js';
 import { buildSuspicion, type CheckWithFragments, type SuspicionView } from '../protocol/view.js';
-import { paramsByCode, inspectorsById } from './protocols.js';
+import { paramsByCode, inspectorsById, pageQualityByFragment } from './protocols.js';
 
 const suspicionsQuerySchema = z.object({
   object_id: z.string().uuid().optional(),
@@ -84,15 +84,16 @@ export async function suspicionRoutes(app: FastifyInstance) {
     if (checks.length === 0) return { items: [] };
 
     const objectIds = [...new Set(checks.map((check) => check.objectId))];
-    const [params, inspectors, objects] = await Promise.all([
+    const [params, inspectors, pageQuality, objects] = await Promise.all([
       paramsByCode(checks),
       inspectorsById(checks),
+      pageQualityByFragment(checks),
       prisma.constructionObject.findMany({ where: { id: { in: objectIds } }, select: { id: true, name: true } }),
     ]);
     const objectNamesById = new Map(objects.map((object) => [object.id, object.name]));
 
     const items: SuspicionListItem[] = checks.map((check) => ({
-      ...buildSuspicion(check, params.get(check.paramCode), inspectors),
+      ...buildSuspicion(check, params.get(check.paramCode), inspectors, pageQuality),
       object_id: check.objectId,
       object_name: objectNamesById.get(check.objectId) ?? '',
       protocol_id: protocolByProcess.get(check.processId)!.id,
