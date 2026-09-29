@@ -5,7 +5,7 @@ import pytest
 
 from app.pdf.extract import extract_pages
 
-REFERENCE_PDF = Path(__file__).resolve().parents[3] / "Задание" / "Комплект_предметной_разметки.pdf"
+REFERENCE_PDF = Path(__file__).resolve().parents[3] / ".e2e-tmp" / "Задание" / "Комплект_предметной_разметки.pdf"
 
 
 def _one_page_pdf(text: str, rotation: int = 0) -> bytes:

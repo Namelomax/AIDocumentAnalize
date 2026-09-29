@@ -7,7 +7,7 @@ from app.explication.parse import FloorTotal, Room, find_floor_totals, find_room
 from app.pdf.extract import extract_pages
 from app.pdf.geometry import NormalizedBox
 
-REFERENCE_PDF = Path(__file__).resolve().parents[3] / "Задание" / "Комплект_предметной_разметки.pdf"
+REFERENCE_PDF = Path(__file__).resolve().parents[3] / ".e2e-tmp" / "Задание" / "Комплект_предметной_разметки.pdf"
 BOX = NormalizedBox(0.1, 0.1, 0.2, 0.2)
 
 

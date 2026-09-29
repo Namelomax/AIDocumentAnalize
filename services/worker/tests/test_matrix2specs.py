@@ -5,7 +5,7 @@ import yaml
 
 from tools.matrix2specs import build_specs, write_specs
 
-MATRIX = Path(__file__).resolve().parents[3] / "Задание" / "Матрица_параметров_редакция1.1.xlsx"
+MATRIX = Path(__file__).resolve().parents[3] / ".e2e-tmp" / "Задание" / "Матрица_параметров_редакция1.1.xlsx"
 
 pytestmark = pytest.mark.skipif(not MATRIX.exists(), reason="customer matrix is not in the checkout")
 

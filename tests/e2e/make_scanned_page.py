@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pymupdf
 
-SOURCE = Path(__file__).resolve().parents[2] / "Задание" / "Комплект_предметной_разметки.pdf"
+SOURCE = Path(__file__).resolve().parents[2] / ".e2e-tmp" / "Задание" / "Комплект_предметной_разметки.pdf"
 SOURCE_PAGE_NO = 20  # sosh-rd.pdf's own source page (make_reference_package.py's SHEETS)
 # Point-space crop (this page's own coordinates) around the "Экспликация
 # помещений" table that carries room 1.109 - found by inspecting

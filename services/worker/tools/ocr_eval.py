@@ -53,7 +53,7 @@ from app.ocr.tiling import ocr_page  # noqa: E402
 from app.pdf.extract import ExtractedBlock, ExtractedLine, ExtractedPage, extract_pages  # noqa: E402
 from app.pdf.geometry import NormalizedBox  # noqa: E402
 
-REFERENCE_PDF = Path(__file__).resolve().parents[3] / "Задание" / "Комплект_предметной_разметки.pdf"
+REFERENCE_PDF = Path(__file__).resolve().parents[3] / ".e2e-tmp" / "Задание" / "Комплект_предметной_разметки.pdf"
 REPORT_PATH = Path(__file__).resolve().parents[3] / "docs" / "quality" / "ocr-eval.json"
 
 # 19-22 are the same explication sheets tests/e2e/make_reference_package.py

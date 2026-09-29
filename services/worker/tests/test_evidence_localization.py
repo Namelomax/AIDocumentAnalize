@@ -79,7 +79,7 @@ from app.explication.parse import find_floor_totals, find_rooms
 from app.pdf.extract import extract_pages
 from app.pdf.geometry import NormalizedBox
 
-REFERENCE_PDF = Path(__file__).resolve().parents[3] / "Задание" / "Комплект_предметной_разметки.pdf"
+REFERENCE_PDF = Path(__file__).resolve().parents[3] / ".e2e-tmp" / "Задание" / "Комплект_предметной_разметки.pdf"
 
 pytestmark = pytest.mark.skipif(not REFERENCE_PDF.exists(), reason="reference package is not in the checkout")
 

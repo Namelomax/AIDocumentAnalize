@@ -16,3 +16,6 @@ models/
 # out as an empty folder on the stand. Its source is copied into services/web
 # when the frontend is integrated.
 /Инспектор ИИ веб-сервис_Визуал/
+
+# Scratch probes an agent leaves while measuring OCR - never source.
+.scratch/

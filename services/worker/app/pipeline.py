@@ -195,7 +195,6 @@ async def _ocr_stored_pages(raw: bytes, stored: list[dict], config, *,
             result = await ocr_page(
                 raw, page["page_no"], provider,
                 dpi=config.ocr_dpi, strip_height_px=config.ocr_strip_height_px,
-                line_mode=config.ocr_line_mode, concurrency=config.ocr_concurrency,
             )
         except Exception as exc:  # noqa: BLE001 - a page's own OCR failure degrades, it does not fail the file
             logger.error("ocr failed for page", extra={

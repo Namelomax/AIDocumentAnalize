@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pymupdf
 
-SOURCE = Path(__file__).resolve().parents[2] / "Задание" / "Комплект_предметной_разметки.pdf"
+SOURCE = Path(__file__).resolve().parents[2] / ".e2e-tmp" / "Задание" / "Комплект_предметной_разметки.pdf"
 
 # (file name, source page, stage, discipline, code)
 SHEETS = [
