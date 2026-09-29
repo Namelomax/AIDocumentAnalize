@@ -180,9 +180,16 @@ export default function UploadScreen({ objectId, onBack, onRunCheck }: Props) {
     () => apiFiles.filter((f) => f.doc_stage !== null).map(toUploadedFile),
     [apiFiles],
   );
-  // The registry row carries doc_stage = null and is shown separately, per
-  // Task 4 spec, rather than as a fourth kind of document card.
-  const registryLoaded = useMemo(() => apiFiles.some((f) => f.doc_stage === null), [apiFiles]);
+  // doc_stage = null means two different things: the registry row (it never
+  // gets a stage) and a document the worker has not classified yet - stages
+  // are assigned during processing. Telling them apart by doc_stage alone hid
+  // every freshly uploaded PDF, so the registry is recognised by its format.
+  const isRegistry = (f: ApiFileItem) => /\.(csv|xlsx|xls|json)$/i.test(f.file_name);
+  const registryLoaded = useMemo(() => apiFiles.some(isRegistry), [apiFiles]);
+  const unstaged = useMemo(
+    () => apiFiles.filter((f) => f.doc_stage === null && !isRegistry(f)),
+    [apiFiles],
+  );
 
   const pd = files.filter((f) => f.stage === 'PD');
   const rd = files.filter((f) => f.stage === 'RD');
@@ -398,6 +405,19 @@ export default function UploadScreen({ objectId, onBack, onRunCheck }: Props) {
               <div className="text-[13px] text-[#0F172A] font-medium">{checkType.ru}</div>
               <div className="text-[11px] text-[#94A3B8] mono mt-1">{checkType.code}</div>
             </div>
+
+            {unstaged.length > 0 && (
+              <div className="bg-white border border-[#E2E8F0] rounded-lg p-4">
+                <div className="text-[13px] font-medium text-[#0F172A] mb-2">
+                  Загружено, стадия определится при обработке: {unstaged.length}
+                </div>
+                <ul className="text-[12px] text-[#475569] space-y-1">
+                  {unstaged.map((f) => (
+                    <li key={f.id} className="truncate">{f.file_name}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
 
             <div className="bg-white border border-[#E2E8F0] rounded-lg p-4">
               <div className="text-[13px] font-medium text-[#0F172A] mb-2">Реестр файлов</div>
